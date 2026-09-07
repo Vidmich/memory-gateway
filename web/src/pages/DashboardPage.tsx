@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
+import { useConnectors } from '@/api/connectors'
 import { useGateways } from '@/api/gateways'
 import { resolveRange, useSummary } from '@/api/monitoring'
 import { useAuth } from '@/auth/AuthContext'
@@ -14,17 +15,32 @@ import { useAuth } from '@/auth/AuthContext'
  * no way to drill into it is a number people learn to ignore.
  *
  * Cards for subsystems that do not exist yet still say so rather than showing a zero. A
- * "0" under *Documents indexed* is indistinguishable from an ingestion pipeline that is
+ * "0" under a subsystem that has not been built is indistinguishable from one that is
  * silently failing, which is exactly the wrong thing for a dashboard to be ambiguous
  * about.
+ *
+ * *Documents indexed* now has a real number behind it, and it swaps its subtitle for the
+ * failure count when there is one. A dashboard that reports 900 indexed and says nothing
+ * about the 40 that could not be read is reporting the half nobody needs to act on.
  */
 export function DashboardPage() {
   const { user } = useAuth()
   const window = useMemo(() => resolveRange('24h'), [])
   const summary = useSummary(window)
   const gateways = useGateways()
+  const connectors = useConnectors()
 
   const enabled = (gateways.data?.items ?? []).filter((gateway) => gateway.enabled).length
+  const indexed = (connectors.data?.items ?? []).reduce(
+    (total, connector) => total + (connector.counts.indexed ?? 0),
+    0,
+  )
+  // Documents that could not be read. Shown *instead of* the count when there are any,
+  // because the number a dashboard exists to surface is the one somebody has to act on.
+  const unreadable = (connectors.data?.items ?? []).reduce(
+    (total, connector) => total + (connector.counts.failed ?? 0),
+    0,
+  )
   const errorRate = summary.data ? summary.data.error_rate : null
 
   return (
@@ -72,7 +88,20 @@ export function DashboardPage() {
           loading={gateways.isLoading}
           detail={<Link to="/gateways">Manage endpoints →</Link>}
         />
-        <MetricCard title="Documents indexed" detail="Arrives with connectors." />
+        <MetricCard
+          title="Documents indexed"
+          value={connectors.data ? indexed.toLocaleString() : undefined}
+          loading={connectors.isLoading}
+          detail={
+            unreadable > 0 ? (
+              <Link to="/connectors" className="text-amber-700">
+                {unreadable} could not be read →
+              </Link>
+            ) : (
+              <Link to="/connectors">Manage content →</Link>
+            )
+          }
+        />
         <MetricCard title="Memory facts stored" detail="Arrives with distillation." />
       </div>
 

@@ -8,25 +8,28 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 08 complete**. An organization goes from empty to a working
+Current state: **task 09 complete**. An organization goes from empty to a working
 OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream
 model, create a gateway, copy its URL, mint a key, call it — and every request through it
 is then recorded and inspectable. **Monitoring** charts the traffic; clicking a row shows
 the client's original messages, the exact prompt that went upstream, the response, and a
-timing waterfall. A gateway can now route over several models: a failover chain that
-survives an upstream outage, or a weighted A/B split whose result you read off the same
-charts.
+timing waterfall. A gateway can route over several models: a failover chain that survives
+an upstream outage, or a weighted A/B split whose result you read off the same charts.
+And **Connectors** now ingest content: drag a folder in, watch each file move from
+`pending` to `indexed`, and ask the debug search whether it can be found. Nothing consumes
+the index yet — task 10 is what wires it into a gateway's answers.
 
 ## Quick start (Docker)
 
 ```bash
 docker compose -f deploy/compose/docker-compose.yml up -d --build
 curl localhost:8000/healthz   # {"status":"ok","version":"0.1.0"}
-curl localhost:8000/readyz    # {"postgres":"ok","redis":"ok","qdrant":"ok","storage":"ok"}
+curl localhost:8000/readyz    # {"postgres":"ok","redis":"ok","qdrant":"ok","storage":"ok","jobs":"ok"}
 ```
 
 `make up` is the same thing. The stack brings up Postgres, Redis, Qdrant, MinIO (with its
-bucket created), the API on :8000, and the Vite dev server on :5173.
+bucket created), the API on :8000, the ingestion worker, and the Vite dev server on :5173.
+The API and the worker are the same image with a different command.
 
 ## Sign in
 
@@ -239,6 +242,97 @@ model, status and latency columns already say it. `routing_attempts_total{mode, 
 outcome}`, `routing_failovers_total{model, error_code}` and `routing_chain_attempts`
 carry the same picture to Prometheus.
 
+## Connectors and ingestion
+
+A **connector** is where content comes from. The v1 type is a managed file drop: the
+platform provisions `orgs/{org}/connectors/{id}/` in its own object store, and files
+arrive either by dragging them onto the connector page or by `PUT` to a short-lived
+presigned URL.
+
+Each file becomes a **document**, and each document walks SPEC §9.5's pipeline —
+`pending → extracting → chunking → embedding → indexed` — with the status written at every
+step rather than inferred at the end. That is what makes the table on the connector page
+move while you watch it, and what makes a stuck document say *which* step it is stuck on.
+
+Two failures are handled in opposite directions, and that distinction is the shape of the
+whole pipeline:
+
+| The file is bad | The world is bad |
+|---|---|
+| Will not decode, unsupported format, empty. | Provider rate-limiting, Qdrant restarting, storage timeout. |
+| Marked `failed` or `skipped` with a sentence a customer can act on. The job returns. | The document is untouched. The job **raises**, and the runner backs off and retries. |
+| The retry that matters is the button in the UI, after the file has been fixed. | Nobody has to do anything. |
+
+Getting that backwards either way is the most expensive mistake available here: one way a
+provider blip permanently fails a thousand documents, the other way a corrupt file is
+retried until it dead-letters and the customer is told nothing useful.
+
+**What is read.** SPEC §9.2's text and code formats, with two renderings that matter more
+than they look. CSV and TSV become named records — `name: Ada` / `role: Engineer`, not
+`Ada,Engineer` — because a row of commas embeds to a vector about commas. JSON becomes key
+paths, `user.roles.0: admin`. HTML is stripped to text with its headings kept and its
+`<script>` dropped. PDFs and Office documents are *recognised* and skipped with "coming
+soon" rather than failed, so the task 11 gap reads as a roadmap item instead of a broken
+product.
+
+**What a file is** is decided from its first bytes, never from its name. A JPEG called
+`notes.txt` is skipped as an image; a `.mov` is recognised from its `ftyp` box. Binary
+files are never read past the sniff window, so a folder of videos costs 8 KB each rather
+than their size.
+
+**Chunking** is per connector (SPEC §9.3): `recursive`, `fixed` or `by_heading`, with a
+token size and an overlap. Sizes are counted with the embedding model's own tokenizer, and
+a cut is walked back to a paragraph, then a sentence, then a word boundary — never
+mid-word. Changing any of it invalidates the chunks already stored, so the editor says so
+at the moment of the change, and only when there is an index to invalidate.
+
+**The index** is one Qdrant collection per organization, `org_{org_id}_docs`, cosine
+distance, with payload indexes on `connector_id` and `document_id`. Point ids are
+deterministic over `(document_id, chunk_index)`, so re-ingesting a document overwrites its
+points rather than doubling them — and re-ingestion *also* deletes by `document_id` first,
+because a document that shrank from forty chunks to thirty leaves ten behind that still
+match queries for text the file no longer contains.
+
+**Resync** reconciles the connector against what storage actually holds and reports
+`{added, updated, deleted, unchanged, skipped}`. It only ever deletes a document in a
+terminal state: a row that says `pending` might be an upload whose object has not landed
+yet, and a listing is a snapshot taken before any lock could have helped.
+
+**The debug search** (`POST /api/v1/connectors/{id}/search`) returns scored chunks with
+their source and section. It exists to answer "is my file actually in there" before task
+10 gives the index a consumer, and it stays useful afterwards as the first thing to check
+when a gateway's answers look wrong.
+
+### The worker
+
+Ingestion runs in a separate process — `arq app.workers.main.WorkerSettings`, the same
+image as the API. arq is used for exactly two things, durable delivery and deferral;
+retries, backoff, the attempt ceiling and the dead-letter record are
+[`app/services/jobs.py`](app/services/jobs.py), so the policy is one thing in one place
+and testable without Redis.
+
+Jobs are enqueued **after** the transaction that justified them commits — a job naming a
+row a rollback removed is a worker failure nobody can explain from the evidence. Every
+enqueue carries an idempotency key, and every job body is *also* safe to run twice,
+because the key's reservation expires and races.
+
+`jobs_started_total`, `jobs_completed_total{job, outcome}`, `job_duration_seconds`,
+`jobs_dead_lettered_total` and `jobs_queue_depth` go to Prometheus; `/readyz` reports the
+queue separately from Redis, because a queue that cannot be written to leaves the API
+serving traffic and silently dropping ingestion.
+
+### Embeddings
+
+One model for the whole platform (SPEC §9.4) — a collection's vectors must all come from
+one, and mixing them silently degrades retrieval. Configured by environment for now; task
+17 moves it into `platform_settings` with a reindex-and-swap flow.
+
+The development default is `EMBEDDING_PROVIDER=hash`: a local hashing-trick bag-of-words
+embedder that needs no key and no network. It is genuinely lexical — shared words score
+higher — which is enough to demonstrate the whole ingest-and-search path on a laptop, and
+it knows nothing about meaning. The service **refuses to start** with it when
+`ENVIRONMENT=prod`.
+
 ## Request logging and monitoring
 
 Every request through a gateway becomes a row. **Monitoring** shows the request rate with
@@ -340,7 +434,8 @@ addresses in `.env`.
 cp .env.example .env
 make install
 make migrate
-make dev
+make dev       # the API
+make worker    # in another terminal — nothing ingests without it
 ```
 
 ## Development
@@ -351,6 +446,7 @@ make test       # pytest
 make lint       # ruff check + format --check
 make typecheck  # mypy, strict
 make format     # apply fixes
+make worker     # the ingestion worker, locally
 
 make check-web  # eslint + tsc + vitest + openapi drift + production build
 make web        # Vite dev server on :5173, proxying /api to :8000
@@ -375,13 +471,24 @@ make up && make seed
 E2E_PASSWORD=<the printed password> make e2e
 ```
 
-### Tests and the database
+### Tests and the backing services
 
 Tests marked `db` build a throwaway database by running the **migrations** — not
 `metadata.create_all` — so a broken migration fails the suite rather than passing against
 a schema no deployment will ever have. With no PostgreSQL reachable they skip, so the
 suite still runs with the stack down. CI sets `REQUIRE_DB_TESTS=1`, which turns that skip
 into a failure.
+
+`s3` and `qdrant` do the same for MinIO and Qdrant. Both run the *same* checks that the
+in-memory implementations run — `tests/object_store_contract.py` and
+`tests/vector_store_contract.py` — which is the whole reason the fast half is worth
+trusting. The Qdrant one is not optional in CI: payload filters and delete-by-filter are
+exactly where a hand-written double agrees with itself and disagrees with the real thing.
+
+```bash
+make up                    # the services the marked tests need
+uv run pytest -m "s3 or qdrant"
+```
 
 ### The typed API client
 
@@ -412,8 +519,13 @@ app/
               catalog (catalog, catalog_store, model_probe, params, rate_limit),
               gateways and keys (gateways, gateway_store, gateway_probe), upstream
               routing (routing, end_user), request logging (request_log, log_store,
-              redaction) and the monitoring reads (monitoring, metrics_store)
-  workers/    background jobs (task 09)
+              redaction), the monitoring reads (monitoring, metrics_store), and
+              ingestion — its ports (object_store, vector_store, embeddings,
+              tokenizer, locks, jobs, job_queue), its pipeline (extraction,
+              chunking, ingestion) and its control plane (connectors,
+              connector_store, connector_source)
+  workers/    the ingestion worker — `arq app.workers.main.WorkerSettings` — and the
+              composition root it and the API both build their stack from
   cli.py      operator commands — `python -m app.cli seed | openapi`
 migrations/   alembic
 deploy/       compose now, helm from task 18
@@ -425,8 +537,10 @@ web/          the React SPA
   src/layout/   the app shell — sidebar, user menu, support banner
   src/pages/    login, dashboard, organizations, members, org settings,
                 invitation acceptance, models (list and editor), gateways
-                (list, editor, routing section, keys), monitoring (charts,
-                request table, detail drawer with the attempts timeline)
+                (list, editor, routing section, keys), connectors (list, and a
+                detail screen with the upload zone, document table, chunking
+                panel and debug search), monitoring (charts, request table,
+                detail drawer with the attempts timeline)
   e2e/          Playwright
 ```
 
@@ -468,6 +582,15 @@ first request. See [.env.example](.env.example) for the full list.
 | `GET /api/v1/metrics/timeseries` | Bucketed series. `metric` is `requests`, `latency` or `tokens`; the server picks the bucket width. |
 | `GET /api/v1/logs` | The request table. Cursor-paginated, filterable by gateway, model, status class, end user, session, latency and error text. |
 | `GET /api/v1/logs/{id}` | One request in full, including whatever of the transcript was stored. No time range needed. |
+| `GET`/`POST /api/v1/connectors` | List (with per-status document counts) and create. |
+| `GET`/`PATCH`/`DELETE /api/v1/connectors/{id}` | Read, edit chunking, delete. Delete is a 202: the objects and vectors go in a job. |
+| `GET /api/v1/connectors/{id}/documents` | The document table. Cursor-paginated, filterable by `status`. |
+| `POST /api/v1/connectors/{id}/upload` | Multipart, many files at once, streamed to object storage. Always 200, with a per-file outcome. |
+| `POST /api/v1/connectors/{id}/upload-url` | A short-lived presigned `PUT`, for scripted uploads. Picked up by the next resync. |
+| `POST /api/v1/connectors/{id}/resync` | Reconcile against storage; reports `{added, updated, deleted, unchanged, skipped}`. |
+| `POST /api/v1/connectors/{id}/search` | Debug-only semantic search over one connector's chunks, with scores. |
+| `POST /api/v1/documents/{id}/reindex` | The retry button. Resets the row to `pending` and enqueues it. |
+| `DELETE /api/v1/documents/{id}` | The document, its object and its vectors. |
 | `GET /healthz` | Liveness. Checks nothing else — a dependency outage must not get the pod restarted into the same outage. |
 | `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. |
 | `GET /metrics` | Prometheus. Request counts and latency labelled by route template. |

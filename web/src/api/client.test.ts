@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiClient, ApiError } from '@/api/client'
 import { makeUser } from '@/test/factories'
@@ -286,6 +286,108 @@ describe('ApiClient', () => {
 
     it('is empty when the error carries no details', () => {
       expect(new ApiError(500, 'internal_error', 'boom').fieldErrors).toEqual({})
+    })
+  })
+
+  /**
+   * Multipart upload is the one call that does not go through `fetch`, because `fetch`
+   * cannot report upload progress. These assertions are about the two things that
+   * duplication would otherwise get wrong: the token is attached, and an expired one is
+   * refreshed and retried exactly as it is for every other call — a 40 MB upload takes
+   * longer than an access token lives.
+   */
+  describe('upload', () => {
+    class FakeXhr {
+      static calls: { url: string; headers: Record<string, string> }[] = []
+      static statuses: number[] = []
+
+      status = 0
+      responseText = ''
+      withCredentials = false
+      upload = { onprogress: null as ((event: ProgressEvent) => void) | null }
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      onabort: (() => void) | null = null
+      private url = ''
+      private headers: Record<string, string> = {}
+
+      open(_method: string, url: string): void {
+        this.url = url
+      }
+
+      setRequestHeader(name: string, value: string): void {
+        this.headers[name] = value
+      }
+
+      send(): void {
+        FakeXhr.calls.push({ url: this.url, headers: { ...this.headers } })
+        this.status = FakeXhr.statuses.shift() ?? 200
+        this.responseText =
+          this.status === 200
+            ? JSON.stringify({ files: [] })
+            : JSON.stringify({ error: { code: 'object_too_large', message: 'That file is huge.' } })
+        this.upload.onprogress?.({ lengthComputable: true, loaded: 5, total: 10 } as ProgressEvent)
+        this.onload?.()
+      }
+    }
+
+    beforeEach(() => {
+      FakeXhr.calls = []
+      FakeXhr.statuses = []
+      vi.stubGlobal('XMLHttpRequest', FakeXhr)
+    })
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it('sends the access token and reports progress', async () => {
+      const { impl } = stubFetch({})
+      const client = new ApiClient(impl)
+      client.setAccessToken('token-1')
+      const seen: number[] = []
+
+      await client.upload('/api/v1/connectors/c1/upload', new FormData(), {
+        onProgress: ({ loaded }) => seen.push(loaded),
+      })
+
+      expect(FakeXhr.calls[0]?.headers.authorization).toBe('Bearer token-1')
+      expect(seen).toEqual([5])
+    })
+
+    it('refreshes and retries once on a 401', async () => {
+      // A long upload outlives a fifteen-minute access token, and losing 40 MB of it to
+      // an expiry the client could have handled is the worst version of this bug.
+      const { impl } = stubFetch({ '/api/v1/auth/refresh': () => session('token-2') })
+      const client = new ApiClient(impl)
+      client.setAccessToken('token-1')
+      FakeXhr.statuses = [401, 200]
+
+      await client.upload('/api/v1/connectors/c1/upload', new FormData())
+
+      expect(FakeXhr.calls).toHaveLength(2)
+      expect(FakeXhr.calls[1]?.headers.authorization).toBe('Bearer token-2')
+    })
+
+    it('does not loop when the retry is refused too', async () => {
+      const { impl } = stubFetch({ '/api/v1/auth/refresh': () => session('token-2') })
+      const client = new ApiClient(impl)
+      FakeXhr.statuses = [401, 401]
+
+      await expect(
+        client.upload('/api/v1/connectors/c1/upload', new FormData()),
+      ).rejects.toBeInstanceOf(ApiError)
+      expect(FakeXhr.calls).toHaveLength(2)
+    })
+
+    it('surfaces the server’s message rather than a status code', async () => {
+      const { impl } = stubFetch({})
+      const client = new ApiClient(impl)
+      FakeXhr.statuses = [413]
+
+      await expect(
+        client.upload('/api/v1/connectors/c1/upload', new FormData()),
+      ).rejects.toThrow('That file is huge.')
     })
   })
 })

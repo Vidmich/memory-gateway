@@ -33,6 +33,17 @@ async def check_qdrant(clients: Clients) -> None:
     await clients.qdrant.get_collections()
 
 
+async def check_jobs(clients: Clients) -> None:
+    """The job queue, checked separately from Redis even though it *is* Redis.
+
+    They fail for different reasons and mean different things: a Redis outage takes the
+    whole service down, while a queue that cannot be written to leaves the API serving
+    traffic and silently dropping ingestion. Reporting the second as the first would send
+    whoever is on call to look at the wrong thing.
+    """
+    await clients.jobs.ping()
+
+
 async def check_storage(clients: Clients) -> None:
     # boto3 is synchronous; run it off the event loop so a slow bucket cannot block
     # every other request on this worker.
@@ -44,6 +55,7 @@ PROBES: dict[str, Callable[[Clients], Awaitable[None]]] = {
     "redis": check_redis,
     "qdrant": check_qdrant,
     "storage": check_storage,
+    "jobs": check_jobs,
 }
 
 

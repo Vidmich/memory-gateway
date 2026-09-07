@@ -14,6 +14,17 @@ const KNOWN: Record<string, Tone> = {
   pending: 'info',
   invited: 'info',
   processing: 'info',
+  // The middle of SPEC 9.5's pipeline. Blue rather than green: work in progress is not
+  // the same as work finished, and a row that looked done while it was still embedding
+  // would be the one thing this table must not say.
+  extracting: 'info',
+  chunking: 'info',
+  embedding: 'info',
+  syncing: 'info',
+  // Recognised, deliberately not ingested. Amber, because a customer who dropped in a
+  // folder of PDFs needs to notice, and grey is what people scroll past.
+  skipped: 'warn',
+  deleting: 'warn',
   suspended: 'warn',
   disabled: 'warn',
   degraded: 'warn',

@@ -9,7 +9,9 @@
 import type {
   ApiKeyResponse,
   BucketResponse,
+  ConnectorResponse,
   CurrentUser,
+  DocumentResponse,
   GatewayResponse,
   GatewayTestResponse,
   InvitationResponse,
@@ -20,6 +22,7 @@ import type {
   ProbeResponse,
   RequestDetailResponse,
   RequestLogResponse,
+  SearchHit,
   SeriesResponse,
   SummaryResponse,
 } from '@/api/types'
@@ -346,6 +349,66 @@ export function makeRequestDetail(
     retrieved_chunk_ids: [],
     retrieved_fact_ids: [],
     failover_attempts: [],
+    ...overrides,
+  }
+}
+
+export function makeConnector(overrides: Partial<ConnectorResponse> = {}): ConnectorResponse {
+  return {
+    id: 'c1',
+    name: 'Product docs',
+    description: 'Everything customer-facing.',
+    type: 'managed_file_drop',
+    status: 'ready',
+    error: null,
+    storage_prefix: 'orgs/o1/connectors/c1/',
+    chunking: {
+      version: 1,
+      strategy: 'recursive',
+      chunk_size: 1000,
+      overlap: 150,
+      respect_boundaries: true,
+    },
+    document_count: 2,
+    counts: { indexed: 2 },
+    total_bytes: 4096,
+    reindex_required: false,
+    last_synced_at: NOW,
+    created_at: NOW,
+    ...overrides,
+  }
+}
+
+export function makeDocument(overrides: Partial<DocumentResponse> = {}): DocumentResponse {
+  return {
+    id: 'd1',
+    connector_id: 'c1',
+    source_name: 'handbook.md',
+    source_uri: 'orgs/o1/connectors/c1/handbook.md',
+    mime_type: 'text/markdown',
+    size_bytes: 2048,
+    status: 'indexed',
+    error: null,
+    chunk_count: 3,
+    embedding_model: 'text-embedding-3-small',
+    content_hash: 'a'.repeat(64),
+    indexed_at: NOW,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  }
+}
+
+export function makeSearchHit(overrides: Partial<SearchHit> = {}): SearchHit {
+  return {
+    id: 'p1',
+    score: 0.82,
+    text: 'Everyone gets twenty-five days of annual leave.',
+    source_name: 'handbook.md',
+    source_uri: 'orgs/o1/connectors/c1/handbook.md',
+    page_or_section: 'Handbook > Leave',
+    chunk_index: 0,
+    document_id: 'd1',
     ...overrides,
   }
 }

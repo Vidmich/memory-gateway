@@ -7,6 +7,8 @@ import { ProtectedRoute } from '@/auth/ProtectedRoute'
 import { ToastProvider } from '@/components/Toast'
 import { AppShell } from '@/layout/AppShell'
 import { AcceptInvitationPage } from '@/pages/AcceptInvitationPage'
+import { ConnectorDetailPage } from '@/pages/ConnectorDetailPage'
+import { ConnectorsPage } from '@/pages/ConnectorsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { GatewayFormPage } from '@/pages/GatewayFormPage'
 import { GatewaysPage } from '@/pages/GatewaysPage'
@@ -60,6 +62,8 @@ export function AppRoutes() {
             immutable slug. */}
         <Route path="/gateways/new" element={<GatewayFormPage />} />
         <Route path="/gateways/:gatewayId" element={<GatewayFormPage />} />
+        <Route path="/connectors" element={<ConnectorsPage />} />
+        <Route path="/connectors/:connectorId" element={<ConnectorDetailPage />} />
         <Route path="/monitoring" element={<MonitoringPage />} />
         <Route path="/settings" element={<OrganizationSettingsPage />} />
         <Route path="/settings/members" element={<MembersPage />} />

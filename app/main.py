@@ -36,6 +36,7 @@ from app.services.auth_provider import LocalPasswordProvider
 from app.services.auth_store import PostgresAuthStore
 from app.services.catalog import CatalogService
 from app.services.catalog_store import PostgresCatalogStore
+from app.services.connectors import ConnectorService
 from app.services.directory import DirectoryService
 from app.services.directory_store import PostgresDirectoryStore
 from app.services.gateway_probe import ProxyGatewayProbe
@@ -55,6 +56,7 @@ from app.services.proxy import ProxyService
 from app.services.rate_limit import FixedWindowLimiter
 from app.services.request_log import LogFlusher, LogQueue, RequestLogService
 from app.services.routing import Router
+from app.workers.runtime import build_ingestion, build_queue
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +109,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.monitoring_service = MonitoringService(
             PostgresMetricsRepository(clients.session_factory),
             cache=RedisSummaryCache(clients.redis),
+        )
+
+        # Ingestion. Built here, in the API process, because two of its operations are
+        # synchronous — deleting a document and reconciling a connector — and the worker
+        # builds the same objects from the same function, so the two cannot drift.
+        ingestion = build_ingestion(clients, settings, queue=build_queue(clients.jobs))
+        app.state.ingestion = ingestion
+        app.state.connector_service = ConnectorService(
+            ingestion.store,
+            objects=ingestion.objects,
+            vectors=ingestion.vectors,
+            embedder=ingestion.embedder,
+            pipeline=ingestion.pipeline,
+            queue=ingestion.queue,
+            settings=ingestion.settings,
         )
 
         hasher = build_hasher(settings)

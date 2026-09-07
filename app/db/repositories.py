@@ -22,6 +22,8 @@ from sqlalchemy.orm import selectinload
 from app.core.tenancy import TenantScope
 from app.db.models import (
     ApiKey,
+    Connector,
+    Document,
     Gateway,
     GatewayTarget,
     Invitation,
@@ -423,3 +425,126 @@ class ApiKeyRepository:
         self._session.add(key)
         await self._session.flush()
         return key
+
+
+class ConnectorRepository(ScopedRepository[Connector]):
+    """Content sources. Ordinary in every way, which is the point of the base class."""
+
+    model = Connector
+
+    def page(self, *, after: uuid.UUID | None, limit: int) -> Select[tuple[Connector]]:
+        statement = self.select().order_by(Connector.id.desc()).limit(limit + 1)
+        if after is not None:
+            statement = statement.where(Connector.id < after)
+        return statement
+
+    async def name_taken(self, name: str, *, excluding: uuid.UUID | None = None) -> bool:
+        statement = self.select().where(Connector.name == name.strip())
+        if excluding is not None:
+            statement = statement.where(Connector.id != excluding)
+        return (await self._session.execute(statement)).first() is not None
+
+
+#: ``(id, source_uri, etag, status)`` — the four columns resync reconciles on.
+type DocumentIndexRow = tuple[uuid.UUID, str, str | None, str]
+
+
+class DocumentRepository(ScopedRepository[Document]):
+    """Ingested objects.
+
+    Every read here is scoped by ``organization_id`` *and* narrowed by ``connector_id``.
+    The second is not a scoping mechanism — the caller has already resolved the connector
+    through a scoped read — it is what keeps a connector's document table from being a
+    scan of every document in the organization.
+    """
+
+    model = Document
+
+    def page(
+        self,
+        connector_id: uuid.UUID,
+        *,
+        after: uuid.UUID | None,
+        limit: int,
+        status: str | None = None,
+    ) -> Select[tuple[Document]]:
+        statement = (
+            self.select()
+            .where(Document.connector_id == connector_id)
+            .order_by(Document.id.desc())
+            .limit(limit + 1)
+        )
+        if status is not None:
+            statement = statement.where(Document.status == status)
+        if after is not None:
+            statement = statement.where(Document.id < after)
+        return statement
+
+    async def by_source(self, connector_id: uuid.UUID, source_uri: str) -> Document | None:
+        """The reconciliation lookup, matching ``uq_documents_connector_id_source_uri``."""
+        statement = self.select().where(
+            Document.connector_id == connector_id, Document.source_uri == source_uri
+        )
+        return (await self._session.execute(statement)).scalars().first()
+
+    async def index(self, connector_id: uuid.UUID) -> Sequence[DocumentIndexRow]:
+        """``(id, source_uri, etag, status)`` for every document, for resync.
+
+        Four columns rather than whole rows: a connector with fifty thousand documents is
+        reconciled in one pass, and loading fifty thousand ORM objects to compare two
+        strings each is how that turns into a memory incident.
+        """
+        statement = (
+            select(Document.id, Document.source_uri, Document.etag, Document.status)
+            .where(
+                self._scope.clause(Document),
+                Document.connector_id == connector_id,
+            )
+            .execution_options(**scoped())
+        )
+        rows = (await self._session.execute(statement)).all()
+        return [(row[0], row[1], row[2], row[3]) for row in rows]
+
+    async def status_counts(
+        self, connector_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, dict[str, int]]:
+        """Documents per status per connector, for the list screen. One query for the
+        whole page, not one per row."""
+        if not connector_ids:
+            return {}
+        statement = (
+            select(Document.connector_id, Document.status, func.count())
+            .where(self._scope.clause(Document), Document.connector_id.in_(connector_ids))
+            .group_by(Document.connector_id, Document.status)
+            .execution_options(**scoped())
+        )
+        counts: dict[uuid.UUID, dict[str, int]] = {}
+        for connector_id, status, total in (await self._session.execute(statement)).all():
+            counts.setdefault(connector_id, {})[str(status)] = int(total)
+        return counts
+
+    async def total_bytes(self, connector_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, int]:
+        if not connector_ids:
+            return {}
+        statement = (
+            select(Document.connector_id, func.coalesce(func.sum(Document.size_bytes), 0))
+            .where(self._scope.clause(Document), Document.connector_id.in_(connector_ids))
+            .group_by(Document.connector_id)
+            .execution_options(**scoped())
+        )
+        rows = (await self._session.execute(statement)).all()
+        return {row[0]: int(row[1]) for row in rows}
+
+    async def organization_bytes(self) -> int:
+        """Everything this organization is storing, for the quota check.
+
+        Reads ``documents`` rather than the object store: a listing of every object under
+        every prefix is O(objects) network calls on the request path, and the document
+        rows are written from the same bytes.
+        """
+        statement = (
+            select(func.coalesce(func.sum(Document.size_bytes), 0))
+            .where(self._scope.clause(Document))
+            .execution_options(**scoped())
+        )
+        return int((await self._session.execute(statement)).scalar() or 0)

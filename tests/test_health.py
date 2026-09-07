@@ -48,6 +48,7 @@ async def test_readyz_reports_every_dependency(client: AsyncClient) -> None:
         "redis": "ok",
         "qdrant": "ok",
         "storage": "ok",
+        "jobs": "ok",
     }
 
 

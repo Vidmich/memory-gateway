@@ -21,6 +21,18 @@ dependencies = [
     "argon2-cffi>=23.1",
     "pyjwt>=2.10",
     "email-validator>=2.2",
+    # Task 09. `arq` is the job queue, used for durable delivery and deferral only —
+    # retries and dead-lettering are `app/services/jobs.py`. `tiktoken` sizes chunks in
+    # the embedding model's own tokens; it fetches its vocabulary on first use, and
+    # `app/services/tokenizer.py` degrades to an approximate count when it cannot.
+    # `python-multipart` is what FastAPI needs to accept an upload at all.
+    "arq>=0.28.0",
+    "tiktoken>=0.14.0",
+    "python-multipart>=0.0.32",
+    # Declared rather than inherited: it arrives transitively through `tiktoken`, and
+    # encoding detection is load-bearing enough that it should not vanish with a
+    # dependency bump.
+    "charset-normalizer>=3.5.1",
 ]
 
 [dependency-groups]
@@ -113,6 +125,8 @@ filterwarnings = ["error"]
 markers = [
     "db: requires a reachable PostgreSQL instance",
     "live: calls a real provider; skipped without OPENAI_API_KEY",
+    "s3: requires a reachable object store (MinIO)",
+    "qdrant: requires a reachable Qdrant instance",
 ]
 timeout = 30
 # "D:" means "default" — only applied when the variable is not already set,

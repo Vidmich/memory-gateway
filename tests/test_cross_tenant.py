@@ -31,6 +31,8 @@ FOREIGN_MODEL = "{model_id}"
 FOREIGN_GATEWAY = "{gateway_id}"
 FOREIGN_KEY = "{key_id}"
 FOREIGN_LOG = "{log_id}"
+FOREIGN_CONNECTOR = "{connector_id}"
+FOREIGN_DOCUMENT = "{document_id}"
 
 #: A model owned by nobody. It is *visible* to every organization (SPEC §5.3, the
 #: global catalog), which is exactly why it needs rows of its own here: every write
@@ -92,6 +94,27 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
         note="a request log carries the end user's prompt, so this row is the one "
         "with the most to disclose",
     ),
+    ScopedEndpoint("GET", f"/api/v1/connectors/{FOREIGN_CONNECTOR}"),
+    ScopedEndpoint("PATCH", f"/api/v1/connectors/{FOREIGN_CONNECTOR}", {"name": "Owned"}),
+    ScopedEndpoint("DELETE", f"/api/v1/connectors/{FOREIGN_CONNECTOR}"),
+    ScopedEndpoint("GET", f"/api/v1/connectors/{FOREIGN_CONNECTOR}/documents"),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/connectors/{FOREIGN_CONNECTOR}/upload-url",
+        {"filename": "intruder.md"},
+        note="a presigned URL for someone else's prefix would be a write into their "
+        "storage that no later check could undo",
+    ),
+    ScopedEndpoint("POST", f"/api/v1/connectors/{FOREIGN_CONNECTOR}/resync"),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/connectors/{FOREIGN_CONNECTOR}/search",
+        {"query": "salary"},
+        note="the debug search returns chunk *text*, so this is the connector row with "
+        "the most to disclose",
+    ),
+    ScopedEndpoint("DELETE", f"/api/v1/documents/{FOREIGN_DOCUMENT}"),
+    ScopedEndpoint("POST", f"/api/v1/documents/{FOREIGN_DOCUMENT}/reindex"),
 )
 
 #: The global catalog is readable by everyone, so a foreign-id test on ``GET`` would be
@@ -114,6 +137,8 @@ PLACEHOLDERS = (
     FOREIGN_GATEWAY,
     FOREIGN_KEY,
     FOREIGN_LOG,
+    FOREIGN_CONNECTOR,
+    FOREIGN_DOCUMENT,
 )
 
 
@@ -134,6 +159,8 @@ async def foreign_ids(harness: DirectoryHarness) -> dict[str, str]:
         FOREIGN_GATEWAY: str(world.globex_gateway.id),
         FOREIGN_KEY: str(world.globex_key.id),
         FOREIGN_LOG: str(world.globex_log.id),
+        FOREIGN_CONNECTOR: str(world.globex_connector.id),
+        FOREIGN_DOCUMENT: str(world.globex_document.id),
     }
 
 
@@ -201,6 +228,11 @@ async def test_the_net_covers_every_scoped_route(directory: DirectoryHarness) ->
         # invitation it resolves to is what establishes the organization.
         "GET /api/v1/invitations/accept/{token}",
         "POST /api/v1/invitations/accept/{token}",
+        # Multipart. It is covered by `test_an_upload_cannot_reach_another_tenants_prefix`
+        # below rather than by the table, because the table sends JSON bodies and a
+        # multipart route rejects one with a 422 before the scope is ever consulted —
+        # which would make this row pass for entirely the wrong reason.
+        "POST /api/v1/connectors/{connector_id}/upload",
     }
 
     assert with_parameters - covered - exempt == set()
@@ -320,3 +352,105 @@ async def test_a_model_list_never_includes_another_organization(
 
     names = {item["name"] for item in response.json()["items"]}
     assert names == {world.acme_model.name, world.global_model.name}
+
+
+# ---------------------------------------------------------------------------
+# connectors, documents and the vector index (task 09)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_connector_list_never_includes_another_organization(
+    directory: DirectoryHarness,
+) -> None:
+    world = directory.world
+    response = await directory.as_user(world.acme_admin, "GET", "/api/v1/connectors")
+
+    assert response.status_code == 200
+    names = {item["name"] for item in response.json()["items"]}
+    assert names == {world.acme_connector.name}
+    assert world.globex_connector.name not in names
+
+
+async def test_a_document_list_never_includes_another_organization(
+    directory: DirectoryHarness,
+) -> None:
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin, "GET", f"/api/v1/connectors/{world.acme_connector.id}/documents"
+    )
+
+    assert response.status_code == 200
+    names = {item["source_name"] for item in response.json()["items"]}
+    assert names == {world.acme_document.source_name}
+
+
+async def test_an_upload_cannot_reach_another_tenants_prefix(
+    directory: DirectoryHarness,
+) -> None:
+    """The multipart route the table cannot express, asserted directly.
+
+    This is the row with the most to lose: a successful upload here would put a file
+    inside another organization's storage prefix, and no later check could take it back.
+    """
+    world = directory.world
+    response = await directory.client.post(
+        f"/api/v1/connectors/{world.globex_connector.id}/upload",
+        headers=await directory.headers_for(world.acme_admin),
+        files={"files": ("intruder.md", b"# hello", "text/markdown")},
+    )
+
+    assert response.status_code == 404
+
+
+async def test_a_storage_prefix_is_derived_from_the_ids_not_supplied(
+    directory: DirectoryHarness,
+) -> None:
+    """Every isolation guarantee for objects rests on this one string.
+
+    A connector whose prefix a caller could choose is a connector that could be pointed
+    at another tenant's, so the create endpoint has no field for it and the value is
+    derived from the two ids.
+    """
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin,
+        "POST",
+        "/api/v1/connectors",
+        json_body={"name": "Handbook", "storage_prefix": "orgs/somebody-else/connectors/x/"},
+    )
+
+    # `extra="forbid"`: an unknown field is refused rather than ignored, so a caller who
+    # tried is told instead of quietly getting a prefix they did not ask for.
+    assert response.status_code == 422
+
+
+async def test_the_debug_search_only_reads_this_organizations_collection(
+    directory: DirectoryHarness,
+) -> None:
+    """The vector index is one collection per organization (SPEC §9.4), and the collection
+    name carries the tenant id — so a search that reached the wrong one would have to name
+    it. Asserted through the API, because that is where the id comes from."""
+    world = directory.world
+    fixture = world.auth.connectors
+    assert fixture is not None
+
+    await fixture.ingest(("secret.md", b"# Acme\n\nThe acme handbook mentions widgets."))
+
+    response = await directory.as_user(
+        world.acme_admin,
+        "POST",
+        f"/api/v1/connectors/{world.acme_connector.id}/search",
+        json_body={"query": "widgets"},
+    )
+    assert response.status_code == 200
+    assert [hit["source_name"] for hit in response.json()["hits"]] == ["secret.md"]
+
+    # The same query, from the other tenant, against a collection that does not exist.
+    foreign = await directory.as_user(
+        world.globex_admin,
+        "POST",
+        f"/api/v1/connectors/{world.globex_connector.id}/search",
+        json_body={"query": "widgets"},
+    )
+    assert foreign.status_code == 200
+    assert foreign.json()["hits"] == []

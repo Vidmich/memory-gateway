@@ -10,7 +10,7 @@ import base64
 import sys
 from typing import Any, Literal
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["dev", "test", "staging", "prod"]
@@ -107,6 +107,40 @@ class Settings(BaseSettings):
     #: so a single-target gateway is unaffected by its existence.
     routing_deadline_seconds: float = Field(default=120.0, gt=0)
 
+    # -- ingestion ---------------------------------------------------------
+    #: SPEC §9.2's per-file cap. Enforced while the bytes are streaming, so an oversized
+    #: upload is refused rather than stored and then deleted.
+    upload_max_file_bytes: int = Field(default=50 * 1024 * 1024, ge=1024)
+    #: Per-organization storage ceiling. ``None`` is unlimited, which is the default for
+    #: the same reason task 06's rate limits default to unlimited: a quota nobody set
+    #: should not become an outage.
+    storage_quota_bytes: int | None = Field(default=None, ge=1024)
+    #: Wall-clock cap on reading one file, so a pathological input cannot occupy a worker.
+    extraction_timeout_seconds: float = Field(default=120.0, gt=0)
+    upload_url_ttl_seconds: int = Field(default=15 * 60, ge=60, le=24 * 3600)
+
+    # -- embeddings (SPEC §9.4) --------------------------------------------
+    #: ``openai`` for any OpenAI-compatible ``/embeddings`` endpoint; ``hash`` for the
+    #: local lexical embedder, which needs no key and no network. Task 17 moves all of
+    #: this into ``platform_settings`` with a reindex flow.
+    embedding_provider: Literal["openai", "hash"] = "hash"
+    embedding_model: str = "hash-bow"
+    #: Must match the model. A mismatch is caught on the first call rather than silently
+    #: producing an index that cannot be searched.
+    embedding_dimension: int = Field(default=256, ge=8, le=8192)
+    embedding_base_url: str = ""
+    embedding_api_key: str | None = None
+    embedding_batch_size: int = Field(default=96, ge=1, le=2048)
+    embedding_max_concurrency: int = Field(default=4, ge=1, le=64)
+
+    # -- worker ------------------------------------------------------------
+    job_max_attempts: int = Field(default=5, ge=1, le=20)
+    job_backoff_base_seconds: float = Field(default=2.0, gt=0)
+    job_backoff_cap_seconds: float = Field(default=300.0, gt=0)
+    #: Jobs one worker process runs at once. Ingestion is I/O-bound apart from extraction,
+    #: which runs in a thread, so this is about provider concurrency rather than CPU.
+    worker_max_jobs: int = Field(default=8, ge=1, le=128)
+
     # -- probes ------------------------------------------------------------
     readiness_timeout_seconds: float = Field(default=2.0, gt=0)
 
@@ -134,6 +168,19 @@ class Settings(BaseSettings):
         if not value.startswith(("http://", "https://")):
             raise ValueError("must be an http:// or https:// URL")
         return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _real_embeddings_in_production(self) -> Settings:
+        """The local embedder is lexical, not semantic. It is the right default for a
+        development stack with no provider key and completely wrong for a deployment, and
+        the failure mode is silent — retrieval simply gets worse. Refusing to start is the
+        only version of this warning nobody can miss."""
+        if self.environment == "prod" and self.embedding_provider == "hash":
+            raise ValueError(
+                "EMBEDDING_PROVIDER=hash is a local development embedder and must not be "
+                "used in production; configure a real embedding model."
+            )
+        return self
 
     @property
     def ui_base_url(self) -> str:

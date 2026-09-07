@@ -17,7 +17,16 @@ from dataclasses import dataclass, field
 from app.core.config import Settings, get_settings
 from app.core.passwords import Hasher, build_hasher
 from app.core.tenancy import Actor, TenantScope
-from app.db.models import ApiKey, Gateway, Organization, RequestLog, UpstreamModel, User
+from app.db.models import (
+    ApiKey,
+    Connector,
+    Document,
+    Gateway,
+    Organization,
+    RequestLog,
+    UpstreamModel,
+    User,
+)
 from app.services.catalog import CatalogService
 from app.services.directory import DirectoryService
 from app.services.gateways import GatewayService
@@ -30,6 +39,7 @@ from tests.catalog_support import (
     make_model,
     make_target_row,
 )
+from tests.connector_support import make_connector, make_document
 from tests.gateway_support import (
     FakeGatewayProbe,
     RecordingCache,
@@ -75,6 +85,12 @@ class World:
     globex_gateway: Gateway
     acme_key: ApiKey
     globex_key: ApiKey
+    #: One connector and one indexed document each, so the cross-tenant net can aim at
+    #: content that genuinely exists rather than at invented ids.
+    acme_connector: Connector
+    globex_connector: Connector
+    acme_document: Document
+    globex_document: Document
     #: One request each, so the cross-tenant net can aim at a log row that exists.
     acme_log: RequestLog
     globex_log: RequestLog
@@ -166,6 +182,14 @@ def build_world(*, settings: Settings | None = None) -> World:
     globex_key, _ = make_key_row(globex_gateway.id, name="globex production")
     database.add_key(globex_key)
 
+    acme_connector = auth.connectors.connector if auth.connectors else make_connector(acme)
+    acme_document = make_document(acme_connector, name="acme-handbook.md")
+    globex_connector = make_connector(globex, name="Globex docs")
+    database.add_connector(globex_connector)
+    globex_document = make_document(globex_connector, name="globex-handbook.md")
+    for document in (acme_document, globex_document):
+        database.add_document(document)
+
     acme_log = make_log_row(acme, gateway_id=acme_gateway.id, api_key_id=acme_key.id)
     globex_log = make_log_row(globex, gateway_id=globex_gateway.id, api_key_id=globex_key.id)
     for row in (acme_log, globex_log):
@@ -198,6 +222,10 @@ def build_world(*, settings: Settings | None = None) -> World:
         globex_gateway=globex_gateway,
         acme_key=acme_key,
         globex_key=globex_key,
+        acme_connector=acme_connector,
+        globex_connector=globex_connector,
+        acme_document=acme_document,
+        globex_document=globex_document,
         acme_log=acme_log,
         globex_log=globex_log,
         people=people,

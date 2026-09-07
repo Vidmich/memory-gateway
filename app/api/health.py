@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Request, Response
@@ -11,6 +12,9 @@ from app.core.clients import Clients
 from app.core.config import Settings
 from app.core.metrics import Metrics
 from app.services.health import is_ready, run_readiness_checks
+from app.workers.runtime import Ingestion
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["health"], include_in_schema=False)
 
@@ -47,6 +51,17 @@ async def readyz(request: Request, response: Response) -> dict[str, Any]:
 @router.get("/metrics")
 async def metrics(request: Request) -> Response:
     registry: Metrics = request.app.state.metrics
+    # Sampled at scrape time rather than maintained on every enqueue: the depth is a
+    # property of the queue, not of this process, and a gauge each replica updated from
+    # its own enqueues would report a different number on every one of them.
+    ingestion: Ingestion | None = getattr(request.app.state, "ingestion", None)
+    if ingestion is not None:
+        try:
+            registry.jobs.queue_depth.set(await ingestion.queue.depth())
+        except Exception:
+            # A scrape must not fail because Redis is briefly away; the other metrics are
+            # what tell somebody it is.
+            logger.warning("could not read job queue depth", exc_info=True)
     return Response(
         content=generate_latest(registry.registry),
         media_type=CONTENT_TYPE_LATEST,

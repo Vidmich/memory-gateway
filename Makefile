@@ -8,7 +8,7 @@ NPM := npm --prefix web
 
 .PHONY: help install install-web dev web test test-all test-web lint lint-web format \
         typecheck typecheck-web check check-web openapi openapi-check build-web \
-        e2e migrate downgrade revision seed up down logs shell clean
+        e2e migrate downgrade revision seed up down logs worker worker-logs shell clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -22,6 +22,9 @@ install-web: ## Install the frontend's packages from package-lock.json
 
 dev: ## Run the API locally with reload (needs the backing services up)
 	$(UV) run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+worker: ## Run the ingestion worker locally (needs Redis and the rest up)
+	$(UV) run arq app.workers.main.WorkerSettings
 
 web: ## Run the Vite dev server, proxying /api to the API on :8000
 	$(NPM) run dev
@@ -96,6 +99,9 @@ down: ## Stop the stack, keeping volumes
 
 logs: ## Tail the API logs
 	$(COMPOSE) logs -f api
+
+worker-logs: ## Tail the ingestion worker logs
+	$(COMPOSE) logs -f worker
 
 shell: ## Open a shell in the API container
 	$(COMPOSE) exec api /bin/bash

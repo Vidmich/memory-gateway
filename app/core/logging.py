@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
@@ -50,6 +52,22 @@ _RESERVED = frozenset(
 
 def get_request_id() -> str | None:
     return request_id_var.get()
+
+
+@contextmanager
+def bind_request_id(request_id: str | None) -> Iterator[None]:
+    """Attach a correlation id to everything logged inside the block.
+
+    The HTTP middleware does this per request. A worker does it per *job*, so a log line
+    written minutes later on another process still carries the id of the control-plane
+    request that enqueued the work — which is the only thread joining "my upload did
+    nothing" to what actually happened.
+    """
+    token = request_id_var.set(request_id)
+    try:
+        yield
+    finally:
+        request_id_var.reset(token)
 
 
 def _isoformat(epoch_seconds: float) -> str:

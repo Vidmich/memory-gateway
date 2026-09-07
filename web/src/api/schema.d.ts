@@ -113,6 +113,197 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Connectors */
+        get: operations["list_connectors_api_v1_connectors_get"];
+        put?: never;
+        /** Create Connector */
+        post: operations["create_connector_api_v1_connectors_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Connector */
+        get: operations["get_connector_api_v1_connectors__connector_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Connector
+         * @description 202, not 204. The row is marked ``deleting`` immediately; the objects and vectors
+         *     go in a job, and pretending otherwise would make the UI show a connector that is
+         *     still visibly there as already gone.
+         */
+        delete: operations["delete_connector_api_v1_connectors__connector_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Connector
+         * @description Partial. A chunking change comes back with ``reindex_required`` set when there are
+         *     already-indexed documents, because the stored chunks no longer match the settings.
+         */
+        patch: operations["update_connector_api_v1_connectors__connector_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Documents */
+        get: operations["list_documents_api_v1_connectors__connector_id__documents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/resync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resync
+         * @description Reconcile against the source and report what changed.
+         */
+        post: operations["resync_api_v1_connectors__connector_id__resync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Search
+         * @description Debug-only semantic search over one connector's chunks.
+         */
+        post: operations["search_api_v1_connectors__connector_id__search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload
+         * @description Multipart, many files per call, streamed to object storage.
+         *
+         *     Always 200: see the module docstring. A file that was rejected says so in its own
+         *     entry, with the reason.
+         */
+        post: operations["upload_api_v1_connectors__connector_id__upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/upload-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Url
+         * @description A short-lived presigned ``PUT`` so customers can script uploads.
+         *
+         *     The object it creates is picked up by the next **Resync** rather than by an event
+         *     hook — SPEC §9.1 makes the notification a production optimization, and reconciliation
+         *     has to exist regardless.
+         */
+        post: operations["upload_url_api_v1_connectors__connector_id__upload_url_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Document
+         * @description The document, its object and its vectors. Synchronous: it is bounded work, and the
+         *     row is on screen in front of whoever pressed it.
+         */
+        delete: operations["delete_document_api_v1_documents__document_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/reindex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reindex Document
+         * @description The **Retry** button. Resets the row to ``pending`` and enqueues it again.
+         */
+        post: operations["reindex_document_api_v1_documents__document_id__reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/gateways": {
         parameters: {
             query?: never;
@@ -732,6 +923,11 @@ export interface components {
              */
             target_id: string;
         };
+        /** Body_upload_api_v1_connectors__connector_id__upload_post */
+        Body_upload_api_v1_connectors__connector_id__upload_post: {
+            /** Files */
+            files: string[];
+        };
         /** BucketResponse */
         BucketResponse: {
             /** Series */
@@ -745,6 +941,103 @@ export interface components {
             start: string;
         };
         /**
+         * ChunkingConfig
+         * @description SPEC §9.3, with the defaults it names.
+         */
+        ChunkingConfig: {
+            /**
+             * Chunk Size
+             * @default 1000
+             */
+            chunk_size: number;
+            /**
+             * Overlap
+             * @default 150
+             */
+            overlap: number;
+            /**
+             * Respect Boundaries
+             * @default true
+             */
+            respect_boundaries: boolean;
+            /**
+             * Strategy
+             * @default recursive
+             * @enum {string}
+             */
+            strategy: "recursive" | "fixed" | "by_heading";
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /** ConnectorCreateRequest */
+        ConnectorCreateRequest: {
+            /** Chunking */
+            chunking?: {
+                [key: string]: unknown;
+            };
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Type
+             * @default managed_file_drop
+             */
+            type: string;
+        };
+        /** ConnectorResponse */
+        ConnectorResponse: {
+            chunking: components["schemas"]["ChunkingConfig"];
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Description */
+            description: string | null;
+            /** Document Count */
+            document_count: number;
+            /** Error */
+            error: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Last Synced At */
+            last_synced_at: string | null;
+            /** Name */
+            name: string;
+            /** Reindex Required */
+            reindex_required: boolean;
+            /** Status */
+            status: string;
+            /** Storage Prefix */
+            storage_prefix: string | null;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Type */
+            type: string;
+        };
+        /** ConnectorUpdateRequest */
+        ConnectorUpdateRequest: {
+            /** Chunking */
+            chunking?: {
+                [key: string]: unknown;
+            } | null;
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name?: string | null;
+        };
+        /**
          * CredentialStatus
          * @description SPEC §5.4: what a response may say about a stored secret, and no more.
          *
@@ -756,6 +1049,49 @@ export interface components {
             configured: boolean;
             /** Hint */
             hint?: string | null;
+        };
+        /** DocumentResponse */
+        DocumentResponse: {
+            /** Chunk Count */
+            chunk_count: number;
+            /**
+             * Connector Id
+             * Format: uuid
+             */
+            connector_id: string;
+            /** Content Hash */
+            content_hash: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Embedding Model */
+            embedding_model: string | null;
+            /** Error */
+            error: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Indexed At */
+            indexed_at: string | null;
+            /** Mime Type */
+            mime_type: string | null;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Source Name */
+            source_name: string;
+            /** Source Uri */
+            source_uri: string;
+            /** Status */
+            status: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** ErrorGroupResponse */
         ErrorGroupResponse: {
@@ -1517,6 +1853,20 @@ export interface components {
             /** Status */
             status?: string | null;
         };
+        /** Page[ConnectorResponse] */
+        Page_ConnectorResponse_: {
+            /** Items */
+            items: components["schemas"]["ConnectorResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** Page[DocumentResponse] */
+        Page_DocumentResponse_: {
+            /** Items */
+            items: components["schemas"]["DocumentResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** Page[GatewayResponse] */
         Page_GatewayResponse_: {
             /** Items */
@@ -1682,6 +2032,62 @@ export interface components {
             /** Upstream Model Id */
             upstream_model_id: string | null;
         };
+        /**
+         * ResyncResponse
+         * @description SPEC §9.1's reconciliation summary.
+         */
+        ResyncResponse: {
+            /** Added */
+            added: number;
+            /** Deleted */
+            deleted: number;
+            /** Skipped */
+            skipped: number;
+            /** Unchanged */
+            unchanged: number;
+            /** Updated */
+            updated: number;
+        };
+        /**
+         * SearchHit
+         * @description One chunk, with everything needed to judge whether retrieval is working: the score,
+         *     the text, and where in which file it came from.
+         */
+        SearchHit: {
+            /** Chunk Index */
+            chunk_index: number | null;
+            /** Document Id */
+            document_id: string | null;
+            /** Id */
+            id: string;
+            /** Page Or Section */
+            page_or_section: string | null;
+            /** Score */
+            score: number;
+            /** Source Name */
+            source_name: string | null;
+            /** Source Uri */
+            source_uri: string | null;
+            /** Text */
+            text: string;
+        };
+        /** SearchRequest */
+        SearchRequest: {
+            /**
+             * Limit
+             * @default 10
+             */
+            limit: number;
+            /** Query */
+            query: string;
+        };
+        /** SearchResponse */
+        SearchResponse: {
+            /** Embedding Model */
+            embedding_model: string;
+            /** Hits */
+            hits: components["schemas"]["SearchHit"][];
+        };
         /** SeriesResponse */
         SeriesResponse: {
             /** Buckets */
@@ -1791,6 +2197,43 @@ export interface components {
             }[] | null;
             /** Response Body */
             response_body?: string | null;
+        };
+        /**
+         * UploadOutcomeResponse
+         * @description One file's fate. A batch returns one of these per file, always 200.
+         *
+         *     A rejected file is not an HTTP error, because the other thirty-nine in the same
+         *     request were fine. The status code answers "did the request work"; this answers "what
+         *     happened to each file", and conflating them makes a partial success unreportable.
+         */
+        UploadOutcomeResponse: {
+            /** Document Id */
+            document_id: string | null;
+            /** Error */
+            error: string | null;
+            /** Filename */
+            filename: string;
+            /** Status */
+            status: string;
+        };
+        /** UploadResponse */
+        UploadResponse: {
+            /** Files */
+            files: components["schemas"]["UploadOutcomeResponse"][];
+        };
+        /** UploadUrlRequest */
+        UploadUrlRequest: {
+            /** Filename */
+            filename: string;
+        };
+        /** UploadUrlResponse */
+        UploadUrlResponse: {
+            /** Expires In */
+            expires_in: number;
+            /** Key */
+            key: string;
+            /** Url */
+            url: string;
         };
         /** UserSummary */
         UserSummary: {
@@ -1953,6 +2396,399 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionResponse"];
+                };
+            };
+        };
+    };
+    list_connectors_api_v1_connectors_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ConnectorResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_connector_api_v1_connectors_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_connector_api_v1_connectors__connector_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_connector_api_v1_connectors__connector_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_connector_api_v1_connectors__connector_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_documents_api_v1_connectors__connector_id__documents_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                cursor?: string | null;
+                limit?: number | null;
+            };
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_DocumentResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resync_api_v1_connectors__connector_id__resync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResyncResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_api_v1_connectors__connector_id__search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_api_v1_connectors__connector_id__upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_api_v1_connectors__connector_id__upload_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_url_api_v1_connectors__connector_id__upload_url_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UploadUrlRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadUrlResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_document_api_v1_documents__document_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reindex_document_api_v1_documents__document_id__reindex_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

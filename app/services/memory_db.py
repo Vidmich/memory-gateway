@@ -20,6 +20,8 @@ from typing import Any
 
 from app.db.models import (
     ApiKey,
+    Connector,
+    Document,
     Gateway,
     GatewayTarget,
     Invitation,
@@ -42,6 +44,8 @@ class MemoryDatabase:
     gateways: dict[uuid.UUID, Gateway] = field(default_factory=dict)
     gateway_targets: dict[uuid.UUID, GatewayTarget] = field(default_factory=dict)
     api_keys: dict[uuid.UUID, ApiKey] = field(default_factory=dict)
+    connectors: dict[uuid.UUID, Connector] = field(default_factory=dict)
+    documents: dict[uuid.UUID, Document] = field(default_factory=dict)
     #: Keyed by request-log id, which is also the transcript's key — the two tables
     #: are one row split in half, and keeping them in step here is what makes the
     #: memory store a fair test of the read side.
@@ -75,6 +79,14 @@ class MemoryDatabase:
     def add_key(self, key: ApiKey) -> ApiKey:
         self.api_keys[key.id] = _stamped(key)
         return key
+
+    def add_connector(self, connector: Connector) -> Connector:
+        self.connectors[connector.id] = _stamped(connector)
+        return connector
+
+    def add_document(self, document: Document) -> Document:
+        self.documents[document.id] = _stamped(document)
+        return document
 
 
 def _stamped[T: Any](row: T) -> T:

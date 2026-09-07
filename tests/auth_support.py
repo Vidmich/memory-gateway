@@ -31,6 +31,7 @@ from app.services.memory_db import MemoryDatabase
 from app.services.model_probe import Probe
 from app.services.monitoring import MonitoringService
 from tests.catalog_support import FakeProbe
+from tests.connector_support import ConnectorFixture, build_connectors
 from tests.gateway_support import FakeGatewayProbe, RecordingCache
 from tests.monitoring_support import LogFixture, build_logs, build_monitoring
 
@@ -78,6 +79,9 @@ class AuthFixture:
     directory: DirectoryService
     catalog: CatalogService
     gateways: GatewayService
+    #: Task 09's whole ingestion stack over the same rows, so a cross-tenant test can aim
+    #: at a connector and a document that genuinely exist.
+    connectors: ConnectorFixture | None
     #: The read half of task 07, over the same rows the write half fills in.
     monitoring: MonitoringService
     logs: LogFixture
@@ -174,11 +178,17 @@ def build_auth(
         cache=cache,
         settings=settings,
     )
+    connectors = (
+        build_connectors(organization, database=database, settings=settings)
+        if organization is not None
+        else None
+    )
     return AuthFixture(
         service=service,
         directory=directory,
         catalog=catalog,
         gateways=gateways,
+        connectors=connectors,
         monitoring=monitoring,
         logs=logs,
         secret_box=secret_box,

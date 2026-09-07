@@ -99,7 +99,7 @@ async def test_a_nested_object_is_merged_rather_than_replaced() -> None:
     """Today's blobs are flat, so this exercises the mechanism rather than a field. Task
     10's retrieval settings are the obvious place for a nested object, and a shallow merge
     that discarded its siblings would be found the hard way."""
-    from app.schemas.gateway_config import _deep_merge
+    from app.schemas.config import _deep_merge
 
     merged = _deep_merge({"outer": {"kept": 1, "changed": 2}}, {"outer": {"changed": 3}})
 

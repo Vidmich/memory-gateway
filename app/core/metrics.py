@@ -63,6 +63,23 @@ class RoutingMetrics:
 
 
 @dataclass(frozen=True)
+class JobMetrics:
+    """The worker, as four numbers (task 09).
+
+    ``completed`` is labelled by outcome rather than split into two counters, so the
+    failure *rate* is one PromQL expression instead of a join. ``queue_depth`` is the one
+    that pages somebody: a rising depth means ingestion is falling behind, and it says so
+    before any individual document looks wrong.
+    """
+
+    started: Counter
+    completed: Counter
+    duration: Histogram
+    dead_lettered: Counter
+    queue_depth: Gauge
+
+
+@dataclass(frozen=True)
 class Metrics:
     registry: CollectorRegistry
     http_requests: Counter
@@ -71,6 +88,7 @@ class Metrics:
     build_info: Gauge
     logs: LogMetrics
     routing: RoutingMetrics
+    jobs: JobMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -112,6 +130,46 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         build_info=build_info,
         logs=build_log_metrics(registry),
         routing=build_routing_metrics(registry),
+        jobs=build_job_metrics(registry),
+    )
+
+
+def build_job_metrics(registry: CollectorRegistry) -> JobMetrics:
+    """Split out for the same reason as the others: a worker can be built in a test
+    without a whole application around it."""
+    return JobMetrics(
+        started=Counter(
+            "jobs_started_total",
+            "Background jobs started, by job name.",
+            labelnames=("job",),
+            registry=registry,
+        ),
+        completed=Counter(
+            "jobs_completed_total",
+            "Background jobs that finished, by name and outcome.",
+            labelnames=("job", "outcome"),
+            registry=registry,
+        ),
+        duration=Histogram(
+            "job_duration_seconds",
+            "How long a job took, by name.",
+            labelnames=("job",),
+            # Ingestion is seconds to minutes, not milliseconds; the HTTP buckets would
+            # put every job in the overflow bin.
+            buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+            registry=registry,
+        ),
+        dead_lettered=Counter(
+            "jobs_dead_lettered_total",
+            "Jobs that exhausted their retries, by name.",
+            labelnames=("job",),
+            registry=registry,
+        ),
+        queue_depth=Gauge(
+            "jobs_queue_depth",
+            "Jobs waiting to be picked up.",
+            registry=registry,
+        ),
     )
 
 

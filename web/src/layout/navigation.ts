@@ -29,6 +29,9 @@ export const NAVIGATION: readonly NavEntry[] = [
   // Same reasoning: the list is readable by every role, and `resources:write` gates the
   // controls inside the screen. Keys have their own gate, inside the editor.
   { to: '/gateways', label: 'Gateways' },
+  // Where content comes from. Readable by every role for the same reason as the two
+  // above: the write controls inside the screen are what `resources:write` gates.
+  { to: '/connectors', label: 'Connectors' },
   // Readable by every role: the person triaging a support ticket should not need the
   // permission to reconfigure production in order to answer it.
   { to: '/monitoring', label: 'Monitoring' },

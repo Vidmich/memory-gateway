@@ -58,6 +58,18 @@ class TenantScope:
         otherwise a pure module; the two attributes it reads are on every ``User``."""
         return cls(role=user.role, organization_id=user.organization_id)
 
+    @classmethod
+    def of_organization(cls, organization_id: uuid.UUID) -> TenantScope:
+        """The scope a background job runs under.
+
+        A worker has no session and no user — it has an organization id that was written
+        into the job payload by a request that *was* scoped. Naming the role ``service``
+        rather than borrowing ``org_admin`` keeps two things true: the log says which kind
+        of actor touched a row, and :meth:`assume` still refuses, because a job must never
+        be able to widen itself into another tenant.
+        """
+        return cls(role="service", organization_id=organization_id)
+
     @property
     def is_platform(self) -> bool:
         """Unrestricted: sees across organizations."""

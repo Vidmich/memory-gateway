@@ -18,6 +18,7 @@ from app.core.keys import bearer_token
 from app.core.tenancy import Actor, TenantScope
 from app.services.auth import AuthenticationRequired, AuthService, Identity, RequestContext
 from app.services.catalog import CatalogService
+from app.services.connectors import ConnectorService
 from app.services.directory import DirectoryService
 from app.services.gateways import GatewayService
 from app.services.monitoring import MonitoringService
@@ -49,6 +50,11 @@ def get_directory_service(request: Request) -> DirectoryService:
 
 def get_catalog_service(request: Request) -> CatalogService:
     service: CatalogService = request.app.state.catalog_service
+    return service
+
+
+def get_connector_service(request: Request) -> ConnectorService:
+    service: ConnectorService = request.app.state.connector_service
     return service
 
 

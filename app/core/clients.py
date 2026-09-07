@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.db.session import create_engine, create_session_factory
+from app.services.job_queue import create_job_pool
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,10 @@ class Clients:
     storage: S3Client
     bucket: str
     http: httpx.AsyncClient
+    #: The job queue's own Redis client. Separate from ``redis`` because arq needs raw
+    #: bytes and its own serializers, where everything else in the process wants decoded
+    #: strings — one client configured for both would be configured for neither.
+    jobs: Any
 
     @classmethod
     def create(cls, settings: Settings) -> Clients:
@@ -59,6 +64,7 @@ class Clients:
             storage=create_storage_client(settings),
             bucket=settings.s3_bucket,
             http=create_http_client(settings),
+            jobs=create_job_pool(settings.redis_url),
         )
 
     async def aclose(self) -> None:
@@ -70,6 +76,7 @@ class Clients:
         for name, close in (
             ("upstream-http", self.http.aclose()),
             ("redis", self.redis.aclose()),
+            ("jobs", self.jobs.aclose()),
             ("qdrant", self.qdrant.close()),
             ("postgres", self.engine.dispose()),
         ):

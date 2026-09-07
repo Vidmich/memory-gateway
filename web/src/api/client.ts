@@ -86,6 +86,14 @@ export type RequestOptions = {
   allowRefresh?: boolean
 }
 
+export type UploadProgress = { loaded: number; total: number }
+
+export type UploadOptions = {
+  onProgress?: (progress: UploadProgress) => void
+  /** Internal: false on the retry, so a second 401 cannot loop. */
+  allowRefresh?: boolean
+}
+
 /** Endpoints that must never trigger a refresh — refreshing them is what they are. */
 const NO_REFRESH = ['/api/v1/auth/login', '/api/v1/auth/refresh', '/api/v1/auth/logout']
 
@@ -181,6 +189,56 @@ export class ApiClient {
   }
 
   /**
+   * Multipart upload with progress, over `XMLHttpRequest`.
+   *
+   * The one method that does not go through :meth:`request`, and the reason is narrow:
+   * `fetch` cannot report *upload* progress, and a drag-and-drop zone that shows nothing
+   * while a 40 MB file goes up is a zone people press twice. It lives here rather than in
+   * a hook so the access token stays private and the 401 refresh-and-retry is the same
+   * one every other call gets — a second copy of that logic is a second place for a
+   * session to end badly.
+   */
+  async upload<T>(path: string, body: FormData, options: UploadOptions = {}): Promise<T> {
+    const { onProgress, allowRefresh = true } = options
+    const outcome = await this.send(path, body, onProgress)
+
+    if (outcome.status === 401 && allowRefresh) {
+      const token = await this.refresh()
+      if (token === null) {
+        this.onSessionEnded()
+        throw uploadError(outcome)
+      }
+      return this.upload<T>(path, body, { ...options, allowRefresh: false })
+    }
+    if (outcome.status < 200 || outcome.status >= 300) throw uploadError(outcome)
+    return JSON.parse(outcome.text || '{}') as T
+  }
+
+  private send(
+    path: string,
+    body: FormData,
+    onProgress?: (progress: UploadProgress) => void,
+  ): Promise<{ status: number; text: string }> {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest()
+      request.open('POST', path)
+      request.withCredentials = true
+      request.setRequestHeader('accept', 'application/json')
+      if (this.accessToken) request.setRequestHeader('authorization', `Bearer ${this.accessToken}`)
+      if (this.assumedOrganizationId) {
+        request.setRequestHeader('x-assume-organization', this.assumedOrganizationId)
+      }
+      request.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.({ loaded: event.loaded, total: event.total })
+      }
+      request.onload = () => resolve({ status: request.status, text: request.responseText })
+      request.onerror = () => reject(new ApiError(0, 'network_error', 'The upload could not reach the server.'))
+      request.onabort = () => reject(new ApiError(0, 'aborted', 'The upload was cancelled.'))
+      request.send(body)
+    })
+  }
+
+  /**
    * Exchange the refresh cookie for a new access token.
    *
    * Every concurrent caller gets the same promise, so the server sees one rotation.
@@ -207,6 +265,19 @@ export class ApiClient {
     }
   }
 }
+
+function uploadError(outcome: { status: number; text: string }): ApiError {
+  try {
+    const body = JSON.parse(outcome.text) as ErrorBody
+    if (body.error?.message) {
+      return new ApiError(outcome.status, body.error.code ?? 'error', body.error.message)
+    }
+  } catch {
+    // Not JSON: a proxy error page, or a connection cut mid-response.
+  }
+  return new ApiError(outcome.status, 'error', `The upload failed (${outcome.status}).`)
+}
+
 
 async function toError(response: Response): Promise<ApiError> {
   let body: ErrorBody = {}

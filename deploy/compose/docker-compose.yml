@@ -8,6 +8,47 @@
 
 name: memory-gateway
 
+# Shared by `api` and `worker`. They are the same image running the same code against the
+# same backing services; the only differences are the command and who runs migrations, so
+# anything else diverging between them would be a bug rather than a configuration.
+x-app-env: &app-env
+  ENVIRONMENT: dev
+  LOG_LEVEL: INFO
+  DATABASE_URL: postgresql+asyncpg://gateway:gateway@postgres:5432/gateway
+  REDIS_URL: redis://redis:6379/0
+  QDRANT_URL: http://qdrant:6333
+  S3_ENDPOINT: http://minio:9000
+  S3_BUCKET: memory-gateway
+  S3_ACCESS_KEY_ID: minioadmin
+  S3_SECRET_ACCESS_KEY: minioadmin
+  ENCRYPTION_MASTER_KEY: ZGV2LW9ubHktbWFzdGVyLWtleS0zMi1ieXRlcyEhISE=
+  JWT_SIGNING_KEY: dev-only-jwt-signing-key-change-me-please
+  PUBLIC_BASE_URL: http://localhost:8000
+  # Argon2id at production cost adds ~100 ms to every login; the dev stack does not
+  # need that, and the defaults in .env.example are what a deployment gets.
+  PASSWORD_MEMORY_COST_KIB: "16384"
+  PASSWORD_TIME_COST: "2"
+  # The local lexical embedder: no key, no network, no semantics. Enough to demonstrate
+  # the whole ingest-and-search path on a laptop, and refused outright when
+  # ENVIRONMENT=prod so it cannot be deployed by accident.
+  EMBEDDING_PROVIDER: hash
+  EMBEDDING_MODEL: hash-bow
+  EMBEDDING_DIMENSION: "256"
+  # The image ships the built SPA at /srv/web, but in development the `web` service
+  # below serves it from source with hot reload. Blanking this keeps one answer to
+  # "which UI am I looking at".
+  WEB_DIST_DIR: ""
+  # The Vite dev server is a different origin, so the login request is cross-origin
+  # and needs credentials allowed. Not used in production, where the API serves the UI.
+  CORS_ORIGINS: '["http://localhost:5173"]'
+  # Invitation links have to open the UI, which in development is Vite rather than
+  # the API. Without this an invitee lands on a JSON 404.
+  APP_BASE_URL: http://localhost:5173
+  # Read only by `python -m app.cli seed`; the service itself never looks at them.
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+  OPENAI_MODEL: ${OPENAI_MODEL:-}
+
 x-postgres-env: &postgres-env
   POSTGRES_USER: gateway
   POSTGRES_PASSWORD: gateway
@@ -21,37 +62,8 @@ services:
     command:
       ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     environment:
-      ENVIRONMENT: dev
-      LOG_LEVEL: INFO
+      <<: *app-env
       RUN_MIGRATIONS: "1"
-      DATABASE_URL: postgresql+asyncpg://gateway:gateway@postgres:5432/gateway
-      REDIS_URL: redis://redis:6379/0
-      QDRANT_URL: http://qdrant:6333
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: memory-gateway
-      S3_ACCESS_KEY_ID: minioadmin
-      S3_SECRET_ACCESS_KEY: minioadmin
-      ENCRYPTION_MASTER_KEY: ZGV2LW9ubHktbWFzdGVyLWtleS0zMi1ieXRlcyEhISE=
-      JWT_SIGNING_KEY: dev-only-jwt-signing-key-change-me-please
-      PUBLIC_BASE_URL: http://localhost:8000
-      # Argon2id at production cost adds ~100 ms to every login; the dev stack does not
-      # need that, and the defaults in .env.example are what a deployment gets.
-      PASSWORD_MEMORY_COST_KIB: "16384"
-      PASSWORD_TIME_COST: "2"
-      # The image ships the built SPA at /srv/web, but in development the `web` service
-      # below serves it from source with hot reload. Blanking this keeps one answer to
-      # "which UI am I looking at".
-      WEB_DIST_DIR: ""
-      # The Vite dev server is a different origin, so the login request is cross-origin
-      # and needs credentials allowed. Not used in production, where the API serves the UI.
-      CORS_ORIGINS: '["http://localhost:5173"]'
-      # Invitation links have to open the UI, which in development is Vite rather than
-      # the API. Without this an invitee lands on a JSON 404.
-      APP_BASE_URL: http://localhost:5173
-      # Read only by `python -m app.cli seed`; the service itself never looks at them.
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-}
     ports:
       - "8000:8000"
     volumes:
@@ -75,6 +87,32 @@ services:
       timeout: 3s
       retries: 5
       start_period: 20s
+    restart: unless-stopped
+
+  # The ingestion worker. Same image, same environment, different command — SPEC 15
+  # makes the application one stateless artefact, and a second image would be a second
+  # thing to keep at the same version.
+  worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["arq", "app.workers.main.WorkerSettings"]
+    environment:
+      <<: *app-env
+      # Migrations are the API's job; two containers racing `alembic upgrade` is a good
+      # way to corrupt a schema.
+      RUN_MIGRATIONS: "0"
+    volumes:
+      - ../../app:/srv/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   postgres:

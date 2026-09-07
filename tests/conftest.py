@@ -35,6 +35,7 @@ from app.adapters.base import UpstreamTarget
 from app.api.control.deps import (
     get_auth_service,
     get_catalog_service,
+    get_connector_service,
     get_directory_service,
     get_gateway_service,
     get_monitoring_service,
@@ -385,6 +386,9 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     application.dependency_overrides[get_auth_service] = lambda: auth.service
     application.dependency_overrides[get_directory_service] = lambda: auth.directory
     application.dependency_overrides[get_catalog_service] = lambda: auth.catalog
+    connectors = auth.connectors
+    if connectors is not None:
+        application.dependency_overrides[get_connector_service] = lambda: connectors.service
     application.dependency_overrides[get_gateway_service] = lambda: auth.gateways
     application.dependency_overrides[get_monitoring_service] = lambda: auth.monitoring
     if settings is not None:
@@ -404,6 +408,8 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
         application.state.auth_service = fixture.service
         application.state.directory_service = fixture.directory
         application.state.catalog_service = fixture.catalog
+        if fixture.connectors is not None:
+            application.state.connector_service = fixture.connectors.service
         application.state.gateway_service = fixture.gateways
         application.state.monitoring_service = fixture.monitoring
         transport = ASGITransport(app=application)
@@ -464,6 +470,8 @@ async def directory() -> AsyncIterator[DirectoryHarness]:
         application.state.auth_service = world.auth.service
         application.state.directory_service = world.directory
         application.state.catalog_service = world.catalog
+        if world.auth.connectors is not None:
+            application.state.connector_service = world.auth.connectors.service
         application.state.gateway_service = world.gateways
         application.state.monitoring_service = world.auth.monitoring
         transport = ASGITransport(app=application)

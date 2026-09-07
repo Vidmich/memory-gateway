@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.core.passwords import MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH
 from app.db.models import Organization, User
+from app.services.permissions import capability_names
 
 
 class LoginRequest(BaseModel):
@@ -37,10 +38,16 @@ class OrganizationSummary(BaseModel):
     id: uuid.UUID
     name: str
     slug: str
+    status: str
 
     @classmethod
     def of(cls, organization: Organization) -> OrganizationSummary:
-        return cls(id=organization.id, name=organization.name, slug=organization.slug)
+        return cls(
+            id=organization.id,
+            name=organization.name,
+            slug=organization.slug,
+            status=organization.status,
+        )
 
 
 class UserSummary(BaseModel):
@@ -52,6 +59,10 @@ class UserSummary(BaseModel):
     last_login_at: datetime | None = None
     #: ``None`` for a superadmin, who belongs to the platform rather than a tenant.
     organization: OrganizationSummary | None = None
+    #: The resolved permission set for ``role``, so the UI hides and disables controls
+    #: from one source of truth instead of re-deriving the matrix in TypeScript. It is
+    #: not a security boundary — the API rejects the same calls regardless.
+    capabilities: list[str] = Field(default_factory=list)
 
     @classmethod
     def of(cls, user: User, organization: Organization | None) -> UserSummary:
@@ -63,6 +74,7 @@ class UserSummary(BaseModel):
             status=user.status,
             last_login_at=user.last_login_at,
             organization=OrganizationSummary.of(organization) if organization else None,
+            capabilities=capability_names(user.role),
         )
 
 

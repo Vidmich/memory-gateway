@@ -23,6 +23,7 @@ from app.adapters.base import UpstreamTarget
 from app.api.proxy.errors import GatewayNotFound, GatewayUnavailable
 from app.core.crypto import DecryptionError, SecretBox
 from app.db.models import Gateway, GatewayTarget
+from app.db.scoping import unscoped
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,12 @@ class GatewayResolver:
                 select(Gateway)
                 .where(Gateway.slug == slug)
                 .options(selectinload(Gateway.targets).joinedload(GatewayTarget.upstream_model))
+                .execution_options(
+                    # The data plane has no control-plane session: the API key that
+                    # authenticates the call is itself scoped to this gateway, and the
+                    # gateway is what determines the organization (SPEC §5.1).
+                    **unscoped("data-plane routing resolves the tenant from the slug")
+                )
             )
             gateway = (await session.execute(statement)).scalar_one_or_none()
 

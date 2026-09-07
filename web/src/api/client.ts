@@ -68,6 +68,15 @@ const NO_REFRESH = ['/api/v1/auth/login', '/api/v1/auth/refresh', '/api/v1/auth/
 export class ApiClient {
   private accessToken: string | null = null
   private inFlightRefresh: Promise<string | null> | null = null
+  /**
+   * The organization a superadmin is viewing, for support ("open as").
+   *
+   * Sent as a header rather than folded into every URL, so no request path carries an
+   * organization id that a server endpoint might trust. The server ignores it for
+   * everyone else, so setting it here can only ever narrow what a platform account sees
+   * — it is a view preference, not a privilege.
+   */
+  private assumedOrganizationId: string | null = null
 
   /** Counts completed refresh calls. The concurrency test asserts on it. */
   refreshCount = 0
@@ -90,12 +99,23 @@ export class ApiClient {
     return this.accessToken !== null
   }
 
+  setAssumedOrganization(organizationId: string | null): void {
+    this.assumedOrganizationId = organizationId
+  }
+
+  getAssumedOrganization(): string | null {
+    return this.assumedOrganizationId
+  }
+
   async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
     const { body, signal, allowRefresh = true } = options
 
     const headers: Record<string, string> = { accept: 'application/json' }
     if (body !== undefined) headers['content-type'] = 'application/json'
     if (this.accessToken) headers.authorization = `Bearer ${this.accessToken}`
+    if (this.assumedOrganizationId) {
+      headers['x-assume-organization'] = this.assumedOrganizationId
+    }
 
     const response = await this.fetchImpl(path, {
       method,
@@ -126,6 +146,14 @@ export class ApiClient {
 
   post<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
     return this.request<T>('POST', path, { ...options, ...(body === undefined ? {} : { body }) })
+  }
+
+  patch<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>('PATCH', path, { ...options, ...(body === undefined ? {} : { body }) })
+  }
+
+  delete<T>(path: string, options?: RequestOptions): Promise<T> {
+    return this.request<T>('DELETE', path, options)
   }
 
   /**

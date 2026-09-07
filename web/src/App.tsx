@@ -6,9 +6,13 @@ import { AuthProvider } from '@/auth/AuthContext'
 import { ProtectedRoute } from '@/auth/ProtectedRoute'
 import { ToastProvider } from '@/components/Toast'
 import { AppShell } from '@/layout/AppShell'
+import { AcceptInvitationPage } from '@/pages/AcceptInvitationPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { LoginPage } from '@/pages/LoginPage'
+import { MembersPage } from '@/pages/MembersPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
+import { OrganizationSettingsPage } from '@/pages/OrganizationSettingsPage'
+import { OrganizationsPage } from '@/pages/OrganizationsPage'
 
 export function makeQueryClient(): QueryClient {
   return new QueryClient({
@@ -31,6 +35,8 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* Public: whoever follows an invitation link has no account yet. */}
+      <Route path="/invitations/accept/:token" element={<AcceptInvitationPage />} />
       <Route
         element={
           <ProtectedRoute>
@@ -39,6 +45,10 @@ export function AppRoutes() {
         }
       >
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/settings" element={<OrganizationSettingsPage />} />
+        <Route path="/settings/members" element={<MembersPage />} />
+        {/* Rendering is gated by capability; the API is what actually refuses. */}
+        <Route path="/platform/organizations" element={<OrganizationsPage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />
     </Routes>

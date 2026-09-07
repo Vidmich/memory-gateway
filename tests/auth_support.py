@@ -18,7 +18,10 @@ from app.db.models import Organization, User, UserSession
 from app.services.auth import AuthService, RequestContext
 from app.services.auth_provider import LocalPasswordProvider, PasswordCredentials
 from app.services.auth_store import AuthStore, MemoryAuthStore
+from app.services.directory import DirectoryService
+from app.services.directory_store import MemoryDirectoryStore
 from app.services.login_throttle import LoginThrottle, MemoryThrottleStore
+from app.services.memory_db import MemoryDatabase
 
 PASSWORD = "correct-horse-battery-staple"
 EMAIL = "ada@example.com"
@@ -52,10 +55,17 @@ def make_user(
 
 @dataclass
 class AuthFixture:
-    """A service wired to in-memory everything, plus the user it was built around."""
+    """A service wired to in-memory everything, plus the user it was built around.
+
+    ``directory`` shares the same :class:`MemoryDatabase`, because the flows that matter
+    cross both — accepting an invitation creates a member through the directory and then
+    opens a session through auth.
+    """
 
     service: AuthService
+    directory: DirectoryService
     store: MemoryAuthStore
+    database: MemoryDatabase
     throttle_store: MemoryThrottleStore
     hasher: Hasher
     settings: Settings
@@ -90,10 +100,12 @@ def build_auth(
     user: User | None = None,
     organization: Organization | None = None,
     with_organization: bool = True,
+    database: MemoryDatabase | None = None,
 ) -> AuthFixture:
     settings = settings or get_settings()
     hasher = hasher or build_hasher(settings)
-    memory_store = MemoryAuthStore()
+    database = database or MemoryDatabase()
+    memory_store = MemoryAuthStore(database)
 
     if organization is None and with_organization:
         organization = make_organization()
@@ -111,9 +123,16 @@ def build_auth(
         throttle=LoginThrottle(throttle_store, settings),
         settings=settings,
     )
+    directory = DirectoryService(
+        MemoryDirectoryStore(database),
+        hasher=hasher,
+        settings=settings,
+    )
     return AuthFixture(
         service=service,
+        directory=directory,
         store=memory_store,
+        database=database,
         throttle_store=throttle_store,
         hasher=hasher,
         settings=settings,

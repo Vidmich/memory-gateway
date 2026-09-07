@@ -32,13 +32,18 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.adapters.base import UpstreamTarget
-from app.api.control.deps import get_auth_service, get_settings_from_app
+from app.api.control.deps import (
+    get_auth_service,
+    get_directory_service,
+    get_settings_from_app,
+)
 from app.api.proxy.deps import get_authenticator, get_resolver
 from app.core.clients import Clients
 from app.core.config import Settings, get_settings
 from app.main import create_app
 from app.services.gateways import ResolvedGateway
 from tests.auth_support import PASSWORD, AuthFixture, build_auth
+from tests.directory_support import World, build_world
 from tests.support import (
     FakeAuthenticator,
     FakeResolver,
@@ -360,6 +365,7 @@ class AuthHarness:
 def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastAPI:
     application = create_app()
     application.dependency_overrides[get_auth_service] = lambda: auth.service
+    application.dependency_overrides[get_directory_service] = lambda: auth.directory
     if settings is not None:
         application.dependency_overrides[get_settings_from_app] = lambda: settings
     return application
@@ -371,6 +377,68 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
     application = build_auth_app(fixture)
 
     async with application.router.lifespan_context(application):
+        # Invitation acceptance opens a session through `app.state`, not through a
+        # dependency, because it is not the endpoint's own service. Overriding the
+        # dependency alone would leave that call talking to PostgreSQL.
+        application.state.auth_service = fixture.service
+        application.state.directory_service = fixture.directory
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield AuthHarness(app=application, client=http_client, auth=fixture)
+
+
+@dataclass
+class DirectoryHarness:
+    """The real app over two organizations, signed in as whoever the test asks for.
+
+    Tokens are minted by actually logging in, not forged, so a role check that only holds
+    because of how a test built its token cannot pass here.
+    """
+
+    app: FastAPI
+    client: AsyncClient
+    world: World
+
+    async def token_for(self, user: Any) -> str:
+        response = await self.client.post(
+            "/api/v1/auth/login",
+            json={"email": user.email, "password": PASSWORD, "remember": False},
+        )
+        assert response.status_code == 200, response.text
+        token: str = response.json()["access_token"]
+        return token
+
+    async def headers_for(self, user: Any, *, assuming: Any = None) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {await self.token_for(user)}"}
+        if assuming is not None:
+            headers["X-Assume-Organization"] = str(assuming)
+        return headers
+
+    async def as_user(
+        self,
+        user: Any,
+        method: str,
+        path: str,
+        *,
+        json_body: Any = None,
+        assuming: Any = None,
+    ) -> Response:
+        return await self.client.request(
+            method,
+            path,
+            headers=await self.headers_for(user, assuming=assuming),
+            **({} if json_body is None else {"json": json_body}),
+        )
+
+
+@pytest.fixture
+async def directory() -> AsyncIterator[DirectoryHarness]:
+    world = build_world()
+    application = build_auth_app(world.auth)
+
+    async with application.router.lifespan_context(application):
+        application.state.auth_service = world.auth.service
+        application.state.directory_service = world.directory
+        transport = ASGITransport(app=application)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+            yield DirectoryHarness(app=application, client=http_client, world=world)

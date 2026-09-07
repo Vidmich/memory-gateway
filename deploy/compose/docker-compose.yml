@@ -45,6 +45,9 @@ services:
       # The Vite dev server is a different origin, so the login request is cross-origin
       # and needs credentials allowed. Not used in production, where the API serves the UI.
       CORS_ORIGINS: '["http://localhost:5173"]'
+      # Invitation links have to open the UI, which in development is Vite rather than
+      # the API. Without this an invitee lands on a JSON 404.
+      APP_BASE_URL: http://localhost:5173
       # Read only by `python -m app.cli seed`; the service itself never looks at them.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}

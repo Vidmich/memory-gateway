@@ -88,6 +88,23 @@ def test_trailing_slash_is_normalized() -> None:
     )
 
 
+def test_the_ui_base_url_falls_back_to_the_public_one() -> None:
+    """Correct in production, where the API serves the SPA from the same origin."""
+    settings = _build(public_base_url="http://gateway.example.com")
+
+    assert settings.ui_base_url == "http://gateway.example.com"
+
+
+def test_the_ui_base_url_can_be_split_from_the_api() -> None:
+    """In development the Vite server is on another port, so an invitation link built
+    from PUBLIC_BASE_URL would send the invitee to a JSON 404."""
+    settings = _build(
+        public_base_url="http://localhost:8000", app_base_url="http://localhost:5173/"
+    )
+
+    assert settings.ui_base_url == "http://localhost:5173"
+
+
 def test_error_message_names_the_variable_in_env_form() -> None:
     with pytest.raises(ValidationError) as caught:
         _build(database_url=None)

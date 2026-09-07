@@ -8,17 +8,10 @@ import { ApiClient } from '@/api/client'
 import { AppRoutes, makeQueryClient } from '@/App'
 import { AuthProvider } from '@/auth/AuthContext'
 import { ToastProvider } from '@/components/Toast'
+import { makeUser } from '@/test/factories'
 import { jsonResponse as json, bodyOf, pathOf } from '@/test/http'
 
-const USER = {
-  id: 'u1',
-  email: 'ada@example.com',
-  name: 'Ada Lovelace',
-  role: 'org_admin',
-  status: 'active',
-  last_login_at: null,
-  organization: { id: 'o1', name: 'Acme', slug: 'acme' },
-}
+const USER = makeUser()
 
 const sessionBody = {
   access_token: 'token-1',

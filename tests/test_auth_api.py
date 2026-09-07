@@ -427,6 +427,9 @@ PUBLIC_PATHS = {
     "/api/v1/auth/login",
     "/api/v1/auth/refresh",
     "/api/v1/auth/logout",
+    # Someone following an invitation link has no account yet, so there is nothing to
+    # authenticate. The token in the path is the credential (task 04).
+    "/api/v1/invitations/accept/{token}",
 }
 
 

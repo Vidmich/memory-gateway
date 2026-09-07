@@ -12,6 +12,12 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import Settings
+from app.db.scoping import install_scope_guard
+
+# At import, not at startup: the guard has to be in place before *any* session in the
+# process executes a statement, including ones opened by a CLI command, a worker, or a
+# test fixture. Anything that can make a session imports this module first.
+install_scope_guard()
 
 
 def create_engine(settings: Settings) -> AsyncEngine:

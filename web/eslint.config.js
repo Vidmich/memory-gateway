@@ -24,7 +24,13 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      // `varsIgnorePattern` covers the destructuring-to-omit idiom — pulling a key
+      // out of an object precisely so the rest does not have it — which is the only
+      // way to build a value missing an optional field under `exactOptionalPropertyTypes`.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', ignoreRestSiblings: true },
+      ],
     },
   },
   {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { ApiClient, ApiError } from '@/api/client'
+import { makeUser } from '@/test/factories'
 import { jsonResponse as json, pathOf } from '@/test/http'
 
 /** A fetch stand-in that answers from a script and records what it was asked. */
@@ -32,18 +33,57 @@ const session = (token: string) =>
     token_type: 'bearer',
     expires_at: new Date(Date.now() + 900_000).toISOString(),
     expires_in: 900,
-    user: {
-      id: 'u1',
-      email: 'ada@example.com',
-      name: 'Ada',
-      role: 'org_admin',
-      status: 'active',
-      last_login_at: null,
-      organization: { id: 'o1', name: 'Acme', slug: 'acme' },
-    },
+    user: makeUser({ name: 'Ada' }),
   })
 
 describe('ApiClient', () => {
+  it('sends no assume-organization header until one is chosen', async () => {
+    const impl = recordingFetch()
+    const client = new ApiClient(impl)
+
+    await client.get('/api/v1/things')
+
+    const headers = impl.mock.calls[0]?.[1]?.headers as Record<string, string>
+    expect(headers['x-assume-organization']).toBeUndefined()
+  })
+
+  it('sends it on every request once a superadmin opens an organization', async () => {
+    // A header rather than a URL parameter, so no endpoint signature ever takes an
+    // organization id it might trust. The server ignores it for everyone else.
+    const impl = recordingFetch()
+    const client = new ApiClient(impl)
+    client.setAssumedOrganization('org-42')
+
+    await client.get('/api/v1/things')
+    await client.post('/api/v1/things', { a: 1 })
+
+    for (const call of impl.mock.calls) {
+      expect((call[1]?.headers as Record<string, string>)['x-assume-organization']).toBe('org-42')
+    }
+  })
+
+  it('stops sending it when the organization is left', async () => {
+    const impl = recordingFetch()
+    const client = new ApiClient(impl)
+    client.setAssumedOrganization('org-42')
+    client.setAssumedOrganization(null)
+
+    await client.get('/api/v1/things')
+
+    const headers = impl.mock.calls[0]?.[1]?.headers as Record<string, string>
+    expect(headers['x-assume-organization']).toBeUndefined()
+  })
+
+  it('offers PATCH and DELETE, which the directory screens need', async () => {
+    const impl = recordingFetch()
+    const client = new ApiClient(impl)
+
+    await client.patch('/api/v1/members/m1', { role: 'org_viewer' })
+    await client.delete('/api/v1/members/m1')
+
+    expect(impl.mock.calls.map((call) => call[1]?.method)).toEqual(['PATCH', 'DELETE'])
+  })
+
   it('sends no Authorization header before signing in', async () => {
     const impl = recordingFetch()
     const client = new ApiClient(impl)

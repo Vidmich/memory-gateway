@@ -34,6 +34,8 @@ from app.services.api_keys import KeyAuthenticator
 from app.services.auth import AuthService
 from app.services.auth_provider import LocalPasswordProvider
 from app.services.auth_store import PostgresAuthStore
+from app.services.directory import DirectoryService
+from app.services.directory_store import PostgresDirectoryStore
 from app.services.gateways import GatewayResolver
 from app.services.login_throttle import LoginThrottle, RedisThrottleStore
 from app.services.proxy import ProxyService
@@ -70,6 +72,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Redis, not memory: the counters have to be shared, or N replicas mean N
             # times the allowed attempts.
             throttle=LoginThrottle(RedisThrottleStore(clients.redis), settings),
+            settings=settings,
+        )
+        app.state.directory_service = DirectoryService(
+            PostgresDirectoryStore(clients.session_factory),
+            hasher=hasher,
             settings=settings,
         )
 

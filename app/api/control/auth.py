@@ -68,8 +68,8 @@ async def login(
         context=context,
         remember=body.remember,
     )
-    _set_refresh_cookie(response, issued, settings)
-    return _session_response(issued)
+    set_refresh_cookie(response, issued, settings)
+    return session_response(issued)
 
 
 @public_router.post("/refresh", response_model=SessionResponse)
@@ -99,8 +99,8 @@ async def refresh(
         exc.headers.update(_expired_session_headers(settings))
         raise
 
-    _set_refresh_cookie(response, issued, settings)
-    return _session_response(issued)
+    set_refresh_cookie(response, issued, settings)
+    return session_response(issued)
 
 
 @public_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -149,7 +149,9 @@ async def change_password(
     )
 
 
-def _session_response(issued: IssuedSession) -> SessionResponse:
+def session_response(issued: IssuedSession) -> SessionResponse:
+    """Shared with invitation acceptance, which also opens a session (see
+    ``app/api/control/directory.py``)."""
     return SessionResponse(
         access_token=issued.access_token,
         expires_at=issued.access_expires_at,
@@ -158,7 +160,9 @@ def _session_response(issued: IssuedSession) -> SessionResponse:
     )
 
 
-def _set_refresh_cookie(response: Response, issued: IssuedSession, settings: Settings) -> None:
+def set_refresh_cookie(response: Response, issued: IssuedSession, settings: Settings) -> None:
+    """Public because invitation acceptance signs the new member in too, and a second
+    copy of these flags is a second thing to get wrong."""
     response.set_cookie(
         REFRESH_COOKIE,
         issued.refresh_token,

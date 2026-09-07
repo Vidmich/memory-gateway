@@ -6,22 +6,41 @@ seam tests override. Nothing in this module opens a connection.
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import Depends, Request
 
 from app.core.config import Settings
-from app.core.errors import Unauthorized
+from app.core.errors import Forbidden, Unauthorized, Validation
 from app.core.keys import bearer_token
+from app.core.tenancy import TenantScope
 from app.services.auth import AuthenticationRequired, AuthService, Identity, RequestContext
+from app.services.directory import Actor, DirectoryService
+from app.services.permissions import Capability, allows
 
 #: Sent on every 401 from the control plane. The SPA keys its refresh-and-retry off the
 #: status code, but a bare 401 with no scheme is a protocol violation clients notice.
 CHALLENGE = {"www-authenticate": "Bearer"}
 
 
+#: How a superadmin says "show me this organization" (SPEC §5.2, support access).
+#:
+#: A header rather than a query or body parameter, and read here rather than in any
+#: endpoint, so that no route signature ever takes an organization id it might trust. It
+#: is *ignored* for everyone else — not rejected: a 403 would tell an org user the header
+#: exists and is worth attacking, while ignoring it simply gives them their own data.
+ASSUME_ORGANIZATION_HEADER = "x-assume-organization"
+
+
 def get_auth_service(request: Request) -> AuthService:
     service: AuthService = request.app.state.auth_service
+    return service
+
+
+def get_directory_service(request: Request) -> DirectoryService:
+    service: DirectoryService = request.app.state.directory_service
     return service
 
 
@@ -61,3 +80,52 @@ async def require_identity(
 
 #: The type every authenticated endpoint annotates its caller with.
 CurrentUser = Annotated[Identity, Depends(require_identity)]
+
+
+def current_actor(request: Request, identity: CurrentUser) -> Actor:
+    """Who is acting, and inside which organization.
+
+    The scope comes from the session. The only thing that can widen it is a superadmin
+    presenting :data:`ASSUME_ORGANIZATION_HEADER`, and that path goes through
+    :meth:`TenantScope.assume`, which logs the access.
+    """
+    scope = TenantScope.of(identity)
+
+    raw = request.headers.get(ASSUME_ORGANIZATION_HEADER)
+    if raw and scope.is_platform:
+        try:
+            organization_id = uuid.UUID(raw)
+        except ValueError as exc:
+            raise Validation("Malformed organization id.", param="x-assume-organization") from exc
+        scope = scope.assume(organization_id, actor_user_id=identity.user.id)
+
+    return Actor(user_id=identity.user.id, scope=scope)
+
+
+CurrentActor = Annotated[Actor, Depends(current_actor)]
+
+
+def require_capability(
+    *capabilities: Capability,
+) -> Callable[[Identity], Awaitable[Identity]]:
+    """Gate a route on the permission matrix rather than on a list of roles.
+
+    Naming a capability keeps the "who may do this" decision in
+    :mod:`app.services.permissions`, where every row is asserted by a test, instead of
+    spreading role names through the routing layer where a new role would have to be
+    added to each one.
+    """
+
+    async def dependency(identity: CurrentUser) -> Identity:
+        missing = [
+            capability for capability in capabilities if not allows(identity.user.role, capability)
+        ]
+        if missing:
+            # 403, not 404: the caller is inside the right organization and the resource
+            # is not hidden from them — they simply may not do this. Hiding it would make
+            # "your role cannot" indistinguishable from "it does not exist", which is the
+            # opposite of what cross-tenant access needs.
+            raise Forbidden("Your role does not allow this.")
+        return identity
+
+    return dependency

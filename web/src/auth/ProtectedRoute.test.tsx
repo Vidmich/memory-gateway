@@ -6,17 +6,10 @@ import { ApiClient } from '@/api/client'
 import { AuthProvider } from '@/auth/AuthContext'
 import { ProtectedRoute } from '@/auth/ProtectedRoute'
 import { loginPathFor, safeNext } from '@/auth/redirect'
+import { makeUser } from '@/test/factories'
 import { jsonResponse as json, pathOf } from '@/test/http'
 
-const USER = {
-  id: 'u1',
-  email: 'ada@example.com',
-  name: 'Ada',
-  role: 'org_admin',
-  status: 'active',
-  last_login_at: null,
-  organization: { id: 'o1', name: 'Acme', slug: 'acme' },
-}
+const USER = makeUser({ name: 'Ada' })
 
 function clientFor(signedIn: boolean): ApiClient {
   const impl = vi.fn((input: RequestInfo | URL) => {

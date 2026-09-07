@@ -1,17 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import { authReducer, initialAuthState, isSettled, type AuthState } from '@/auth/authReducer'
-import type { CurrentUser } from '@/api/client'
+import { makeUser } from '@/test/factories'
 
-const ADA: CurrentUser = {
-  id: 'u1',
-  email: 'ada@example.com',
-  name: 'Ada',
-  role: 'org_admin',
-  status: 'active',
-  last_login_at: null,
-  organization: { id: 'o1', name: 'Acme', slug: 'acme' },
-}
+const ADA = makeUser({ name: 'Ada' })
 
 const authenticated: AuthState = { status: 'authenticated', user: ADA, error: null }
 

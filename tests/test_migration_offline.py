@@ -54,9 +54,11 @@ def test_every_mapped_table_is_created_by_a_migration(table: Table, upgrade_sql:
 def test_every_mapped_column_is_created_by_a_migration(
     table_name: str, column_name: str, upgrade_sql: str
 ) -> None:
+    """Either in the CREATE TABLE, or added by a later revision's ALTER."""
     statement = _create_statement(upgrade_sql, table_name)
+    added = f"ALTER TABLE {table_name} ADD COLUMN {column_name} " in upgrade_sql
 
-    assert f"{column_name} " in statement, f"{table_name}.{column_name} is missing"
+    assert f"{column_name} " in statement or added, f"{table_name}.{column_name} is missing"
 
 
 def test_downgrade_renders_too() -> None:

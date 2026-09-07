@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 #: "wrong password" hands an attacker a free account-enumeration endpoint.
 GENERIC_LOGIN_FAILURE = "Incorrect email or password."
 SESSION_OVER = "Your session has expired. Please sign in again."
+SUSPENDED = "This organization has been suspended. Contact your administrator."
 
 
 class InvalidCredentials(Unauthorized):
@@ -48,6 +49,17 @@ class AuthenticationRequired(Unauthorized):
 
 class SessionExpired(Unauthorized):
     code = "session_expired"
+
+
+class OrganizationSuspended(Unauthorized):
+    """The account is fine; the organization it belongs to is not.
+
+    Distinguished from a bad password because it is not a credential problem and the
+    caller has already proved who they are — telling them the truth here saves a support
+    ticket and discloses nothing they did not already know.
+    """
+
+    code = "organization_suspended"
 
 
 class LoginThrottled(AppError):
@@ -140,6 +152,8 @@ class AuthService:
                 await self._throttle.record_failure(attempt)
                 raise InvalidCredentials(GENERIC_LOGIN_FAILURE)
 
+            await self._require_live_organization(transaction, user)
+
             user.last_login_at = datetime.now(UTC)
             issued = await self._open_session(
                 transaction, user, context=context, persistent=remember
@@ -151,6 +165,32 @@ class AuthService:
             "login succeeded",
             extra={"user_id": str(issued.user.id), "provider": self._provider.name},
         )
+        return issued
+
+    async def open_session_for(
+        self, user_id: uuid.UUID, *, context: RequestContext, remember: bool = False
+    ) -> IssuedSession:
+        """Sign a user in without credentials.
+
+        The one caller is invitation acceptance, which has just created this account from
+        a token that only the invited address could have received — proof of identity that
+        a password re-entry would not add to. It takes a user *id* rather than a ``User``
+        so it cannot be handed an object assembled by a caller that never checked
+        anything.
+        """
+        async with self._store.begin() as transaction:
+            user = await transaction.user_by_id(user_id)
+            if user is None or not user.is_active:
+                raise AuthenticationRequired("Not authenticated.")
+            await self._require_live_organization(transaction, user)
+
+            user.last_login_at = datetime.now(UTC)
+            issued = await self._open_session(
+                transaction, user, context=context, persistent=remember
+            )
+            await transaction.commit()
+
+        logger.info("session opened without credentials", extra={"user_id": str(user_id)})
         return issued
 
     # -- refresh ----------------------------------------------------------
@@ -190,6 +230,10 @@ class AuthService:
                 await transaction.revoke_family(record.family_id, reason="logout", at=now)
                 await transaction.commit()
                 raise SessionExpired(SESSION_OVER)
+
+            # A suspended organization stops refreshing too, or a session opened before
+            # the suspension would survive for as long as the client kept rotating.
+            await self._require_live_organization(transaction, user)
 
             record.replaced_at = now
             issued = await self._open_session(
@@ -247,6 +291,10 @@ class AuthService:
                 raise SessionExpired(SESSION_OVER)
 
             organization = await _organization_of(transaction, user)
+            if organization is not None and not organization.is_active:
+                # Checked on every request, not only at login: suspending an organization
+                # has to take effect for the sessions that are already open.
+                raise OrganizationSuspended(SUSPENDED)
             return Identity(user=user, organization=organization, family_id=claims.session_id)
 
     # -- password ---------------------------------------------------------
@@ -282,6 +330,11 @@ class AuthService:
         logger.info("password changed", extra={"user_id": str(user_id)})
 
     # -- internals --------------------------------------------------------
+
+    async def _require_live_organization(self, transaction: AuthTransaction, user: User) -> None:
+        organization = await _organization_of(transaction, user)
+        if organization is not None and not organization.is_active:
+            raise OrganizationSuspended(SUSPENDED)
 
     async def _open_session(
         self,

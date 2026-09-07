@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     cors_origins: tuple[str, ...] = ()
     #: Directory of built SPA assets to serve, if any. Empty in dev, where Vite serves them.
     web_dist_dir: str = ""
+    #: Where the UI lives, for links that a person clicks (an invitation, later a password
+    #: reset). Falls back to ``public_base_url``, which is correct in production because
+    #: the API serves the SPA; in dev the Vite server is on another port, so compose sets
+    #: this explicitly. Getting it wrong sends invitees to the API instead of the app.
+    app_base_url: str = ""
 
     # -- upstream calls ----------------------------------------------------
     upstream_max_connections: int = Field(default=200, ge=1)
@@ -116,6 +121,10 @@ class Settings(BaseSettings):
         if not value.startswith(("http://", "https://")):
             raise ValueError("must be an http:// or https:// URL")
         return value.rstrip("/")
+
+    @property
+    def ui_base_url(self) -> str:
+        return self.app_base_url.rstrip("/") or self.public_base_url
 
     @property
     def is_production(self) -> bool:

@@ -2,37 +2,47 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useState, type ReactNode } from 'react'
 
 import { useAuth } from '@/auth/AuthContext'
-import { NAVIGATION, visibleNavigation } from '@/layout/navigation'
+import { NAVIGATION, navigationSections, visibleNavigation } from '@/layout/navigation'
 
 /** The frame every signed-in screen renders into. */
 
 export function AppShell({ breadcrumb }: { breadcrumb?: ReactNode }) {
   const { user } = useAuth()
-  const entries = visibleNavigation(NAVIGATION, user?.role)
+  const sections = navigationSections(visibleNavigation(NAVIGATION, user))
 
   return (
     <div className="min-h-screen bg-slate-50">
+      <SupportBanner />
       <div className="flex">
         <aside className="hidden w-60 shrink-0 border-r border-slate-200 bg-white md:block">
           <div className="flex h-14 items-center gap-2 border-b border-slate-200 px-4">
             <span className="text-sm font-semibold text-slate-900">Memory Gateway</span>
           </div>
           <nav aria-label="Main" className="p-2">
-            {entries.map((entry) => (
-              <NavLink
-                key={entry.to}
-                to={entry.to}
-                end={entry.to === '/'}
-                className={({ isActive }) =>
-                  `block rounded-md px-3 py-2 text-sm ${
-                    isActive
-                      ? 'bg-slate-100 font-medium text-slate-900'
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`
-                }
-              >
-                {entry.label}
-              </NavLink>
+            {sections.map((group) => (
+              <div key={group.section ?? 'main'} className="mb-2">
+                {group.section ? (
+                  <div className="px-3 pb-1 pt-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    {group.section}
+                  </div>
+                ) : null}
+                {group.entries.map((entry) => (
+                  <NavLink
+                    key={entry.to}
+                    to={entry.to}
+                    end
+                    className={({ isActive }) =>
+                      `block rounded-md px-3 py-2 text-sm ${
+                        isActive
+                          ? 'bg-slate-100 font-medium text-slate-900'
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`
+                    }
+                  >
+                    {entry.label}
+                  </NavLink>
+                ))}
+              </div>
             ))}
           </nav>
         </aside>
@@ -54,14 +64,44 @@ export function AppShell({ breadcrumb }: { breadcrumb?: ReactNode }) {
   )
 }
 
-function OrganizationName() {
-  const { user } = useAuth()
-  if (!user) return null
+/**
+ * Persistent while a platform admin is viewing a customer's organization.
+ *
+ * SPEC §5.2 audit-logs every such access on the server; this is the other half — the
+ * person doing it should never be able to forget whose data is on screen. It sits above
+ * everything, uses a colour used nowhere else, and cannot be dismissed except by leaving.
+ */
+export function SupportBanner() {
+  const { assumedOrganization, closeAs } = useAuth()
+  if (!assumedOrganization) return null
+
   return (
-    <span className="truncate">
-      {user.organization ? user.organization.name : 'Platform administration'}
-    </span>
+    <div
+      role="status"
+      className="flex items-center justify-between gap-4 bg-amber-100 px-4 py-2 text-sm text-amber-900"
+    >
+      <span>
+        Viewing <strong className="font-semibold">{assumedOrganization.name}</strong> as a platform
+        administrator. This access is recorded.
+      </span>
+      <button
+        type="button"
+        onClick={closeAs}
+        className="shrink-0 rounded-md border border-amber-300 bg-white px-2 py-1 text-xs font-medium text-amber-900 hover:bg-amber-50"
+      >
+        Leave organization
+      </button>
+    </div>
   )
+}
+
+function OrganizationName() {
+  const { user, assumedOrganization } = useAuth()
+  if (!user) return null
+
+  const label =
+    assumedOrganization?.name ?? user.organization?.name ?? 'Platform administration'
+  return <span className="truncate">{label}</span>
 }
 
 export function UserMenu() {

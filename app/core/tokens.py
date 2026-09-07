@@ -120,6 +120,16 @@ def decode_access_token(token: str, settings: Settings | None = None) -> AccessC
 
 
 def mint_refresh_token() -> NewRefreshToken:
+    return mint_opaque_token()
+
+
+def mint_opaque_token() -> NewRefreshToken:
+    """A bearer token with no structure: 256 random bits, stored only as a hash.
+
+    Refresh tokens and invitation links are the same construction for the same reason —
+    both are handed to a client that must present them back verbatim, and neither has
+    anything worth putting inside them.
+    """
     token = secrets.token_urlsafe(REFRESH_TOKEN_BYTES)
     return NewRefreshToken(token=token, token_hash=hash_refresh_token(token))
 

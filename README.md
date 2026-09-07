@@ -8,9 +8,10 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 03 complete** — the OpenAI-compatible proxy works end to end, and
-there is a web UI you can sign into. Configuration screens start in task 05; until then
-gateways are created with `make seed`.
+Current state: **task 04 complete** — the OpenAI-compatible proxy works end to end,
+there is a web UI you can sign into, and it holds multiple isolated customer
+organizations with their own members and roles. Model, gateway and connector screens
+start in task 05; until then gateways are created with `make seed`.
 
 ## Quick start (Docker)
 
@@ -41,6 +42,47 @@ Sessions are a short-lived access token held **in memory** — never `localStora
 any injected script can read — plus a rotating refresh token in an httpOnly cookie.
 Replaying a refresh token that has already been spent revokes the whole session family,
 on the assumption that a token used twice has been copied.
+
+As the superadmin you can create organizations under **Platform → Organizations**, and
+invite people into one from **Settings → Members**. There is no email delivery in v1, so
+an invitation produces a link you copy and send yourself. The link works once, expires
+after seven days, and is shown exactly once — only its hash is stored, so "resend" mints
+a new one and invalidates the old.
+
+## Tenancy
+
+Every organization is isolated, and the isolation is structural rather than a check
+repeated per endpoint.
+
+- The **scope** comes from the session (`app/core/tenancy.py`), never from a path, query
+  or body parameter. The one way to widen it is `TenantScope.assume`, which only a
+  superadmin can call and which writes a record — that is what the "Open as" action and
+  its persistent banner are doing.
+- Every read of a tenant-keyed table goes through a **`ScopedRepository`**
+  (`app/db/repositories.py`), which injects `WHERE organization_id = :scope` and stamps
+  the same value on every write.
+- A **guard** watches ORM execution and refuses any statement that touches a table with
+  an `organization_id` column without either coming from a scoped repository or calling
+  `app.db.scoping.unscoped("why")`. Some queries genuinely must span tenants — resolving
+  a gateway by slug happens before anyone is authenticated — and `grep -r "unscoped("`
+  is the complete list of them.
+- Cross-tenant access answers **404, not 403**. A 403 confirms the id exists, which turns
+  any endpoint that takes one into an oracle. `tests/test_cross_tenant.py` asserts this
+  for every scoped endpoint and fails if a later task adds one it does not cover.
+
+Roles are org-wide (SPEC §5.2) and defined once as data in `app/services/permissions.py`:
+
+| Capability | superadmin | org_admin | org_member | org_viewer |
+|---|---|---|---|---|
+| View org resources | ✓ | ✓ | ✓ | ✓ |
+| Create/edit connectors, gateways, models | ✓ | ✓ | ✓ | — |
+| Reveal/create/revoke API keys | ✓ | ✓ | — | — |
+| Members, roles, invitations, org profile | ✓ | ✓ | — | — |
+| Organizations, global catalog, platform settings | ✓ | — | — | — |
+
+`GET /api/v1/auth/me` returns the resolved set, so the UI hides and disables controls
+from one source of truth. That is presentation only — the API refuses the same call
+whether or not the button was rendered.
 
 ## Try the proxy
 
@@ -135,16 +177,18 @@ and fails if the committed copy has drifted; `make openapi` updates it.
 
 ```
 app/
-  api/        routers — health, proxy/ (data plane), control/ (the UI's API),
-              spa.py (serves the built SPA in production)
+  api/        routers — health, proxy/ (data plane), control/ (the UI's API:
+              auth, directory), spa.py (serves the built SPA in production)
   adapters/   upstream dialects — openai now, anthropic in task 16
   core/       config, logging, errors, ids, metrics, middleware, clients,
               crypto (envelope encryption), keys (API key format), passwords
-              (Argon2id), tokens (JWT + refresh), background
-  db/         engine, session, declarative base, models
+              (Argon2id), tokens (JWT + refresh), tenancy (TenantScope), background
+  db/         engine, session, declarative base, models, scoping (ScopedRepository
+              and the unscoped-query guard), repositories
   schemas/    the OpenAI wire format, control-plane request/response bodies
   services/   gateway resolution, API-key auth, prompt assembly, forwarding, SSE,
-              control-plane auth (auth, auth_provider, auth_store, login_throttle)
+              control-plane auth (auth, auth_provider, auth_store, login_throttle),
+              tenancy (permissions, directory, directory_store, pagination)
   workers/    background jobs (task 09)
   cli.py      operator commands — `python -m app.cli seed | openapi`
 migrations/   alembic
@@ -153,8 +197,9 @@ web/          the React SPA
   src/api/      the fetch client and the generated schema types
   src/auth/     auth context, reducer, protected routes
   src/components/  DataTable, Form, ConfirmDialog, EmptyState, StatusBadge, CopyButton
-  src/layout/   the app shell — sidebar, user menu, breadcrumb slot
-  src/pages/    login, dashboard
+  src/layout/   the app shell — sidebar, user menu, support banner
+  src/pages/    login, dashboard, organizations, members, org settings,
+                invitation acceptance
   e2e/          Playwright
 ```
 
@@ -173,8 +218,16 @@ first request. See [.env.example](.env.example) for the full list.
 | `POST /api/v1/auth/login` | Email and password. Returns an access token; sets the refresh cookie. |
 | `POST /api/v1/auth/refresh` | Rotates the refresh token. Replaying a spent one revokes the session family. |
 | `POST /api/v1/auth/logout` | Revokes the session and clears the cookie. Idempotent. |
-| `GET /api/v1/auth/me` | The current user, role, and organization. |
+| `GET /api/v1/auth/me` | The current user, role, organization, and capability set. |
 | `POST /api/v1/auth/password` | Change your own password; signs every other session out. |
+| `GET`/`POST /api/v1/organizations` | List (scope-aware) and create (superadmin). |
+| `GET`/`PATCH /api/v1/organizations/{id}` | Read and edit. `status` is superadmin-only. |
+| `GET /api/v1/organizations/{id}/members` | Members of one organization. |
+| `PATCH`/`DELETE /api/v1/members/{id}` | Change a role or status; remove a member. |
+| `POST /api/v1/organizations/{id}/invitations` | Invite someone. Returns the link, once. |
+| `GET`/`DELETE /api/v1/invitations[/{id}]` | List pending invitations; revoke one. |
+| `POST /api/v1/invitations/{id}/resend` | Mint a new link; the previous one stops working. |
+| `GET`/`POST /api/v1/invitations/accept/{token}` | Public. Validate a link, then create the account. |
 | `GET /healthz` | Liveness. Checks nothing else — a dependency outage must not get the pod restarted into the same outage. |
 | `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. |
 | `GET /metrics` | Prometheus. Request counts and latency labelled by route template. |
@@ -196,3 +249,7 @@ Login is throttled per IP and per email, in Redis so the limit holds across repl
 Redis is unreachable the throttle **fails open** and logs a warning: failing closed would
 lock every operator out of the UI during a Redis outage, and `/readyz` already pulls such
 an instance out of the load balancer.
+
+Suspending an organization takes effect immediately, not at the next token expiry: its
+members are refused at login, at refresh, and on every control-plane request. A
+superadmin is unaffected, because somebody has to be able to un-suspend it.

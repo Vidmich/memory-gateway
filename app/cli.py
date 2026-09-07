@@ -28,6 +28,7 @@ from app.core.ids import uuid7
 from app.core.passwords import Hasher, build_hasher
 from app.db.base import Base
 from app.db.models import ApiKey, Gateway, GatewayTarget, Organization, UpstreamModel, User
+from app.db.scoping import unscoped
 from app.db.session import create_engine, create_session_factory
 
 DEMO_SLUG = "demo"
@@ -346,7 +347,16 @@ async def _by[T: Base](
     model: type[T],
     *where: ColumnExpressionArgument[bool],
 ) -> T | None:
-    return (await session.execute(select(model).where(*where))).scalars().first()
+    statement = (
+        select(model)
+        .where(*where)
+        .execution_options(
+            # Seeding runs as the operator, before any organization exists to be scoped to.
+            # It is a shell command on the deployment host, not a request.
+            **unscoped("operator CLI: seeding creates the organizations it would scope to")
+        )
+    )
+    return (await session.execute(statement)).scalars().first()
 
 
 def _report(settings: Settings, options: SeedOptions, result: SeedResult) -> None:

@@ -1,23 +1,57 @@
 /**
  * The sidebar's contents.
  *
- * This is the extension point for tasks 05 through 15: add an entry and a route, and
- * touch nothing else in the shell. `roles` decides only what is *drawn* — enforcement is
- * task 04's job, and a hidden link is not a permission check.
+ * The extension point for tasks 05 through 15: add an entry and a route, and touch
+ * nothing else in the shell.
+ *
+ * `capabilities` decides only what is *drawn*. A hidden link is not a permission check —
+ * the API refuses the request either way — so this list is about not showing people
+ * doors they cannot open, not about locking them.
  */
+
+import type { CurrentUser } from '@/api/types'
+import { canAll, type Capability } from '@/auth/capabilities'
 
 export type NavEntry = {
   to: string
   label: string
-  /** Omit for "everyone". */
-  roles?: readonly string[]
+  /** Omit for "everyone signed in". All listed capabilities are required. */
+  capabilities?: readonly Capability[]
+  /** Grouping heading shown above the entry, when it starts a new group. */
+  section?: string
 }
 
-export const NAVIGATION: readonly NavEntry[] = [{ to: '/', label: 'Dashboard' }]
+export const NAVIGATION: readonly NavEntry[] = [
+  { to: '/', label: 'Dashboard' },
+  { to: '/settings', label: 'Organization', section: 'Settings' },
+  { to: '/settings/members', label: 'Members' },
+  {
+    to: '/platform/organizations',
+    label: 'Organizations',
+    section: 'Platform',
+    capabilities: ['platform:administer'],
+  },
+]
 
 export function visibleNavigation(
   entries: readonly NavEntry[],
-  role: string | undefined,
+  user: CurrentUser | null | undefined,
 ): readonly NavEntry[] {
-  return entries.filter((entry) => !entry.roles || (role ? entry.roles.includes(role) : false))
+  return entries.filter((entry) => canAll(user, entry.capabilities ?? []))
+}
+
+/**
+ * Entries grouped under their section heading, with a heading dropped when everything
+ * beneath it was filtered out — an empty "Platform" label is worse than no label.
+ */
+export function navigationSections(
+  entries: readonly NavEntry[],
+): readonly { section: string | null; entries: NavEntry[] }[] {
+  const groups: { section: string | null; entries: NavEntry[] }[] = []
+  for (const entry of entries) {
+    const last = groups.at(-1)
+    if (!last || entry.section) groups.push({ section: entry.section ?? null, entries: [entry] })
+    else last.entries.push(entry)
+  }
+  return groups.filter((group) => group.entries.length > 0)
 }

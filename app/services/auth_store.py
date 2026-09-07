@@ -33,6 +33,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Organization, User, UserSession
+from app.db.scoping import unscoped
+from app.services.memory_db import MemoryDatabase
 
 
 class AuthTransaction(Protocol):
@@ -83,11 +85,23 @@ class PostgresAuthTransaction:
     async def user_by_email(self, email: str) -> User | None:
         # No ``lower()``: the column is CITEXT, so the comparison is already
         # case-insensitive *and* can still use the unique index.
-        statement = select(User).where(User.email == email.strip())
+        statement = (
+            select(User)
+            .where(User.email == email.strip())
+            .execution_options(
+                # Login is what *establishes* the tenant. Email is globally unique, so this
+                # returns at most one row and discloses nothing the caller did not supply.
+                **unscoped("login resolves a tenant; it cannot already be inside one")
+            )
+        )
         return (await self._session.execute(statement)).scalars().first()
 
     async def user_by_id(self, user_id: uuid.UUID) -> User | None:
-        return await self._session.get(User, user_id)
+        return await self._session.get(
+            User,
+            user_id,
+            execution_options=unscoped("an access token names its user; that row is the scope"),
+        )
 
     async def organization(self, organization_id: uuid.UUID) -> Organization | None:
         return await self._session.get(Organization, organization_id)
@@ -166,7 +180,7 @@ class MemoryAuthTransaction:
     otherwise would be more misleading than saying so here.
     """
 
-    def __init__(self, state: _MemoryState) -> None:
+    def __init__(self, state: MemoryDatabase) -> None:
         self._state = state
 
     async def user_by_email(self, email: str) -> User | None:
@@ -224,26 +238,25 @@ class MemoryAuthTransaction:
         return None
 
 
-class _MemoryState:
-    def __init__(self) -> None:
-        self.users: dict[uuid.UUID, User] = {}
-        self.organizations: dict[uuid.UUID, Organization] = {}
-        self.sessions: dict[uuid.UUID, UserSession] = {}
-
-
 class MemoryAuthStore:
-    """For tests, and for the contract test that keeps it honest."""
+    """For tests, and for the contract test that keeps it honest.
 
-    def __init__(self) -> None:
-        self._state = _MemoryState()
+    Takes the shared :class:`MemoryDatabase` so a test can hand the same rows to the
+    directory store; defaults to its own when nothing else needs them.
+    """
+
+    def __init__(self, database: MemoryDatabase | None = None) -> None:
+        self._state = database or MemoryDatabase()
+
+    @property
+    def database(self) -> MemoryDatabase:
+        return self._state
 
     def add_user(self, user: User) -> User:
-        self._state.users[user.id] = user
-        return user
+        return self._state.add_user(user)
 
     def add_organization(self, organization: Organization) -> Organization:
-        self._state.organizations[organization.id] = organization
-        return organization
+        return self._state.add_organization(organization)
 
     @property
     def sessions(self) -> dict[uuid.UUID, UserSession]:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from app.db.models.api_key import ApiKey
 from app.db.models.gateway import Gateway, GatewayTarget
+from app.db.models.invitation import Invitation
 from app.db.models.organization import Organization
 from app.db.models.session import UserSession
 from app.db.models.upstream_model import UpstreamModel
@@ -19,6 +20,7 @@ __all__ = [
     "ApiKey",
     "Gateway",
     "GatewayTarget",
+    "Invitation",
     "Organization",
     "UpstreamModel",
     "User",

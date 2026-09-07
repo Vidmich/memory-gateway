@@ -28,10 +28,11 @@ from app.services.gateway_store import MemoryGatewayStore
 from app.services.gateways import GatewayService
 from app.services.login_throttle import LoginThrottle, MemoryThrottleStore
 from app.services.memory_db import MemoryDatabase
+from app.services.memory_preview import MemoryPreview
 from app.services.model_probe import Probe
 from app.services.monitoring import MonitoringService
 from tests.catalog_support import FakeProbe
-from tests.connector_support import ConnectorFixture, build_connectors
+from tests.connector_support import TOKENIZER, ConnectorFixture, build_connectors
 from tests.gateway_support import FakeGatewayProbe, RecordingCache
 from tests.monitoring_support import LogFixture, build_logs, build_monitoring
 
@@ -82,6 +83,10 @@ class AuthFixture:
     #: Task 09's whole ingestion stack over the same rows, so a cross-tenant test can aim
     #: at a connector and a document that genuinely exist.
     connectors: ConnectorFixture | None
+    #: Task 10's editor previews, over the same gateway rows and the same vector index
+    #: the connector fixture writes to. ``None`` when there is no organization, for the
+    #: same reason ``connectors`` is: neither has anything to be scoped to.
+    preview: MemoryPreview | None
     #: The read half of task 07, over the same rows the write half fills in.
     monitoring: MonitoringService
     logs: LogFixture
@@ -172,8 +177,9 @@ def build_auth(
     logs = build_logs(database=database)
     monitoring = build_monitoring(database)
     fake_gateway_probe = FakeGatewayProbe()
+    gateway_store = MemoryGatewayStore(database)
     gateways = GatewayService(
-        MemoryGatewayStore(database),
+        gateway_store,
         probe=gateway_probe or fake_gateway_probe,
         cache=cache,
         settings=settings,
@@ -183,12 +189,18 @@ def build_auth(
         if organization is not None
         else None
     )
+    preview = (
+        MemoryPreview(gateway_store, memory=connectors.memory, tokenizer=TOKENIZER)
+        if connectors is not None
+        else None
+    )
     return AuthFixture(
         service=service,
         directory=directory,
         catalog=catalog,
         gateways=gateways,
         connectors=connectors,
+        preview=preview,
         monitoring=monitoring,
         logs=logs,
         secret_box=secret_box,

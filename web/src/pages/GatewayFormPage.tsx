@@ -19,7 +19,9 @@ import { Field, Form, SubmitButton, TextArea, TextInput } from '@/components/For
 import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { useToast } from '@/components/Toast'
 import { GatewayKeys } from '@/pages/GatewayKeys'
+import { MemorySection } from '@/pages/GatewayMemory'
 import { RoutingSection } from '@/pages/GatewayRouting'
+import { memoryBody, memoryChanged, memoryForm, memoryProblem, type MemoryForm } from '@/pages/memory'
 import { chainBody, chainProblem, rowsOf, sameChain, type ChainRow } from '@/pages/routing'
 import { suggestSlug } from '@/pages/slug'
 import { useUnsavedChanges } from '@/pages/useUnsavedChanges'
@@ -38,6 +40,10 @@ type FormState = {
   systemContext: string
   paramOverrides: string
   lockedParams: string
+  //  Its own sub-object rather than eight more flat fields, because the Memory section
+  //  passes the whole thing to Try retrieval as an unsaved patch and a flat state would
+  //  have to be reassembled at every call site.
+  memory: MemoryForm
   logRequestBody: boolean
   logAssembledPrompt: boolean
   logResponseBody: boolean
@@ -60,6 +66,7 @@ const BLANK: FormState = {
   systemContext: '',
   paramOverrides: '{}',
   lockedParams: '{}',
+  memory: memoryForm({} as GatewayResponse['memory_config']),
   logRequestBody: true,
   logAssembledPrompt: true,
   logResponseBody: true,
@@ -137,6 +144,7 @@ export function GatewayFormPage() {
 
   const writes = can(user, 'resources:write')
   const routingProblem = chainProblem(state.routingMode, state.targets)
+  const memoryIssue = memoryProblem(state.memory)
   const dirty = useMemo(() => !sameState(state, saved), [state, saved])
   const { confirmLeave } = useUnsavedChanges(dirty && writes)
 
@@ -166,8 +174,10 @@ export function GatewayFormPage() {
       system_context: state.systemContext || null,
       param_overrides: overrides,
       locked_params: locked,
-      // Sent as a partial object and deep-merged server-side, so this form owns its own
-      // section and cannot wipe the ones tasks 10 and 14 will add beside it.
+      // Both blobs are sent as partial objects and deep-merged server-side, so each
+      // section owns its own keys and cannot wipe the conversation-memory half that
+      // task 12 adds beside them.
+      memory_config: memoryBody(state.memory),
       logging_config: {
         log_request_body: state.logRequestBody,
         log_assembled_prompt: state.logAssembledPrompt,
@@ -308,9 +318,11 @@ export function GatewayFormPage() {
           />
 
           {/* 3. Memory --------------------------------------------------- */}
-          <Placeholder
-            title="Memory"
-            what="Which connectors this gateway may read, retrieval knobs, and a Try retrieval box that shows exactly which chunks and facts would be injected."
+          <MemorySection
+            gatewayId={gateway?.id}
+            form={state.memory}
+            stored={saved.memory}
+            onChange={(memory) => set('memory', memory)}
           />
 
           {/* 4. Prompt --------------------------------------------------- */}
@@ -398,7 +410,7 @@ export function GatewayFormPage() {
           {writes ? (
             <SubmitButton
               busy={create.isPending || update.isPending}
-              disabled={routingProblem !== null}
+              disabled={routingProblem !== null || memoryIssue !== null}
               className="w-auto"
             >
               {isNew ? 'Create gateway' : 'Save changes'}
@@ -894,6 +906,7 @@ function stateOf(gateway: GatewayResponse): FormState {
     routingMode: gateway.routing_mode,
     targets: rowsOf(gateway),
     systemContext: gateway.system_context ?? '',
+    memory: memoryForm(gateway.memory_config),
     paramOverrides: JSON.stringify(gateway.param_overrides, null, 2),
     lockedParams: JSON.stringify(gateway.locked_params, null, 2),
     logRequestBody: gateway.logging_config.log_request_body,
@@ -907,15 +920,22 @@ function stateOf(gateway: GatewayResponse): FormState {
 }
 
 function sameState(left: FormState, right: FormState): boolean {
-  //  Everything is a scalar except the routing chain, which has to be compared by value —
-  //  a new array on every render would otherwise make the form permanently dirty and put
-  //  an "unsaved changes" prompt in front of anyone navigating away.
+  //  Everything is a scalar except the routing chain and the memory block, both of which
+  //  have to be compared by value — a new object on every render would otherwise make the
+  //  form permanently dirty and put an "unsaved changes" prompt in front of anyone
+  //  navigating away.
   return (
     sameChain(left.targets, right.targets) &&
+    !memoryChanged(left.memory, memoryConfigOf(right.memory)) &&
     (Object.keys(left) as (keyof FormState)[])
-      .filter((key) => key !== 'targets')
+      .filter((key) => key !== 'targets' && key !== 'memory')
       .every((key) => left[key] === right[key])
   )
+}
+
+/** A form back to the shape `memoryChanged` compares against. */
+function memoryConfigOf(form: MemoryForm): GatewayResponse['memory_config'] {
+  return memoryBody(form) as unknown as GatewayResponse['memory_config']
 }
 
 /** `undefined` means "not JSON" — distinct from `{}`, which is a valid empty object. */

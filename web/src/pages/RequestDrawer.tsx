@@ -1,4 +1,5 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 
 import { useRequestDetail } from '@/api/monitoring'
 import type {
@@ -10,7 +11,16 @@ import type {
 import { Waterfall } from '@/components/Charts'
 import { CopyButton } from '@/components/CopyButton'
 import { StatusBadge } from '@/components/StatusBadge'
-import { asCurl, contentOf, countInjected, roleOf, toneFor } from '@/pages/requestDetail'
+import {
+    asCurl,
+    contentOf,
+    countInjected,
+    droppedReason,
+    retrievedChunks,
+    roleOf,
+    toneFor,
+    type RetrievedChunk,
+} from '@/pages/requestDetail'
 
 /**
  * SPEC §10.3: the answer to "why did the model say that?".
@@ -155,7 +165,8 @@ function Detail({
           ) : null}
           {log.latency_retrieval_ms === null ? (
             <p className="mt-1 text-xs text-slate-400">
-              Retrieval is not measured yet; it arrives with the memory subsystem.
+              No retrieval ran: this gateway has no connectors attached, or the caller sent
+              <code className="mx-1">X-Gateway-Memory: off</code>.
             </p>
           ) : null}
         </Panel>
@@ -216,18 +227,102 @@ function Detail({
           ) : null}
         </Panel>
 
-        <Panel title="Memory" subtitle="Documents and facts injected into this request.">
-          <p className="text-sm text-slate-500">
-            {detail.retrieved_chunk_ids.length === 0 && detail.retrieved_fact_ids.length === 0
-              ? 'Nothing was retrieved.'
-              : `${detail.retrieved_chunk_ids.length} chunk(s), ${detail.retrieved_fact_ids.length} fact(s).`}
-          </p>
-          <p className="mt-1 text-xs text-slate-400">
-            Chunk scores and fact text arrive with retrieval.
-          </p>
+        <Panel
+          title="Memory"
+          subtitle="What retrieval found for this request, and what became of it."
+        >
+          <Retrieved log={log} entries={detail.retrieved_chunk_ids} />
         </Panel>
       </div>
     </>
+  )
+}
+
+/**
+ * The retrieved chunks, with what happened to each.
+ *
+ * Rendered from the *record* on the log row rather than by looking the chunks up in the
+ * vector store, and that is the whole reason the row stores names and scores rather than
+ * ids. A request from last week may cite a chunk that has since been reindexed out of
+ * existence; what it retrieved at the time is a fact, and it is the fact somebody is
+ * asking about.
+ */
+function Retrieved({
+  log,
+  entries,
+}: {
+  log: RequestLogResponse
+  entries: readonly unknown[]
+}) {
+  const chunks = retrievedChunks(entries)
+
+  if (log.latency_retrieval_ms === null) {
+    return (
+      <p className="text-sm text-slate-500">
+        Retrieval did not run for this request, so nothing was injected.
+      </p>
+    )
+  }
+
+  if (chunks.length === 0) {
+    return (
+      <p className="text-sm text-slate-700">
+        Retrieval ran in {log.latency_retrieval_ms} ms and found nothing above this
+        gateway&apos;s score floor. The model answered from its own knowledge and the
+        system context.
+      </p>
+    )
+  }
+
+  const injected = chunks.filter((chunk) => chunk.injected).length
+  return (
+    <>
+      <p className="text-sm text-slate-700">
+        {injected} of {chunks.length} chunk{chunks.length === 1 ? '' : 's'} injected
+        {log.memory_tokens ? `, ${log.memory_tokens} tokens` : ''} · {log.latency_retrieval_ms} ms
+      </p>
+      <ol className="mt-2 space-y-1">
+        {chunks.map((chunk, index) => (
+          <ChunkRow key={`${chunk.id}-${index}`} chunk={chunk} />
+        ))}
+      </ol>
+    </>
+  )
+}
+
+function ChunkRow({ chunk }: { chunk: RetrievedChunk }) {
+  const reason = droppedReason(chunk.dropped)
+  return (
+    <li
+      className={`rounded-md border p-2 text-xs ${
+        chunk.injected
+          ? 'border-violet-200 bg-violet-50 text-violet-900'
+          : 'border-slate-200 bg-slate-50 text-slate-500'
+      }`}
+    >
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="font-mono tabular-nums">
+          {chunk.score === null ? '—' : chunk.score.toFixed(2)}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-medium">
+          {chunk.documentId ? (
+            <Link to={`/connectors?document=${chunk.documentId}`} className="underline">
+              {chunk.sourceName}
+            </Link>
+          ) : (
+            chunk.sourceName
+          )}
+          {chunk.pageOrSection ? (
+            <span className="font-normal opacity-70"> · {chunk.pageOrSection}</span>
+          ) : null}
+        </span>
+        {chunk.injected ? null : (
+          <span className="rounded bg-slate-200 px-1.5 py-0.5 font-medium text-slate-700">
+            dropped{reason ? ` — ${reason}` : ''}
+          </span>
+        )}
+      </div>
+    </li>
   )
 }
 

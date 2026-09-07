@@ -9,6 +9,58 @@
 import type { RequestDetailResponse, RequestLogResponse } from '@/api/types'
 
 /**
+ * One retrieved chunk, as the request log stored it.
+ *
+ * The column is `list[Any]` on the server because it is a jsonb array whose shape has
+ * moved once already and will move again when task 12 puts facts beside it. Parsing
+ * defensively here rather than typing it as a schema is deliberate: a row written by an
+ * older build must render as much as it can rather than blank the panel.
+ */
+export type RetrievedChunk = {
+  id: string
+  score: number | null
+  sourceName: string
+  pageOrSection: string | null
+  documentId: string | null
+  injected: boolean
+  dropped: string | null
+}
+
+export function retrievedChunks(entries: readonly unknown[]): RetrievedChunk[] {
+  return entries.filter(isRecord).map((entry) => ({
+    id: text(entry.id) ?? '',
+    score: typeof entry.score === 'number' ? entry.score : null,
+    sourceName: text(entry.source_name) ?? '(unknown document)',
+    pageOrSection: text(entry.page_or_section),
+    documentId: text(entry.document_id),
+    //  Absent means "written before this field existed", and the honest reading of that
+    //  is that it went into the prompt: dropping was not a thing the assembler did then.
+    injected: entry.injected !== false,
+    dropped: text(entry.dropped),
+  }))
+}
+
+/**
+ * Why a chunk did not make it, in words.
+ *
+ * The two reasons need different actions — one is a number on this gateway, the other is
+ * a conversation that is too long for the model — so they are not merged into "dropped".
+ */
+export function droppedReason(reason: string | null): string | null {
+  if (reason === 'doc_max_tokens') return 'over this gateway’s token budget'
+  if (reason === 'context_window') return 'no room left in the model’s context window'
+  return reason
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function text(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null
+}
+
+/**
  * How many leading messages the gateway added.
  *
  * Positional, because assembly *prepends*: the caller's own messages are the tail of the

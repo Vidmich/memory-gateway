@@ -380,3 +380,40 @@ describe('the model form', () => {
     expect(within(dialect).getByText(/Anthropic/)).toBeInTheDocument()
   })
 })
+
+describe('the context window', () => {
+  it('is sent as null when left blank, which means unknown rather than unlimited', async () => {
+    // A model with no declared window skips the gateway's overflow guard entirely. The
+    // alternative — a platform default — would start withholding memory from requests a
+    // provider would have served.
+    const { client, requests } = fakeServer()
+    renderAt(client, '/models/mo1')
+    const person = userEvent.setup()
+
+    await person.clear(await screen.findByLabelText(/Context window/))
+    await person.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'PATCH')).toBe(true))
+    expect(lastBody(requests, 'PATCH').context_window).toBeNull()
+  })
+
+  it('is sent as a number when set', async () => {
+    const { client, requests } = fakeServer()
+    renderAt(client, '/models/mo1')
+    const person = userEvent.setup()
+
+    await person.clear(await screen.findByLabelText(/Context window/))
+    await person.type(screen.getByLabelText(/Context window/), '8192')
+    await person.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'PATCH')).toBe(true))
+    expect(lastBody(requests, 'PATCH').context_window).toBe(8192)
+  })
+
+  it('says what setting it actually does', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/models/mo1')
+
+    expect(await screen.findByText(/would overflow it/)).toBeInTheDocument()
+  })
+})

@@ -27,6 +27,9 @@ import type {
   GatewayTestResponse,
   GatewayUpdateRequest,
   IssuedApiKeyResponse,
+  MemoryPreviewRequest,
+  PromptPreviewResponse,
+  RetrievalPreviewResponse,
 } from '@/api/types'
 
 export const keys = {
@@ -142,5 +145,35 @@ export function useTestGateway(gatewayId: string | undefined) {
   return useMutation({
     mutationFn: (body: GatewayTestRequest) =>
       client.post<GatewayTestResponse>(`/api/v1/gateways/${gatewayId}/test`, body),
+  })
+}
+
+/**
+ * Try retrieval: the chunks a question would inject, with their scores.
+ *
+ * A mutation rather than a query, and the result is deliberately not cached. It is an
+ * action somebody takes — type, press, read — not state the screen is showing, and a
+ * cached answer from before the last edit to the score floor is worse than no answer.
+ */
+export function useTryRetrieval(gatewayId: string | undefined) {
+  const client = useApiClient()
+  return useMutation({
+    mutationFn: (body: MemoryPreviewRequest) =>
+      client.post<RetrievalPreviewResponse>(
+        `/api/v1/gateways/${gatewayId}/try-retrieval`,
+        body,
+      ),
+  })
+}
+
+/** The fully assembled prompt for a sample question, layer by layer. */
+export function usePromptPreview(gatewayId: string | undefined) {
+  const client = useApiClient()
+  return useMutation({
+    mutationFn: (body: MemoryPreviewRequest) =>
+      client.post<PromptPreviewResponse>(
+        `/api/v1/gateways/${gatewayId}/prompt-preview`,
+        body,
+      ),
   })
 }

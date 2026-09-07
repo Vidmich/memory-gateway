@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, replace
 from typing import Any
@@ -38,14 +39,23 @@ from app.api.control.deps import (
     get_connector_service,
     get_directory_service,
     get_gateway_service,
+    get_memory_preview,
     get_monitoring_service,
     get_settings_from_app,
 )
-from app.api.proxy.deps import get_authenticator, get_request_logs, get_resolver
+from app.api.proxy.deps import (
+    get_authenticator,
+    get_memory,
+    get_request_logs,
+    get_resolver,
+)
 from app.core.clients import Clients
 from app.core.config import Settings, get_settings
 from app.main import create_app
+from app.services.embeddings import HashEmbedder
 from app.services.gateway_resolver import ResolvedGateway
+from app.services.retrieval import MemoryService, Retriever
+from app.services.vector_store import ChunkPoint, MemoryVectorStore
 from tests.auth_support import PASSWORD, AuthFixture, build_auth
 from tests.directory_support import World, build_world
 from tests.monitoring_support import LogFixture, build_logs
@@ -222,6 +232,66 @@ async def upstream() -> AsyncIterator[MockUpstream]:
         yield mock
 
 
+#: The width of the test embedder. Small, because nothing here is measuring embedding
+#: quality — only that the same vectors go in and come out of the same index.
+MEMORY_DIMENSION = 64
+
+
+@dataclass
+class MemoryFixture:
+    """The memory subsystem over the memory vector store, plus a way to fill it.
+
+    Wired into every proxy harness rather than only the memory tests, so that the data
+    plane never reaches for Qdrant even by accident — a gateway with connectors attached
+    and no override would otherwise open a socket in the middle of a routing test.
+    """
+
+    service: MemoryService
+    vectors: MemoryVectorStore
+    embedder: HashEmbedder
+
+    async def index(
+        self,
+        organization_id: uuid.UUID,
+        connector_id: uuid.UUID,
+        *texts: str,
+        source: str = "handbook.md",
+        section: str | None = None,
+    ) -> uuid.UUID:
+        """Put chunks into the index the way ingestion would, and hand back the document
+        id so a test can assert on what the drawer would link to."""
+        document_id = uuid.uuid4()
+        await self.vectors.ensure_collection(organization_id, dimension=MEMORY_DIMENSION)
+        vectors = await self.embedder.embed(list(texts))
+        await self.vectors.upsert(
+            organization_id,
+            [
+                ChunkPoint(
+                    id=f"{document_id}:{index}",
+                    vector=vector,
+                    payload={
+                        "org_id": str(organization_id),
+                        "connector_id": str(connector_id),
+                        "document_id": str(document_id),
+                        "source_name": source,
+                        "page_or_section": section,
+                        "chunk_index": index,
+                        "text": text,
+                    },
+                )
+                for index, (text, vector) in enumerate(zip(texts, vectors, strict=True))
+            ],
+        )
+        return document_id
+
+
+def build_memory() -> MemoryFixture:
+    embedder = HashEmbedder(dimension=MEMORY_DIMENSION, model="hash-bow")
+    vectors = MemoryVectorStore()
+    retriever = Retriever(embedder, vectors)
+    return MemoryFixture(service=MemoryService(retriever), vectors=vectors, embedder=embedder)
+
+
 @dataclass
 class ProxyHarness:
     """Everything a data-plane test needs, wired together."""
@@ -236,6 +306,8 @@ class ProxyHarness:
     #: data-plane test therefore also proves the proxy records what it did — and none of
     #: them opens a database connection to do it.
     logs: LogFixture
+    #: Retrieval, over an in-process index. Empty unless a test fills it.
+    memory: MemoryFixture
 
     @property
     def gateway(self) -> ResolvedGateway:
@@ -258,7 +330,10 @@ class ProxyHarness:
 
 
 def build_proxy_app(
-    resolver: FakeResolver, authenticator: FakeAuthenticator, logs: LogFixture
+    resolver: FakeResolver,
+    authenticator: FakeAuthenticator,
+    logs: LogFixture,
+    memory: MemoryFixture | None = None,
 ) -> FastAPI:
     application = create_app()
     application.dependency_overrides[get_resolver] = lambda: resolver
@@ -267,6 +342,11 @@ def build_proxy_app(
     # PostgreSQL, which is not running here, and a background task retrying a connection
     # under every proxy test is noise that hides the failures worth reading.
     application.dependency_overrides[get_request_logs] = lambda: logs.service
+    # Same reasoning one service along: the real one talks to Qdrant. Defaulted rather
+    # than required, so a test that has no interest in memory does not have to build one
+    # — and still cannot reach a socket by forgetting to.
+    service = (memory or build_memory()).service
+    application.dependency_overrides[get_memory] = lambda: service
     return application
 
 
@@ -284,7 +364,8 @@ def build_harness_parts(
 async def proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
     resolver, authenticator, token = build_harness_parts(upstream)
     logs = build_logs()
-    application = build_proxy_app(resolver, authenticator, logs)
+    memory = build_memory()
+    application = build_proxy_app(resolver, authenticator, logs, memory)
 
     async with application.router.lifespan_context(application):
         transport = ASGITransport(app=application)
@@ -297,6 +378,7 @@ async def proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
                 authenticator=authenticator,
                 token=token,
                 logs=logs,
+                memory=memory,
             )
 
 
@@ -309,7 +391,8 @@ async def live_proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
     """
     resolver, authenticator, token = build_harness_parts(upstream)
     logs = build_logs()
-    application = build_proxy_app(resolver, authenticator, logs)
+    memory = build_memory()
+    application = build_proxy_app(resolver, authenticator, logs, memory)
 
     async with (
         serve(application, lifespan="on") as base_url,
@@ -323,6 +406,7 @@ async def live_proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
             authenticator=authenticator,
             token=token,
             logs=logs,
+            memory=memory,
         )
 
 
@@ -390,6 +474,9 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     if connectors is not None:
         application.dependency_overrides[get_connector_service] = lambda: connectors.service
     application.dependency_overrides[get_gateway_service] = lambda: auth.gateways
+    preview = auth.preview
+    if preview is not None:
+        application.dependency_overrides[get_memory_preview] = lambda: preview
     application.dependency_overrides[get_monitoring_service] = lambda: auth.monitoring
     if settings is not None:
         application.dependency_overrides[get_settings_from_app] = lambda: settings
@@ -411,6 +498,8 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
         if fixture.connectors is not None:
             application.state.connector_service = fixture.connectors.service
         application.state.gateway_service = fixture.gateways
+        if fixture.preview is not None:
+            application.state.memory_preview = fixture.preview
         application.state.monitoring_service = fixture.monitoring
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
@@ -473,6 +562,8 @@ async def directory() -> AsyncIterator[DirectoryHarness]:
         if world.auth.connectors is not None:
             application.state.connector_service = world.auth.connectors.service
         application.state.gateway_service = world.gateways
+        if world.auth.preview is not None:
+            application.state.memory_preview = world.auth.preview
         application.state.monitoring_service = world.auth.monitoring
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:

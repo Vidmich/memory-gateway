@@ -414,6 +414,8 @@ def _summary_from(payload: dict[str, Any]) -> Summary:
         prompt_tokens=int(payload.get("prompt_tokens", 0)),
         completion_tokens=int(payload.get("completion_tokens", 0)),
         memory_tokens=int(payload.get("memory_tokens", 0)),
+        retrieval_attempts=int(payload.get("retrieval_attempts", 0)),
+        retrieval_empty=int(payload.get("retrieval_empty", 0)),
         models=tuple(
             ModelTraffic(
                 upstream_model_id=_as_uuid(item.get("upstream_model_id")),

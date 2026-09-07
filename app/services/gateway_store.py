@@ -30,9 +30,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import uuid7
 from app.core.tenancy import TenantScope
-from app.db.models import ApiKey, Gateway, GatewayTarget, UpstreamModel
+from app.db.models import ApiKey, Connector, Gateway, GatewayTarget, UpstreamModel
 from app.db.repositories import (
     ApiKeyRepository,
+    ConnectorRepository,
     GatewayRepository,
     OrganizationRepository,
     UpstreamModelRepository,
@@ -68,6 +69,17 @@ class GatewayTransaction(Protocol):
         cannot create a gateway anyway, since ``add_gateway`` stamps the scope's
         organization onto the row.
         """
+
+    async def own_connectors(self, connector_ids: Sequence[uuid.UUID]) -> set[uuid.UUID]:
+        """Which of these connectors this scope can see. Missing ids are simply absent.
+
+        A set rather than a list of rows because the only question asked of it is
+        membership: a gateway may not reference a connector belonging to another
+        organization (SPEC §5.3), and the caller needs to name the ones that failed.
+        Scoped like every other read here, so a connector id from another tenant is
+        indistinguishable from one that does not exist.
+        """
+        ...
 
     async def visible_model(self, model_id: uuid.UUID) -> UpstreamModel | None:
         """A model this scope may point a gateway at: its own, or the global catalog."""
@@ -120,6 +132,7 @@ class PostgresGatewayTransaction:
         self._models = UpstreamModelRepository(session, scope)
         self._keys = ApiKeyRepository(session, scope)
         self._organizations = OrganizationRepository(session, scope)
+        self._connectors = ConnectorRepository(session, scope)
 
     @property
     def scope(self) -> TenantScope:
@@ -143,6 +156,14 @@ class PostgresGatewayTransaction:
 
     async def visible_model(self, model_id: uuid.UUID) -> UpstreamModel | None:
         return await self._models.get_visible(model_id)
+
+    async def own_connectors(self, connector_ids: Sequence[uuid.UUID]) -> set[uuid.UUID]:
+        if not connector_ids:
+            return set()
+        rows = await self._session.execute(
+            self._connectors.select().where(Connector.id.in_(list(connector_ids)))
+        )
+        return {row.id for row in rows.scalars()}
 
     async def add_gateway(self, gateway: Gateway) -> Gateway:
         return await self._gateways.add(gateway)
@@ -240,6 +261,14 @@ class MemoryGatewayTransaction:
             return {}
         organization = self._db.organizations.get(organization_id)
         return dict(organization.settings or {}) if organization is not None else {}
+
+    async def own_connectors(self, connector_ids: Sequence[uuid.UUID]) -> set[uuid.UUID]:
+        return {
+            connector_id
+            for connector_id in connector_ids
+            if (found := self._db.connectors.get(connector_id)) is not None
+            and self._scope.permits(found.organization_id)
+        }
 
     async def visible_model(self, model_id: uuid.UUID) -> UpstreamModel | None:
         found = self._db.upstream_models.get(model_id)

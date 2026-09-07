@@ -21,6 +21,7 @@ from app.services.catalog import CatalogService
 from app.services.connectors import ConnectorService
 from app.services.directory import DirectoryService
 from app.services.gateways import GatewayService
+from app.services.memory_preview import MemoryPreview
 from app.services.monitoring import MonitoringService
 from app.services.permissions import Capability, allows
 
@@ -60,6 +61,11 @@ def get_connector_service(request: Request) -> ConnectorService:
 
 def get_gateway_service(request: Request) -> GatewayService:
     service: GatewayService = request.app.state.gateway_service
+    return service
+
+
+def get_memory_preview(request: Request) -> MemoryPreview:
+    service: MemoryPreview = request.app.state.memory_preview
     return service
 
 

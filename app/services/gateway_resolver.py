@@ -43,7 +43,7 @@ from app.api.proxy.errors import GatewayDisabled, GatewayNotFound, GatewayUnavai
 from app.core.crypto import DecryptionError, SecretBox
 from app.db.models import Gateway, GatewayTarget
 from app.db.scoping import unscoped
-from app.schemas.gateway_config import LoggingConfig
+from app.schemas.gateway_config import LoggingConfig, MemoryConfig
 from app.services.request_log import LogPolicy
 
 logger = logging.getLogger(__name__)
@@ -61,8 +61,9 @@ VERSION_TTL_SECONDS = 7 * 24 * 3600
 #: Bumped whenever the payload gains or loses a field. An older payload is treated as
 #: a miss rather than migrated, so a rolling deploy costs one database read per slug
 #: and needs no coordination. Task 07 raised it to 2 by adding the logging policy; task
-#: 08 raised it to 3 by adding the per-target weights that A/B selection needs.
-PAYLOAD_VERSION = 3
+#: 08 raised it to 3 by adding the per-target weights that A/B selection needs; task 10
+#: raised it to 4 by adding the memory configuration and each target's context window.
+PAYLOAD_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,12 @@ class ResolvedGateway:
     #: is built rather than per request, so the data plane never parses a configuration
     #: schema while a caller is waiting.
     log_policy: LogPolicy = field(default_factory=LogPolicy)
+    #: SPEC §6.3, validated here rather than on the request path for the same reason as
+    #: the logging policy — and with the same consequence, which is worth stating: a blob
+    #: that somebody hand-edited into an invalid shape falls back to the *defaults*, not
+    #: to an exception, so a bad edit degrades retrieval instead of taking the gateway
+    #: down. The control plane refuses such an edit; this is the backstop for the row.
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
     @property
     def virtual_model(self) -> str:
@@ -352,6 +359,11 @@ def _encode(gateway: Gateway) -> dict[str, Any]:
         # the request path reads, and flattening it here is what keeps `_decode` free of
         # schema validation.
         "logging": _encode_policy(LoggingConfig.load(gateway.logging_config)),
+        # The raw blob, not a flattened projection: unlike the logging policy, every one
+        # of these fields is read on the request path, so there is nothing to flatten
+        # away — and `MemoryConfig.load` is permissive, which is what makes an unknown
+        # key written by a newer build survive a rollback.
+        "memory": MemoryConfig.load(gateway.memory_config).model_dump(mode="json"),
         "targets": [_encode_target(target) for target in _usable(gateway)],
         # Keyed by model id so the map survives a target dropping out of `targets` for
         # being disabled — which is exactly when the weights stop summing to 100.
@@ -381,6 +393,7 @@ def _encode_target(target: GatewayTarget) -> dict[str, Any]:
         "system_context": model.system_context,
         "default_params": dict(model.default_params or {}),
         "timeout_seconds": model.timeout_seconds,
+        "context_window": model.context_window,
     }
 
 
@@ -413,6 +426,7 @@ def _decode(
         },
         disabled=tuple(payload.get("disabled", ())),
         log_policy=_decode_policy(payload.get("logging")),
+        memory=MemoryConfig.load(payload.get("memory")),
     )
 
 
@@ -432,6 +446,7 @@ def _decode_target(item: Mapping[str, Any], decrypt: Any) -> UpstreamTarget:
         system_context=item.get("system_context"),
         default_params=dict(item.get("default_params") or {}),
         timeout_seconds=item["timeout_seconds"],
+        context_window=item.get("context_window"),
     )
 
 

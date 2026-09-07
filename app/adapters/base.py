@@ -36,6 +36,10 @@ class UpstreamTarget:
     system_context: str | None = None
     default_params: Mapping[str, Any] = field(default_factory=dict)
     timeout_seconds: int = 60
+    #: Tokens the provider will accept in one request, or ``None`` when nobody has said.
+    #: Read only by the prompt assembler's overflow guard (SPEC §7); ``None`` disables it,
+    #: because a guessed window would drop memory from requests that would have been fine.
+    context_window: int | None = None
 
     def __repr__(self) -> str:
         # The default dataclass repr would put the decrypted credential into any log line

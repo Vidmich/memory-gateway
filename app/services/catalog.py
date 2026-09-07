@@ -103,6 +103,8 @@ class ModelDraft:
     system_context: str | None = None
     default_params: Mapping[str, Any] = field(default_factory=dict)
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    #: ``None`` means unknown, which switches off the assembler's overflow guard.
+    context_window: int | None = None
     enabled: bool = True
     #: ``org`` or ``global``. Only a platform administrator may write ``global``.
     scope: str = "org"
@@ -127,6 +129,7 @@ class ModelPatch:
     system_context: Maybe[str | None] = UNSET
     default_params: Maybe[Mapping[str, Any]] = UNSET
     timeout_seconds: Maybe[int] = UNSET
+    context_window: Maybe[int | None] = UNSET
     enabled: Maybe[bool] = UNSET
 
 
@@ -249,6 +252,7 @@ class CatalogService:
                 system_context=draft.system_context,
                 default_params=params,
                 timeout_seconds=draft.timeout_seconds,
+                context_window=draft.context_window,
                 enabled=draft.enabled,
             )
             self._store_credential(model, draft.credential)
@@ -294,6 +298,7 @@ class CatalogService:
             _apply(model, "auth_type", patch.auth_type)
             _apply(model, "system_context", patch.system_context)
             _apply(model, "timeout_seconds", patch.timeout_seconds)
+            _apply(model, "context_window", patch.context_window)
             _apply(model, "enabled", patch.enabled)
             if not isinstance(patch.upstream_model_id, _Unset):
                 model.upstream_model_id = patch.upstream_model_id.strip()

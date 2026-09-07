@@ -7,6 +7,9 @@
  */
 
 import type {
+  PromptPreviewResponse,
+  RetrievalPreviewResponse,
+  RetrievedChunkResponse,
   ApiKeyResponse,
   BucketResponse,
   ConnectorResponse,
@@ -118,6 +121,9 @@ export function makeModel(overrides: Partial<ModelResponse> = {}): ModelResponse
     credential: { configured: true, hint: 'sk-...4f2a' },
     extra_headers: {},
     system_context: null,
+    // Null, which the server reads as *unknown* rather than unlimited — so the assembler's
+    // overflow guard is off by default here, as it is for a model nobody has told us about.
+    context_window: null,
     default_params: {},
     timeout_seconds: 60,
     enabled: true,
@@ -189,6 +195,8 @@ export function makeGateway(overrides: Partial<GatewayResponse> = {}): GatewayRe
       memory_top_k: 8,
       memory_max_tokens: 600,
       query_strategy: 'last_user_message',
+      query_n_turns: 3,
+      retrieval_timeout_ms: 800,
       on_retrieval_error: 'fail_open',
     },
     logging_config: {
@@ -281,6 +289,11 @@ export function makeSummary(overrides: Partial<SummaryResponse> = {}): SummaryRe
     prompt_tokens: 4200,
     completion_tokens: 1800,
     memory_tokens: 0,
+    // Zero attempts, not zero rate: a gateway with no connectors has not retrieved
+    // nothing, it has not retrieved — and the rate is undefined over an empty denominator.
+    retrieval_attempts: 0,
+    retrieval_empty: 0,
+    empty_retrieval_rate: 0,
     models: [{ upstream_model_id: 'mo1', model_name: 'acme-gpt', requests: 120 }],
     error_groups: [{ error_code: 'upstream_timeout', requests: 6 }],
     ...overrides,
@@ -409,6 +422,70 @@ export function makeSearchHit(overrides: Partial<SearchHit> = {}): SearchHit {
     page_or_section: 'Handbook > Leave',
     chunk_index: 0,
     document_id: 'd1',
+    ...overrides,
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// memory previews (task 10)
+// ---------------------------------------------------------------------------
+
+export function makeRetrievedChunk(
+  overrides: Partial<RetrievedChunkResponse> = {},
+): RetrievedChunkResponse {
+  return {
+    id: 'ch1',
+    score: 0.71,
+    text: 'Refunds are issued within 14 days of purchase.',
+    source_name: 'handbook.md',
+    page_or_section: 'p. 12',
+    document_id: 'd1',
+    connector_id: 'cn1',
+    chunk_index: 0,
+    tokens: 24,
+    injected: true,
+    ...overrides,
+  }
+}
+
+export function makeRetrievalPreview(
+  overrides: Partial<RetrievalPreviewResponse> = {},
+): RetrievalPreviewResponse {
+  return {
+    query: 'how do refunds work',
+    outcome: 'hit',
+    latency_ms: 14,
+    error: null,
+    chunks: [makeRetrievedChunk()],
+    injected_tokens: 64,
+    doc_max_tokens: 2000,
+    ...overrides,
+  }
+}
+
+export function makePromptPreview(
+  overrides: Partial<PromptPreviewResponse> = {},
+): PromptPreviewResponse {
+  return {
+    layers: [
+      { name: 'model.system_context', label: 'Model', text: '', tokens: 0 },
+      { name: 'gateway.system_context', label: 'Gateway', text: 'Be brief.', tokens: 3 },
+      {
+        name: 'documents',
+        label: 'Documents',
+        text: '## Reference material\n[1] source: handbook.md',
+        tokens: 61,
+      },
+      { name: 'memory', label: 'Memory', text: '', tokens: 0 },
+      { name: 'client.system', label: 'Client', text: '', tokens: 0 },
+    ],
+    system_message: 'Be brief.\n\n## Reference material\n[1] source: handbook.md',
+    total_tokens: 64,
+    context_window: 8192,
+    model_name: 'acme-gpt',
+    overflowed: false,
+    retrieval: makeRetrievalPreview(),
     ...overrides,
   }
 }

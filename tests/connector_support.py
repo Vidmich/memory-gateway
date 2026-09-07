@@ -38,6 +38,7 @@ from app.services.jobs import (
 from app.services.locks import MemoryLock
 from app.services.memory_db import MemoryDatabase
 from app.services.object_store import MemoryObjectStore
+from app.services.retrieval import MemoryService, Retriever
 from app.services.tokenizer import Tokenizer, WordTokenizer
 from app.services.vector_store import MemoryVectorStore
 
@@ -84,6 +85,10 @@ class ConnectorFixture:
     dead_letters: MemoryDeadLetters
     pipeline: IngestionPipeline
     service: ConnectorService
+    #: Task 10, over the *same* vector store and the same embedder ingestion writes with.
+    #: That shared object is the point: a retrieval test here searches the index a real
+    #: upload in the same test actually built, rather than a fixture that agrees with it.
+    memory: MemoryService
     runner: JobRunner
     organization: Organization
     connector: Connector
@@ -234,6 +239,7 @@ def build_connectors(
         settings=limits,
     )
 
+    retriever = Retriever(embedder, vectors)
     dead_letters = MemoryDeadLetters()
 
     # The same two handlers `app.workers.runtime.build_handlers` registers, spelled out
@@ -276,6 +282,7 @@ def build_connectors(
         dead_letters=dead_letters,
         pipeline=pipeline,
         service=service,
+        memory=MemoryService(retriever),
         runner=runner,
         organization=organization,
         connector=row,

@@ -63,6 +63,7 @@ from app.core.metrics import RoutingMetrics
 from app.schemas.openai import ChatRequest, ChatResponse
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.proxy import Prepared, ProxyService, StreamObserver, UpstreamStream
+from app.services.retrieval import Recall
 
 logger = logging.getLogger(__name__)
 
@@ -328,9 +329,11 @@ class Router:
         gateway: ResolvedGateway,
         routing: RoutingPlan,
         attempts: Attempts,
+        *,
+        recall: Recall | None = None,
     ) -> Completed:
         prepared, response = await self._run(
-            request, gateway, routing, attempts, self._proxy.complete
+            request, gateway, routing, attempts, self._proxy.complete, recall=recall
         )
         return Completed(prepared=prepared, response=response)
 
@@ -342,6 +345,7 @@ class Router:
         attempts: Attempts,
         *,
         observer: StreamObserver | None = None,
+        recall: Recall | None = None,
     ) -> Opened:
         """Start a stream, failing over **only while the status line is still ours**.
 
@@ -356,7 +360,7 @@ class Router:
         async def call(prepared: Prepared) -> UpstreamStream:
             return await self._proxy.open_stream(prepared, observer=observer)
 
-        prepared, stream = await self._run(request, gateway, routing, attempts, call)
+        prepared, stream = await self._run(request, gateway, routing, attempts, call, recall=recall)
         return Opened(prepared=prepared, stream=stream)
 
     async def _run[T](
@@ -366,6 +370,8 @@ class Router:
         routing: RoutingPlan,
         attempts: Attempts,
         call: Callable[[Prepared], Awaitable[T]],
+        *,
+        recall: Recall | None = None,
     ) -> tuple[Prepared, T]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._deadline
@@ -385,7 +391,10 @@ class Router:
                 )
                 break
 
-            prepared = self._proxy.prepare(request, gateway, target)
+            # Re-assembled per attempt, with the *same* retrieval: the two targets can
+            # carry different system contexts and different context windows, so the
+            # prompt differs even though what was retrieved does not.
+            prepared = self._proxy.prepare(request, gateway, target, recall=recall)
             attempts.prepared(prepared)
             started = time.perf_counter()
 

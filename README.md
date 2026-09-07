@@ -8,16 +8,19 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 09 complete**. An organization goes from empty to a working
-OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream
-model, create a gateway, copy its URL, mint a key, call it — and every request through it
-is then recorded and inspectable. **Monitoring** charts the traffic; clicking a row shows
-the client's original messages, the exact prompt that went upstream, the response, and a
-timing waterfall. A gateway can route over several models: a failover chain that survives
-an upstream outage, or a weighted A/B split whose result you read off the same charts.
-And **Connectors** now ingest content: drag a folder in, watch each file move from
-`pending` to `indexed`, and ask the debug search whether it can be found. Nothing consumes
-the index yet — task 10 is what wires it into a gateway's answers.
+Current state: **task 10 complete**, and with it the product's core promise. An
+organization goes from empty to a working OpenAI-compatible endpoint entirely in the
+browser — sign in, configure an upstream model, create a gateway, copy its URL, mint a
+key, call it — and every request through it is recorded and inspectable. **Connectors**
+ingest content: drag a folder in and watch each file move from `pending` to `indexed`.
+**Memory** then attaches those connectors to a gateway, and the endpoint starts answering
+from them: the same question with `X-Gateway-Memory: off` cannot answer it, which is the
+whole feature in one A/B. **Monitoring** charts the traffic, including how often retrieval
+comes back with nothing; clicking a row shows the client's original messages, the exact
+prompt that went upstream with the injected regions marked, which chunks were retrieved at
+what score, and a timing waterfall. A gateway can also route over several models: a
+failover chain that survives an upstream outage, or a weighted A/B split whose result you
+read off the same charts.
 
 ## Quick start (Docker)
 
@@ -299,9 +302,9 @@ terminal state: a row that says `pending` might be an upload whose object has no
 yet, and a listing is a snapshot taken before any lock could have helped.
 
 **The debug search** (`POST /api/v1/connectors/{id}/search`) returns scored chunks with
-their source and section. It exists to answer "is my file actually in there" before task
-10 gives the index a consumer, and it stays useful afterwards as the first thing to check
-when a gateway's answers look wrong.
+their source and section. It answers "is my file actually in there" without a gateway in
+the way, which makes it the first thing to check when a gateway's answers look wrong: if
+the search finds nothing either, the problem is ingestion rather than retrieval.
 
 ### The worker
 
@@ -332,6 +335,74 @@ embedder that needs no key and no network. It is genuinely lexical — shared wo
 higher — which is enough to demonstrate the whole ingest-and-search path on a laptop, and
 it knows nothing about meaning. The service **refuses to start** with it when
 `ENVIRONMENT=prod`.
+
+## Memory: retrieval and prompt assembly
+
+Attach connectors to a gateway under **Memory**, and every request through it is answered
+with the organization's own documents in front of the model.
+
+**What happens per request.** The last user message (or the last N user turns) is embedded
+and searched against the gateway's connectors, filtered by a similarity floor, capped by a
+token budget, and rendered into the system message as a numbered reference block. The
+whole of it runs inside `retrieval_timeout_ms`, and a gateway with no connectors attached
+skips the embedding and the vector call outright, so the feature costs nothing until it is
+switched on.
+
+**Prompt assembly is SPEC §7 in full**, as a pure function over
+`(messages, contexts, chunks, facts, limits)` in
+[`app/services/prompt.py`](app/services/prompt.py):
+
+```
+[1] model.system_context      [2] gateway.system_context
+[3] retrieved documents       [4] end-user memory (task 12)
+[5] the client's own system message(s), verbatim and in order
+```
+
+Any empty layer is dropped along with its delimiter — never a `## Reference material`
+heading with nothing under it, which would invite the model to cite excerpts that do not
+exist. Being a pure function is what makes the editor's prompt preview the *same code* as
+the request path rather than a second implementation that drifts.
+
+**The token budget is over the whole rendered block**, boilerplate included, so
+`doc_max_tokens` is a number a customer can verify by counting what reached the provider.
+Chunks are dropped from the tail — lowest score first — and each drop is recorded on the
+request log with its reason, so "why did it ignore the pricing page" has an answer rather
+than a theory.
+
+**Failure is a policy, not an exception.** Retrieval never raises; it returns an outcome,
+and the gateway's `on_retrieval_error` decides what that means. `fail_open` serves an
+ungrounded answer, which is right for a support bot that is better than nothing;
+`fail_closed` returns 503, which is right for an assistant whose whole value is that it
+only answers from the handbook. Neither ever hangs past the configured timeout.
+
+**Two guards that only matter when they fire.** An index built by a *different* embedding
+model has vectors of the wrong width; retrieval refuses to search it and logs at `error`,
+because under `fail_open` the alternative is every request quietly losing its documents
+with nothing anywhere saying why. And if the client's own messages already fill the
+model's context window, nothing is injected and a warning flag is set — but only when the
+model has a `context_window` set, because `NULL` there means *unknown*, not unlimited, and
+a guessed window would withhold memory from requests a provider would have served.
+
+**Tuning is a loop you can run.** The editor's **Try retrieval** box sends the question
+with the *unsaved* form values, and returns the exact chunks that would be injected — with
+scores, sources, per-chunk token costs, and a marker on the ones that fall outside the
+budget. Nothing is saved, so tuning a score floor does not change what live callers are
+getting between attempts. **Show the whole prompt** does the same and assembles it, layer
+by layer, against the model's context window.
+
+**Reading it back.** Responses carry `X-Gateway-Memory-Chunks` and `X-Gateway-Retrieval-Ms`
+whenever retrieval ran — their *absence* means it did not, which is itself the answer to
+"why did it not use my documents". `X-Gateway-Memory: off` on a request skips augmentation
+entirely, which is the honest way to measure what the gateway contributes. The request
+drawer shows every retrieved chunk with its score and what became of it, and
+**empty-retrieval rate** is on the monitoring screen as a card and a chart: a gateway
+retrieving nothing most of the time looks perfectly healthy on every other number and is
+answering from nowhere.
+
+The known limitation is stated in the editor rather than in a release note: retrieval is
+dense search over the user's own words, so a conversational follow-up — "what about the
+second one?" — retrieves poorly. SPEC §17.4 leaves query rewriting open, and the
+empty-retrieval rate is there so that decision can be made from data.
 
 ## Request logging and monitoring
 
@@ -422,7 +493,21 @@ for chunk in client.chat.completions.create(
 
 `model` is the gateway's slug, not the provider's model name: that indirection is the
 point, so the endpoint can be repointed at a different provider without the client
-changing — edit the model in the UI and the very next request goes somewhere else. `make seed --no-auth`-style local providers (Ollama, vLLM) work by setting
+changing — edit the model in the UI and the very next request goes somewhere else.
+
+To see what memory contributes, ask the same question twice:
+
+```python
+grounded = client.chat.completions.create(
+    model="demo", messages=[{"role": "user", "content": "what is our refund window?"}])
+
+bare = client.chat.completions.create(
+    model="demo", messages=[{"role": "user", "content": "what is our refund window?"}],
+    extra_headers={"X-Gateway-Memory": "off"})
+```
+
+The first answers from your documents and the response carries
+`X-Gateway-Memory-Chunks`; the second says it does not know. `make seed --no-auth`-style local providers (Ollama, vLLM) work by setting
 `OPENAI_BASE_URL` and passing `--no-auth` to `python -m app.cli seed`.
 
 ## Quick start (local)
@@ -523,7 +608,9 @@ app/
               ingestion — its ports (object_store, vector_store, embeddings,
               tokenizer, locks, jobs, job_queue), its pipeline (extraction,
               chunking, ingestion) and its control plane (connectors,
-              connector_store, connector_source)
+              connector_store, connector_source) — and the read side of the same
+              index: retrieval (search, timeouts, the failure policy) and
+              memory_preview (the editor's Try retrieval and prompt preview)
   workers/    the ingestion worker — `arq app.workers.main.WorkerSettings` — and the
               composition root it and the API both build their stack from
   cli.py      operator commands — `python -m app.cli seed | openapi`
@@ -537,10 +624,11 @@ web/          the React SPA
   src/layout/   the app shell — sidebar, user menu, support banner
   src/pages/    login, dashboard, organizations, members, org settings,
                 invitation acceptance, models (list and editor), gateways
-                (list, editor, routing section, keys), connectors (list, and a
-                detail screen with the upload zone, document table, chunking
-                panel and debug search), monitoring (charts, request table,
-                detail drawer with the attempts timeline)
+                (list, editor, routing and memory sections with Try retrieval,
+                keys), connectors (list, and a detail screen with the upload
+                zone, document table, chunking panel and debug search),
+                monitoring (charts, request table, detail drawer with the
+                attempts timeline and the retrieved chunks)
   e2e/          Playwright
 ```
 
@@ -576,10 +664,12 @@ first request. See [.env.example](.env.example) for the full list.
 | `GET`/`POST /api/v1/gateways` | List and create. The slug is globally unique and set once. `targets` is the routing chain; `model_id` is the one-target shorthand. |
 | `GET`/`PATCH`/`DELETE /api/v1/gateways/{id}` | Read, edit, delete. `PATCH` refuses `slug`, with the reason. |
 | `POST /api/v1/gateways/{id}/test` | A probe completion through the real proxy path; returns the assembled prompt. |
+| `POST /api/v1/gateways/{id}/try-retrieval` | The chunks a question would inject, with scores and a budget marker. Accepts unsaved settings. |
+| `POST /api/v1/gateways/{id}/prompt-preview` | The fully assembled system message for a question, layer by layer, with token counts. |
 | `GET`/`POST /api/v1/gateways/{id}/keys` | List keys (prefix only); mint one — the plaintext is returned once. |
 | `DELETE /api/v1/keys/{id}` | Revoke. Soft, and effective on the next request. |
 | `GET /api/v1/metrics/summary` | Totals, percentiles, per-model traffic and the error taxonomy for a window. Cached 30 s. |
-| `GET /api/v1/metrics/timeseries` | Bucketed series. `metric` is `requests`, `latency` or `tokens`; the server picks the bucket width. |
+| `GET /api/v1/metrics/timeseries` | Bucketed series. `metric` is `requests`, `latency`, `tokens` or `retrieval`; the server picks the bucket width. |
 | `GET /api/v1/logs` | The request table. Cursor-paginated, filterable by gateway, model, status class, end user, session, latency and error text. |
 | `GET /api/v1/logs/{id}` | One request in full, including whatever of the transcript was stored. No time range needed. |
 | `GET`/`POST /api/v1/connectors` | List (with per-status document counts) and create. |

@@ -11,6 +11,7 @@ import { AuthProvider } from '@/auth/AuthContext'
 import {
   latencySeries,
   modelSlices,
+  retrievalSeries,
   pointsOf,
   seriesFrom,
   statusSeries,
@@ -390,6 +391,85 @@ describe('the routing timeline', () => {
       within(dialog).getByText(/failed after the first chunk had reached the client/),
     ).toBeInTheDocument()
   })
+
+  describe('the memory panel', () => {
+    const injected = {
+      id: 'ch1',
+      score: 0.71,
+      document_id: 'd1',
+      source_name: 'handbook.md',
+      page_or_section: 'p. 12',
+      chunk_index: 0,
+      injected: true,
+    }
+    const dropped = {
+      ...injected,
+      id: 'ch2',
+      score: 0.44,
+      source_name: 'pricing.md',
+      injected: false,
+      dropped: 'doc_max_tokens',
+    }
+
+    it('shows each retrieved chunk with its score and source', async () => {
+      const dialog = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 18, memory_tokens: 140 }),
+          retrieved_chunk_ids: [injected],
+        }),
+      )
+
+      expect(within(dialog).getByText('0.71')).toBeInTheDocument()
+      expect(within(dialog).getByText(/handbook\.md/)).toBeInTheDocument()
+      expect(within(dialog).getByText(/1 of 1 chunk injected/)).toBeInTheDocument()
+      expect(within(dialog).getByText(/140 tokens/)).toBeInTheDocument()
+    })
+
+    it('says why a chunk was dropped, in words rather than a field name', async () => {
+      // "over the token budget" and "no room in the context window" need different
+      // actions, so the reason is rendered rather than a generic "dropped".
+      const dialog = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 18 }),
+          retrieved_chunk_ids: [injected, dropped],
+        }),
+      )
+
+      expect(within(dialog).getByText(/over this gateway/)).toBeInTheDocument()
+    })
+
+    it('distinguishes finding nothing from never having looked', async () => {
+      const searched = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 22 }),
+          retrieved_chunk_ids: [],
+        }),
+      )
+      expect(within(searched).getByText(/found nothing above/)).toBeInTheDocument()
+    })
+
+    it('says so when retrieval never ran at all', async () => {
+      const dialog = await open(
+        makeRequestDetail({ log: makeRequestLog({ latency_retrieval_ms: null }) }),
+      )
+
+      expect(within(dialog).getByText(/did not run for this request/)).toBeInTheDocument()
+    })
+
+    it('renders a record written before the injected flag existed', async () => {
+      // The column is jsonb and its shape has moved once already. A row from an older
+      // build must render as much as it can rather than blank the panel.
+      const dialog = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 9 }),
+          retrieved_chunk_ids: [{ id: 'old', score: 0.5 }],
+        }),
+      )
+
+      expect(within(dialog).getByText('0.50')).toBeInTheDocument()
+      expect(within(dialog).getByText('(unknown document)')).toBeInTheDocument()
+    })
+  })
 })
 
 describe('the A/B overlay', () => {
@@ -521,5 +601,25 @@ describe('chart series', () => {
 
   it('handles a window with no buckets at all', () => {
     expect(seriesFrom([], [{ name: 'requests', label: 'Requests' }])).toEqual([])
+  })
+
+  it('draws the empty-retrieval rate as its own line', () => {
+    // Separate from the latency chart on purpose: a fraction between 0 and 1 sharing an
+    // axis with milliseconds is a line flat against the bottom of the frame.
+    const series = retrievalSeries([
+      { start: '2026-09-06T11:00:00Z', series: { attempts: 9, empty: 3, empty_rate: 0.333 } },
+    ])
+
+    expect(series.map((line) => line.name)).toEqual(['empty_rate'])
+    expect(series[0]!.values).toEqual([0.333])
+  })
+
+  it('draws no line at all for a window where nothing searched', () => {
+    // A flat line at zero would read as "this gateway always finds what it needs".
+    const series = retrievalSeries([
+      { start: '2026-09-06T11:00:00Z', series: { attempts: 0, empty: 0 } },
+    ])
+
+    expect(series).toEqual([])
   })
 })

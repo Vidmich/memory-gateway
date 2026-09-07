@@ -14,6 +14,7 @@ from app.services.api_keys import KeyAuthenticator
 from app.services.gateway_resolver import GatewayResolver
 from app.services.proxy import ProxyService
 from app.services.request_log import RequestLogService
+from app.services.retrieval import MemoryService
 from app.services.routing import Router
 
 
@@ -51,4 +52,15 @@ def get_request_logs(request: Request) -> RequestLogService:
     recorded without a database, a queue or a background task in sight.
     """
     service: RequestLogService = request.app.state.request_logs
+    return service
+
+
+def get_memory(request: Request) -> MemoryService:
+    """The memory subsystem: document retrieval now, conversation memory from task 12.
+
+    A dependency like the rest, and for the sharpest version of the same reason: a test
+    that wants to prove `fail_closed` returns 503 substitutes one whose retriever always
+    times out, and does it without Qdrant, an embedding provider, or a clock.
+    """
+    service: MemoryService = request.app.state.memory_service
     return service

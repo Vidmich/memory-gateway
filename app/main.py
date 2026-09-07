@@ -49,13 +49,16 @@ from app.services.gateway_store import PostgresGatewayStore
 from app.services.gateways import GatewayService
 from app.services.log_store import PostgresLogWriter
 from app.services.login_throttle import LoginThrottle, RedisThrottleStore
+from app.services.memory_preview import MemoryPreview
 from app.services.metrics_store import PostgresMetricsRepository
 from app.services.model_probe import ModelProbe
 from app.services.monitoring import MonitoringService, RedisSummaryCache
 from app.services.proxy import ProxyService
 from app.services.rate_limit import FixedWindowLimiter
 from app.services.request_log import LogFlusher, LogQueue, RequestLogService
+from app.services.retrieval import MemoryService, Retriever
 from app.services.routing import Router
+from app.services.tokenizer import build_tokenizer
 from app.workers.runtime import build_ingestion, build_queue
 
 logger = logging.getLogger(__name__)
@@ -87,7 +90,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.key_authenticator = KeyAuthenticator(
             clients.session_factory, LastUsedRecorder(clients.redis, settings=settings)
         )
-        proxy_service = ProxyService(clients.http)
+        # The tokenizer the assembler measures budgets with. Built once because
+        # `tiktoken` loads a vocabulary on first use and a per-request build would repeat
+        # that lookup on the hot path.
+        tokenizer = build_tokenizer()
+        proxy_service = ProxyService(clients.http, tokenizer=tokenizer)
         app.state.proxy_service = proxy_service
         upstream_router = Router(
             proxy_service,
@@ -116,6 +123,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # builds the same objects from the same function, so the two cannot drift.
         ingestion = build_ingestion(clients, settings, queue=build_queue(clients.jobs))
         app.state.ingestion = ingestion
+        # Retrieval reads the same index ingestion writes, through the same two ports —
+        # which is what makes "did my upload become searchable" and "does the gateway see
+        # it" the same question rather than two systems that agree by convention.
+        retriever = Retriever(ingestion.embedder, ingestion.vectors, metrics=metrics.retrieval)
+        app.state.memory_service = MemoryService(retriever, metrics=metrics.retrieval)
         app.state.connector_service = ConnectorService(
             ingestion.store,
             objects=ingestion.objects,
@@ -158,8 +170,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             settings=settings,
         )
+        gateway_store = PostgresGatewayStore(clients.session_factory)
+        # The editor's Memory section: the same retriever and the same assembler the data
+        # plane uses, so what it shows is what a request would inject.
+        app.state.memory_preview = MemoryPreview(
+            gateway_store, memory=app.state.memory_service, tokenizer=tokenizer
+        )
         app.state.gateway_service = GatewayService(
-            PostgresGatewayStore(clients.session_factory),
+            gateway_store,
             # Through the *cached* resolver on purpose: "Test gateway" has to exercise
             # what a customer's request exercises, cache included.
             probe=ProxyGatewayProbe(resolver, upstream_router),

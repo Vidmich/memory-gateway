@@ -17,6 +17,7 @@ import {
   intervalLabel,
   latencySeries,
   modelSlices,
+  retrievalSeries,
   pointsOf,
   statusSeries,
   tokenSeries,
@@ -67,6 +68,7 @@ export function MonitoringPage() {
   const requests = useSeries(window, filters, 'requests', 'status_class')
   const latency = useSeries(window, filters, 'latency')
   const tokens = useSeries(window, filters, 'tokens')
+  const retrieval = useSeries(window, filters, 'retrieval')
   const logs = useLogs(window, filters, { cursor, tail: tail && atTop })
 
   const setFilter = (name: keyof LogFilters, value: string | null) => {
@@ -200,6 +202,19 @@ export function MonitoringPage() {
           <LineChart
             points={pointsOf(tokens.data?.buckets ?? [])}
             series={tokenSeries(tokens.data?.buckets ?? [])}
+          />
+        </ChartFrame>
+
+        <ChartFrame
+          title="Retrieval"
+          subtitle="How often a request that searched the knowledge base came back with nothing."
+          legend={retrievalSeries(retrieval.data?.buckets ?? [])}
+          empty={isEmpty(retrieval.data?.buckets)}
+        >
+          <LineChart
+            points={pointsOf(retrieval.data?.buckets ?? [])}
+            series={retrievalSeries(retrieval.data?.buckets ?? [])}
+            format={(value) => `${Math.round(value * 100)}%`}
           />
         </ChartFrame>
 
@@ -370,6 +385,19 @@ function Cards({
       'prompt plus completion',
     ],
     ['p95 first token', formatMs(summary?.ttft.p95), 'streamed requests only'],
+    //  The quality signal, and the reason it is a card rather than only a line: a gateway
+    //  retrieving nothing most of the time looks perfectly healthy on every other number
+    //  here, and is answering from nowhere. The denominator is requests that actually
+    //  searched, so a gateway with no connectors reads "—" rather than a misleading 0%.
+    [
+      'Retrieved nothing',
+      summary?.retrieval_attempts
+        ? `${(summary.empty_retrieval_rate * 100).toFixed(0)}%`
+        : '—',
+      summary?.retrieval_attempts
+        ? `${summary.retrieval_empty.toLocaleString()} of ${summary.retrieval_attempts.toLocaleString()} searches`
+        : 'no requests used memory',
+    ],
   ]
 
   return (

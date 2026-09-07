@@ -44,7 +44,7 @@ from app.services.memory_db import MemoryDatabase
 #: compared with last week's screenshot.
 PERCENTILES = (0.5, 0.95, 0.99)
 
-type Metric = Literal["requests", "latency", "tokens"]
+type Metric = Literal["requests", "latency", "tokens", "retrieval"]
 type GroupBy = Literal["none", "status_class", "model", "gateway"]
 
 
@@ -128,12 +128,34 @@ class Summary:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     memory_tokens: int = 0
+    #: Requests where retrieval actually ran, and of those, how many injected nothing.
+    #: The denominator excludes requests that never retrieved — a gateway with no
+    #: connectors attached is not a gateway retrieving nothing — which is what keeps the
+    #: rate a statement about *this* gateway working rather than about how many gateways
+    #: use memory at all.
+    #:
+    #: "Injected nothing" here means the search returned no chunk above the score floor
+    #: *or* retrieval failed and the policy was ``fail_open``. The row cannot tell those
+    #: apart; the ``retrieval_attempts_total`` metric can, by its ``outcome`` label. Both
+    #: belong in this number for the screen it feeds, because both are a model answering
+    #: without the documents it was supposed to have.
+    retrieval_attempts: int = 0
+    retrieval_empty: int = 0
     models: tuple[ModelTraffic, ...] = ()
     error_groups: tuple[ErrorGroup, ...] = ()
 
     @property
     def error_rate(self) -> float:
         return (self.errors / self.requests) if self.requests else 0.0
+
+    @property
+    def empty_retrieval_rate(self) -> float:
+        """SPEC §10.1 does not name this one; task 10 calls it the key quality signal.
+
+        A gateway retrieving nothing most of the time looks perfectly healthy on every
+        other chart — normal latency, no errors — and is answering from nowhere.
+        """
+        return (self.retrieval_empty / self.retrieval_attempts) if self.retrieval_attempts else 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +252,8 @@ class PostgresMetricsTransaction:
                     _percentiles(RequestLog.latency_total_ms),
                     _percentiles(RequestLog.latency_ttft_ms),
                     _percentiles(RequestLog.latency_retrieval_ms),
+                    func.count().filter(_retrieved()),
+                    func.count().filter(_retrieved(), _no_chunks()),
                 )
                 .where(*where)
                 .execution_options(**scoped())
@@ -275,6 +299,8 @@ class PostgresMetricsTransaction:
             total=Percentiles.of(totals[5]),
             ttft=Percentiles.of(totals[6]),
             retrieval=Percentiles.of(totals[7]),
+            retrieval_attempts=totals[8],
+            retrieval_empty=totals[9],
             models=tuple(
                 ModelTraffic(upstream_model_id=row[0], model_name=row[1], requests=row[2])
                 for row in models
@@ -441,6 +467,10 @@ class MemoryMetricsTransaction:
             total=percentiles([row.latency_total_ms for row in rows]),
             ttft=percentiles([row.latency_ttft_ms for row in rows]),
             retrieval=percentiles([row.latency_retrieval_ms for row in rows]),
+            retrieval_attempts=sum(1 for row in rows if _attempted(row)),
+            retrieval_empty=sum(
+                1 for row in rows if _attempted(row) and not row.retrieved_chunk_ids
+            ),
             models=tuple(
                 ModelTraffic(upstream_model_id=key[0], model_name=key[1], requests=count)
                 for key, count in sorted(models.items(), key=lambda item: -item[1])
@@ -552,6 +582,16 @@ def _series_values(metric: Metric, rows: Sequence[RequestLog]) -> dict[str, floa
             "completion": float(sum(row.completion_tokens or 0 for row in rows)),
             "memory": float(sum(row.memory_tokens or 0 for row in rows)),
         }
+    if metric == "retrieval":
+        attempted = [row for row in rows if _attempted(row)]
+        empty = [row for row in attempted if not row.retrieved_chunk_ids]
+        series = {"attempts": float(len(attempted)), "empty": float(len(empty))}
+        if attempted:
+            series["empty_rate"] = len(empty) / len(attempted)
+        p95 = percentiles([row.latency_retrieval_ms for row in attempted]).p95
+        if p95 is not None:
+            series["p95"] = float(p95)
+        return series
     total = percentiles([row.latency_total_ms for row in rows])
     ttft = percentiles([row.latency_ttft_ms for row in rows])
     retrieval = percentiles([row.latency_retrieval_ms for row in rows])
@@ -632,6 +672,26 @@ def _percentiles(column: Any) -> Any:
     )
 
 
+def _retrieved() -> Any:
+    """Rows where retrieval ran. ``latency_retrieval_ms`` is null when it did not, which
+    is why the column is nullable rather than defaulting to zero."""
+    return RequestLog.latency_retrieval_ms.is_not(None)
+
+
+def _no_chunks() -> Any:
+    """Rows whose retrieval produced no chunk at all — injected *or* dropped.
+
+    ``retrieved_chunk_ids`` holds both, so a request whose chunks were all dropped by the
+    token budget is not counted as an empty retrieval: retrieval worked, the budget was
+    the constraint, and those are different problems with different fixes.
+    """
+    return func.jsonb_array_length(RequestLog.retrieved_chunk_ids) == 0
+
+
+def _attempted(row: RequestLog) -> bool:
+    return row.latency_retrieval_ms is not None
+
+
 def _status_class() -> Any:
     """``503`` -> ``'5xx'``, in SQL. Integer division, so no rounding to argue about."""
     return func.concat(RequestLog.status_code / 100, "xx")
@@ -655,6 +715,12 @@ def _metric_columns(metric: Metric) -> list[Any]:
             func.coalesce(func.sum(RequestLog.prompt_tokens), 0),
             func.coalesce(func.sum(RequestLog.completion_tokens), 0),
             func.coalesce(func.sum(RequestLog.memory_tokens), 0),
+        ]
+    if metric == "retrieval":
+        return [
+            func.count().filter(_retrieved()),
+            func.count().filter(_retrieved(), _no_chunks()),
+            _percentiles(RequestLog.latency_retrieval_ms),
         ]
     return [
         _percentiles(RequestLog.latency_total_ms),
@@ -685,6 +751,15 @@ def _named(metric: Metric, values: Sequence[Any]) -> dict[str, float]:
             "completion": float(values[1]),
             "memory": float(values[2]),
         }
+    if metric == "retrieval":
+        attempts, empty = float(values[0]), float(values[1])
+        series = {"attempts": attempts, "empty": empty}
+        if attempts:
+            series["empty_rate"] = empty / attempts
+        p95 = Percentiles.of(values[2]).p95
+        if p95 is not None:
+            series["p95"] = float(p95)
+        return series
     total, ttft, retrieval = (Percentiles.of(value) for value in values[:3])
     return {
         name: float(value)

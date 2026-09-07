@@ -71,6 +71,12 @@ class SummaryResponse(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     memory_tokens: int
+    #: Requests where retrieval ran, and how many of those injected nothing. Precomputed
+    #: as a rate for the same reason ``error_rate`` is: three screens divide it, and three
+    #: roundings of one division is three chances to disagree.
+    retrieval_attempts: int
+    retrieval_empty: int
+    empty_retrieval_rate: float
     models: list[ModelTrafficResponse]
     error_groups: list[ErrorGroupResponse]
 
@@ -87,6 +93,9 @@ class SummaryResponse(BaseModel):
             prompt_tokens=summary.prompt_tokens,
             completion_tokens=summary.completion_tokens,
             memory_tokens=summary.memory_tokens,
+            retrieval_attempts=summary.retrieval_attempts,
+            retrieval_empty=summary.retrieval_empty,
+            empty_retrieval_rate=round(summary.empty_retrieval_rate, 6),
             models=[ModelTrafficResponse(**asdict(model)) for model in summary.models],
             error_groups=[ErrorGroupResponse(**asdict(group)) for group in summary.error_groups],
         )
@@ -97,7 +106,8 @@ class BucketResponse(BaseModel):
 
     start: datetime
     #: Series name to value. Names are ``requests``; ``prompt``/``completion``/``memory``;
-    #: ``total_p50``/``total_p95``/``total_p99``/``ttft_p95``/``retrieval_p95`` — prefixed
+    #: ``total_p50``/``total_p95``/``total_p99``/``ttft_p95``/``retrieval_p95``; and, for
+    #: the ``retrieval`` metric, ``attempts``/``empty``/``empty_rate``/``p95``. Prefixed
     #: with the group when one was asked for, as in ``5xx.requests``.
     series: dict[str, float]
 

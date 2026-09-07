@@ -23,7 +23,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
 
-from app.api.control.deps import CurrentActor, get_gateway_service, require_capability
+from app.api.control.deps import (
+    CurrentActor,
+    get_gateway_service,
+    get_memory_preview,
+    require_capability,
+)
 from app.schemas.common import Page
 from app.schemas.gateway import (
     ApiKeyCreateRequest,
@@ -34,13 +39,18 @@ from app.schemas.gateway import (
     GatewayTestResponse,
     GatewayUpdateRequest,
     IssuedApiKeyResponse,
+    MemoryPreviewRequest,
+    PromptPreviewResponse,
+    RetrievalPreviewResponse,
 )
 from app.services.gateways import GatewayService
+from app.services.memory_preview import MemoryPreview
 from app.services.permissions import Capability
 
 router = APIRouter(tags=["gateways"])
 
 _Service = Annotated[GatewayService, Depends(get_gateway_service)]
+_Preview = Annotated[MemoryPreview, Depends(get_memory_preview)]
 _Cursor = Annotated[str | None, Query(max_length=64)]
 _Limit = Annotated[int | None, Query(ge=1, le=200)]
 
@@ -126,6 +136,56 @@ async def test_gateway(
     """
     return GatewayTestResponse.of(
         await service.test_gateway(actor, gateway_id, message=body.message)
+    )
+
+
+# ---------------------------------------------------------------------------
+# memory
+# ---------------------------------------------------------------------------
+#
+# Both are reads — they retrieve, they assemble, they store nothing — but both sit behind
+# ``resources:write`` rather than ``org:read``. Two reasons, and the second is the real
+# one. They return chunk *text* from the organization knowledge base, which is content a
+# read-only role is not otherwise shown anywhere in this UI; and they accept an unsaved
+# configuration, which makes them the same surface as the editor they live in.
+
+
+@router.post("/gateways/{gateway_id}/try-retrieval", dependencies=[_writes])
+async def try_retrieval(
+    gateway_id: uuid.UUID,
+    body: MemoryPreviewRequest,
+    actor: CurrentActor,
+    preview: _Preview,
+) -> RetrievalPreviewResponse:
+    """Which chunks this question would inject, at what score, and which survive the
+    token budget.
+
+    The same retriever a live request uses, so the scores here are the scores there.
+    """
+    return RetrievalPreviewResponse.of(
+        await preview.try_retrieval(
+            actor, gateway_id, query=body.query, memory_config=body.memory_config
+        )
+    )
+
+
+@router.post("/gateways/{gateway_id}/prompt-preview", dependencies=[_writes])
+async def prompt_preview(
+    gateway_id: uuid.UUID,
+    body: MemoryPreviewRequest,
+    actor: CurrentActor,
+    preview: _Preview,
+) -> PromptPreviewResponse:
+    """The fully assembled system message for a sample question, layer by layer.
+
+    Distinct from ``/test``, which sends a real completion and reports what the provider
+    received. This one costs a retrieval and no tokens, so it is the one you press while
+    editing; ``/test`` is the one that proves the whole path.
+    """
+    return PromptPreviewResponse.of(
+        await preview.preview_prompt(
+            actor, gateway_id, message=body.query, memory_config=body.memory_config
+        )
     )
 
 

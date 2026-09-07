@@ -46,6 +46,10 @@ type FormState = {
   systemContext: string
   defaultParams: string
   timeoutSeconds: number
+  //  A string, not a number, because empty is a meaningful value here — it means "I do
+  //  not know this model's window", which is a different thing from zero and is what
+  //  switches the gateway's overflow guard off.
+  contextWindow: string
   enabled: boolean
   scope: string
 }
@@ -61,6 +65,7 @@ const BLANK: FormState = {
   systemContext: '',
   defaultParams: '{}',
   timeoutSeconds: 60,
+  contextWindow: '',
   enabled: true,
   scope: 'org',
 }
@@ -163,6 +168,9 @@ export function ModelFormPage() {
       system_context: state.systemContext || null,
       default_params: params,
       timeout_seconds: state.timeoutSeconds,
+      //  `null` rather than omitted, so clearing the field is a change the PATCH applies
+      //  — the field is genuinely nullable, unlike the rest of this body.
+      context_window: state.contextWindow ? Number(state.contextWindow) : null,
       enabled: state.enabled,
     }
 
@@ -420,22 +428,41 @@ export function ModelFormPage() {
               )}
             </Field>
 
-            <Field
-              name="timeout_seconds"
-              label="Timeout (seconds)"
-              hint="How long to wait for the first byte."
-            >
-              {(props) => (
-                <TextInput
-                  {...props}
-                  type="number"
-                  min={1}
-                  max={600}
-                  value={state.timeoutSeconds}
-                  onChange={(event) => set('timeoutSeconds', Number(event.target.value))}
-                />
-              )}
-            </Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field
+                name="timeout_seconds"
+                label="Timeout (seconds)"
+                hint="How long to wait for the first byte."
+              >
+                {(props) => (
+                  <TextInput
+                    {...props}
+                    type="number"
+                    min={1}
+                    max={600}
+                    value={state.timeoutSeconds}
+                    onChange={(event) => set('timeoutSeconds', Number(event.target.value))}
+                  />
+                )}
+              </Field>
+
+              <Field
+                name="context_window"
+                label="Context window (tokens)"
+                hint="Optional. When set, a gateway will not inject retrieved documents that would overflow it. Left blank, no such check runs."
+              >
+                {(props) => (
+                  <TextInput
+                    {...props}
+                    type="number"
+                    min={256}
+                    placeholder="not set"
+                    value={state.contextWindow}
+                    onChange={(event) => set('contextWindow', event.target.value)}
+                  />
+                )}
+              </Field>
+            </div>
 
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input
@@ -669,6 +696,7 @@ function stateOf(model: ModelResponse): FormState {
     systemContext: model.system_context ?? '',
     defaultParams: JSON.stringify(model.default_params, null, 2),
     timeoutSeconds: model.timeout_seconds,
+    contextWindow: model.context_window === null ? '' : String(model.context_window),
     enabled: model.enabled,
     scope: model.scope,
   }

@@ -46,6 +46,12 @@ from app.services.gateways import (
     Maybe,
     TargetSpec,
 )
+from app.services.memory_preview import (
+    MAX_PREVIEW_QUERY,
+    PreviewChunk,
+    PromptPreview,
+    RetrievalPreview,
+)
 
 MAX_NAME = 200
 MAX_DESCRIPTION = 2000
@@ -330,6 +336,142 @@ class GatewayUpdateRequest(BaseModel):
             logging_config=maybe("logging_config"),
             limits=maybe("limits"),
         )
+
+
+# ---------------------------------------------------------------------------
+# memory previews
+# ---------------------------------------------------------------------------
+
+
+class MemoryPreviewRequest(BaseModel):
+    """A question to try, optionally against settings that have not been saved.
+
+    ``memory_config`` is the same partial blob ``PATCH`` accepts and is merged the same
+    way, so the tuning loop is: change a number, press Try, read the scores — without
+    changing what live callers of this endpoint are getting between attempts.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: Annotated[str, Field(min_length=1, max_length=MAX_PREVIEW_QUERY)]
+    memory_config: dict[str, Any] | None = None
+
+
+class RetrievedChunkResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    score: float
+    text: str
+    source_name: str
+    page_or_section: str | None
+    document_id: uuid.UUID | None
+    connector_id: uuid.UUID | None
+    chunk_index: int
+    tokens: int
+    #: Whether it survives ``doc_max_tokens``. A high-scoring chunk with ``false`` here
+    #: is the screen earning its keep: the corpus is fine and the budget is the problem.
+    injected: bool
+
+    @classmethod
+    def of(cls, item: PreviewChunk) -> Self:
+        chunk = item.chunk
+        return cls(
+            id=chunk.id,
+            score=chunk.score,
+            text=chunk.text,
+            source_name=chunk.source_name,
+            page_or_section=chunk.page_or_section,
+            document_id=_uuid(chunk.document_id),
+            connector_id=_uuid(chunk.connector_id),
+            chunk_index=chunk.chunk_index,
+            tokens=item.tokens,
+            injected=item.injected,
+        )
+
+
+class RetrievalPreviewResponse(BaseModel):
+    """What Try retrieval returns. ``outcome`` distinguishes the four kinds of empty."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: What was actually embedded. Not the same as ``query`` under ``last_n_turns``, and
+    #: the difference is usually what explains a surprising result.
+    query: str
+    outcome: str
+    latency_ms: int
+    error: str | None
+    chunks: list[RetrievedChunkResponse]
+    injected_tokens: int
+    doc_max_tokens: int
+
+    @classmethod
+    def of(cls, preview: RetrievalPreview) -> Self:
+        return cls(
+            query=preview.query,
+            outcome=preview.outcome,
+            latency_ms=preview.latency_ms,
+            error=preview.error,
+            chunks=[RetrievedChunkResponse.of(item) for item in preview.chunks],
+            injected_tokens=preview.injected_tokens,
+            doc_max_tokens=preview.doc_max_tokens,
+        )
+
+
+class PromptLayerResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    label: str
+    text: str
+    tokens: int
+
+
+class PromptPreviewResponse(BaseModel):
+    """The assembled system message, layer by layer, with the retrieval behind it."""
+
+    #: ``protected_namespaces`` off because ``model_name`` is the domain word here and
+    #: renaming it to dodge a Pydantic convention would make the API read worse.
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    layers: list[PromptLayerResponse]
+    system_message: str
+    total_tokens: int
+    #: ``None`` when the model does not declare a window. The UI then shows token counts
+    #: without a percentage, because there is nothing honest to take a percentage of.
+    context_window: int | None
+    model_name: str | None
+    #: SPEC §7: the client messages left no room, so nothing was injected.
+    overflowed: bool
+    retrieval: RetrievalPreviewResponse
+
+    @classmethod
+    def of(cls, preview: PromptPreview) -> Self:
+        return cls(
+            layers=[
+                PromptLayerResponse(
+                    name=layer.name, label=layer.label, text=layer.text, tokens=layer.tokens
+                )
+                for layer in preview.layers
+            ],
+            system_message=preview.system_message,
+            total_tokens=preview.total_tokens,
+            context_window=preview.context_window,
+            model_name=preview.model_name,
+            overflowed=preview.overflowed,
+            retrieval=RetrievalPreviewResponse.of(preview.retrieval),
+        )
+
+
+def _uuid(value: str | None) -> uuid.UUID | None:
+    """A payload id, or nothing. Vector payloads are written by this system, but a
+    hand-repaired point should not make a diagnostic screen 500."""
+    if not value:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------

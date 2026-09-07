@@ -276,9 +276,7 @@ class GatewayService:
                 system_context=draft.system_context,
                 param_overrides=overrides,
                 locked_params=locked,
-                memory_config=merge_config(
-                    MemoryConfig, {}, draft.memory_config, field="memory_config"
-                ),
+                memory_config=await _checked_memory(transaction, {}, draft.memory_config),
                 # SPEC §10.2: an organization may set stricter defaults than the
                 # platform's, and a new gateway inherits them. Merged *under* the draft,
                 # so a form that sends its own value still wins — this is a starting
@@ -323,8 +321,8 @@ class GatewayService:
             if not isinstance(patch.locked_params, _Unset):
                 gateway.locked_params = validate_params(patch.locked_params, field="locked_params")
             if not isinstance(patch.memory_config, _Unset):
-                gateway.memory_config = merge_config(
-                    MemoryConfig, gateway.memory_config, patch.memory_config, field="memory_config"
+                gateway.memory_config = await _checked_memory(
+                    transaction, gateway.memory_config, patch.memory_config
                 )
             if not isinstance(patch.logging_config, _Unset):
                 gateway.logging_config = merge_config(
@@ -618,6 +616,41 @@ def _check_routing_mode(mode: str) -> None:
         raise Validation(
             f"Routing mode must be one of {', '.join(ROUTING_MODES)}.", param="routing_mode"
         )
+
+
+async def _checked_memory(
+    transaction: GatewayTransaction,
+    stored: Mapping[str, Any] | None,
+    patch: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge the memory blob and refuse connectors this organization does not own.
+
+    SPEC §5.3. The check is here, at write time, *and* again at request time in
+    :mod:`app.services.retrieval`, which pushes ``connector_ids`` into the vector filter.
+    Two checks for one rule is deliberate: this one produces a readable 422 on the form,
+    and the other one is the guarantee — a connector detached from an organization after
+    a gateway referenced it must stop being readable on the next request, not on the next
+    save.
+
+    A connector belonging to another tenant and one that does not exist produce the same
+    message, for the same reason every other lookup here does: the difference is
+    information about somebody else's account.
+    """
+    merged = merge_config(MemoryConfig, stored, patch, field="memory_config")
+    wanted = [uuid.UUID(value) for value in merged.get("connector_ids", [])]
+    if not wanted:
+        return merged
+
+    visible = await transaction.own_connectors(wanted)
+    missing = [value for value in wanted if value not in visible]
+    if missing:
+        names = ", ".join(str(value) for value in missing)
+        raise Validation(
+            f"No connector with id {names} in this organization. A gateway can only read "
+            f"connectors that belong to it.",
+            param="memory_config.connector_ids",
+        )
+    return merged
 
 
 def _check_chain(mode: str, chain: Sequence[Chain]) -> None:

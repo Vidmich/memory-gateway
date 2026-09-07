@@ -637,3 +637,69 @@ async def test_deleting_a_gateway_takes_its_keys(world: World) -> None:
 async def test_another_organizations_gateway_cannot_be_deleted(world: World) -> None:
     with pytest.raises(NotFound):
         await world.gateways.delete_gateway(world.actor(world.acme_admin), world.globex_gateway.id)
+
+
+# ---------------------------------------------------------------------------
+# memory: which connectors a gateway may read (SPEC §5.3, task 10)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_gateway_can_be_attached_to_its_own_connectors(world: World) -> None:
+    view = await world.gateways.update_gateway(
+        world.actor(world.acme_admin),
+        world.acme_gateway.id,
+        GatewayPatch(memory_config={"connector_ids": [str(world.acme_connector.id)]}),
+    )
+
+    assert view.gateway.memory_config["connector_ids"] == [str(world.acme_connector.id)]
+
+
+async def test_a_gateway_cannot_reference_another_organizations_connector(
+    world: World,
+) -> None:
+    """The disclosure this rule exists to prevent. Checked here so the form gets a
+    readable 422, and again at request time so a connector that moves stops being
+    readable on the next request rather than on the next save."""
+    with pytest.raises(Validation) as raised:
+        await world.gateways.update_gateway(
+            world.actor(world.acme_admin),
+            world.acme_gateway.id,
+            GatewayPatch(memory_config={"connector_ids": [str(world.globex_connector.id)]}),
+        )
+
+    assert raised.value.param == "memory_config.connector_ids"
+    assert str(world.globex_connector.id) in raised.value.message
+
+
+async def test_a_connector_that_does_not_exist_is_refused_identically(world: World) -> None:
+    """Same message for "not yours" and "not there": the difference is information about
+    somebody else's account."""
+    missing = uuid.uuid4()
+
+    with pytest.raises(Validation) as raised:
+        await world.gateways.update_gateway(
+            world.actor(world.acme_admin),
+            world.acme_gateway.id,
+            GatewayPatch(memory_config={"connector_ids": [str(missing)]}),
+        )
+
+    assert "in this organization" in raised.value.message
+
+
+async def test_a_new_gateway_is_checked_too(world: World) -> None:
+    with pytest.raises(Validation):
+        await world.gateways.create_gateway(
+            world.actor(world.acme_admin),
+            draft(memory_config={"connector_ids": [str(world.globex_connector.id)]}),
+        )
+
+
+async def test_an_empty_connector_list_needs_no_lookup(world: World) -> None:
+    """The default, and the common case. It must not become a query per save."""
+    view = await world.gateways.update_gateway(
+        world.actor(world.acme_admin),
+        world.acme_gateway.id,
+        GatewayPatch(memory_config={"doc_top_k": 4}),
+    )
+
+    assert view.gateway.memory_config["connector_ids"] == []

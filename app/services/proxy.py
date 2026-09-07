@@ -29,8 +29,10 @@ from app.api.proxy.errors import (
 from app.schemas.openai import ChatRequest, ChatResponse, StreamFrame
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.params import Resolved, resolve_params
-from app.services.prompt import PromptAssembler, PromptLayer
+from app.services.prompt import Assembled, assemble
+from app.services.retrieval import Recall
 from app.services.sse import DONE, format_event
+from app.services.tokenizer import Tokenizer, WordTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +48,26 @@ class Prepared:
     Carries the merge result alongside the payload because the two are read at different
     moments: the request goes upstream, the ``overridden`` list goes into a response
     header that has to be written before any body.
+
+    ``assembly`` is the third of those moments. It is the account of what memory did —
+    which chunks went in, which were dropped and why, how many tokens it cost — and it is
+    per *attempt* rather than per request, because two targets can have different context
+    windows and therefore inject different amounts. The header and the log row have to
+    describe the attempt that answered, not the first one tried.
     """
 
     request: ChatRequest
     params: Resolved
     target: UpstreamTarget
+    assembly: Assembled | None = None
+
+    @property
+    def memory_tokens(self) -> int:
+        return self.assembly.memory_tokens if self.assembly is not None else 0
+
+    @property
+    def injected_chunks(self) -> int:
+        return len(self.assembly.injected) if self.assembly is not None else 0
 
 
 class StreamObserver(Protocol):
@@ -74,10 +91,15 @@ class ProxyService:
     def __init__(
         self,
         http: httpx.AsyncClient,
-        assembler: PromptAssembler | None = None,
+        *,
+        tokenizer: Tokenizer | None = None,
     ) -> None:
         self._http = http
-        self._assembler = assembler or PromptAssembler()
+        # The same tokenizer the chunker used, so the budget a gateway sets in tokens is
+        # measured in the same tokens the index was built with. A different one here would
+        # make `doc_max_tokens` mean something slightly different from `chunk_size`, which
+        # is the sort of discrepancy nobody finds by reading.
+        self._tokenizer = tokenizer or WordTokenizer()
 
     # -- request construction ------------------------------------------------
 
@@ -86,6 +108,8 @@ class ProxyService:
         request: ChatRequest,
         gateway: ResolvedGateway,
         target: UpstreamTarget,
+        *,
+        recall: Recall | None = None,
     ) -> Prepared:
         """Apply the prompt layers and the parameter merge, once.
 
@@ -94,14 +118,23 @@ class ProxyService:
         a separate step from sending because the caller needs the merge *before* the
         response exists — the locked-parameter header goes out with the status line, and
         on a stream that is before the first token.
+
+        ``recall`` is what the memory subsystem found, already retrieved. It is passed in
+        rather than fetched here because retrieval is one network call for the whole
+        request while this function runs once per routing attempt — searching again for
+        the second target would double the cost of a failover for an identical result.
         """
-        messages = self._assembler.assemble(
+        memory = gateway.memory
+        assembly = assemble(
             request.messages,
-            [
-                PromptLayer("model.system_context", target.system_context),
-                PromptLayer("gateway.system_context", gateway.system_context),
-                # Tasks 10 and 12 add the document and end-user memory layers here.
-            ],
+            model_context=target.system_context,
+            gateway_context=gateway.system_context,
+            chunks=recall.documents.chunks if recall is not None else (),
+            facts=recall.facts if recall is not None else (),
+            doc_max_tokens=memory.doc_max_tokens,
+            memory_max_tokens=memory.memory_max_tokens,
+            context_window=target.context_window,
+            tokenizer=self._tokenizer,
         )
         params = resolve_params(
             model_defaults=target.default_params,
@@ -112,8 +145,15 @@ class ProxyService:
 
         payload: dict[str, Any] = request.model_dump(exclude_none=True)
         payload.update(params.values)
-        payload["messages"] = [message.model_dump(exclude_none=True) for message in messages]
-        return Prepared(request=ChatRequest.model_validate(payload), params=params, target=target)
+        payload["messages"] = [
+            message.model_dump(exclude_none=True) for message in assembly.messages
+        ]
+        return Prepared(
+            request=ChatRequest.model_validate(payload),
+            params=params,
+            target=target,
+            assembly=assembly,
+        )
 
     # -- non-streaming -------------------------------------------------------
 

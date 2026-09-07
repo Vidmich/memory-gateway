@@ -30,11 +30,21 @@ ORG_LOGGING_DEFAULTS = "logging_defaults"
 
 
 class MemoryConfig(ConfigBlob):
-    """SPEC §6.3. Task 10 makes these do something; the shape is settled now.
+    """SPEC §6.3 — what this gateway retrieves, and what happens when it cannot.
 
     ``connector_ids`` is empty by default, which means no document memory — a gateway
     that silently started reading every connector in the organization would be a
-    disclosure bug, so the safe default is "nothing".
+    disclosure bug, so the safe default is "nothing". Empty is also a *fast* path rather
+    than a filter that matches nothing: :mod:`app.services.retrieval` skips the embedding
+    and the vector call entirely, so an unconfigured gateway costs no latency at all.
+
+    ``on_retrieval_error`` is the only field here that is about the product rather than
+    about quality, and it is a real choice with no safe default. ``fail_open`` serves an
+    ungrounded answer when the index is unreachable, which is right for a support bot
+    that is better than nothing; ``fail_closed`` returns 503, which is right for an
+    assistant whose whole value is that it only answers from the handbook. The platform
+    default is ``fail_open`` because availability is the more common preference, and the
+    editor says in words what the other one does.
     """
 
     connector_ids: list[uuid.UUID] = Field(default_factory=list)
@@ -45,6 +55,14 @@ class MemoryConfig(ConfigBlob):
     memory_top_k: int = Field(default=8, ge=1, le=100)
     memory_max_tokens: int = Field(default=600, ge=0, le=100_000)
     query_strategy: Literal["last_user_message", "last_n_turns"] = "last_user_message"
+    #: Read only by ``last_n_turns``. Stored whatever the strategy, so switching to
+    #: ``last_user_message`` to compare and back does not lose the number somebody tuned.
+    query_n_turns: int = Field(default=3, ge=1, le=20)
+    #: SPEC §6.3's 800 ms. The ceiling is 5 s rather than unbounded: a retrieval timeout
+    #: is added to every request that uses this gateway, and a value large enough to be
+    #: invisible in testing is large enough to make a provider outage look like a gateway
+    #: outage.
+    retrieval_timeout_ms: int = Field(default=800, ge=50, le=5000)
     on_retrieval_error: Literal["fail_open", "fail_closed"] = "fail_open"
 
 

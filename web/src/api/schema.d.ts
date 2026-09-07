@@ -377,6 +377,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/gateways/{gateway_id}/prompt-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prompt Preview
+         * @description The fully assembled system message for a sample question, layer by layer.
+         *
+         *     Distinct from ``/test``, which sends a real completion and reports what the provider
+         *     received. This one costs a retrieval and no tokens, so it is the one you press while
+         *     editing; ``/test`` is the one that proves the whole path.
+         */
+        post: operations["prompt_preview_api_v1_gateways__gateway_id__prompt_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/gateways/{gateway_id}/test": {
         parameters: {
             query?: never;
@@ -395,6 +419,29 @@ export interface paths {
          *     without waiting for real traffic to appear in the request log.
          */
         post: operations["test_gateway_api_v1_gateways__gateway_id__test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/gateways/{gateway_id}/try-retrieval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Try Retrieval
+         * @description Which chunks this question would inject, at what score, and which survive the
+         *     token budget.
+         *
+         *     The same retriever a live request uses, so the scores here are the scores there.
+         */
+        post: operations["try_retrieval_api_v1_gateways__gateway_id__try_retrieval_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1505,11 +1552,21 @@ export interface components {
         };
         /**
          * MemoryConfig
-         * @description SPEC §6.3. Task 10 makes these do something; the shape is settled now.
+         * @description SPEC §6.3 — what this gateway retrieves, and what happens when it cannot.
          *
          *     ``connector_ids`` is empty by default, which means no document memory — a gateway
          *     that silently started reading every connector in the organization would be a
-         *     disclosure bug, so the safe default is "nothing".
+         *     disclosure bug, so the safe default is "nothing". Empty is also a *fast* path rather
+         *     than a filter that matches nothing: :mod:`app.services.retrieval` skips the embedding
+         *     and the vector call entirely, so an unconfigured gateway costs no latency at all.
+         *
+         *     ``on_retrieval_error`` is the only field here that is about the product rather than
+         *     about quality, and it is a real choice with no safe default. ``fail_open`` serves an
+         *     ungrounded answer when the index is unreachable, which is right for a support bot
+         *     that is better than nothing; ``fail_closed`` returns 503, which is right for an
+         *     assistant whose whole value is that it only answers from the handbook. The platform
+         *     default is ``fail_open`` because availability is the more common preference, and the
+         *     editor says in words what the other one does.
          */
         MemoryConfig: {
             /** Connector Ids */
@@ -1551,16 +1608,42 @@ export interface components {
              */
             on_retrieval_error: "fail_open" | "fail_closed";
             /**
+             * Query N Turns
+             * @default 3
+             */
+            query_n_turns: number;
+            /**
              * Query Strategy
              * @default last_user_message
              * @enum {string}
              */
             query_strategy: "last_user_message" | "last_n_turns";
             /**
+             * Retrieval Timeout Ms
+             * @default 800
+             */
+            retrieval_timeout_ms: number;
+            /**
              * Version
              * @default 1
              */
             version: number;
+        };
+        /**
+         * MemoryPreviewRequest
+         * @description A question to try, optionally against settings that have not been saved.
+         *
+         *     ``memory_config`` is the same partial blob ``PATCH`` accepts and is merged the same
+         *     way, so the tuning loop is: change a number, press Try, read the scores — without
+         *     changing what live callers of this endpoint are getting between attempts.
+         */
+        MemoryPreviewRequest: {
+            /** Memory Config */
+            memory_config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Query */
+            query: string;
         };
         /** ModelCard */
         ModelCard: {
@@ -1588,6 +1671,8 @@ export interface components {
             auth_type: string;
             /** Base Url */
             base_url: string;
+            /** Context Window */
+            context_window?: number | null;
             /** Credential */
             credential?: string | null;
             /** Default Params */
@@ -1643,6 +1728,8 @@ export interface components {
             auth_type: string;
             /** Base Url */
             base_url: string;
+            /** Context Window */
+            context_window: number | null;
             /**
              * Created At
              * Format: date-time
@@ -1704,6 +1791,8 @@ export interface components {
             auth_type: string;
             /** Base Url */
             base_url: string;
+            /** Context Window */
+            context_window?: number | null;
             /** Credential */
             credential?: string | null;
             /** Default Params */
@@ -1761,6 +1850,8 @@ export interface components {
             auth_type?: string | null;
             /** Base Url */
             base_url?: string | null;
+            /** Context Window */
+            context_window?: number | null;
             /** Credential */
             credential?: string | null;
             /** Default Params */
@@ -1942,12 +2033,42 @@ export interface components {
             /** Upstream Status */
             upstream_status?: number | null;
         };
+        /** PromptLayerResponse */
+        PromptLayerResponse: {
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /** Text */
+            text: string;
+            /** Tokens */
+            tokens: number;
+        };
         /** PromptMessageResponse */
         PromptMessageResponse: {
             /** Content */
             content: string;
             /** Role */
             role: string;
+        };
+        /**
+         * PromptPreviewResponse
+         * @description The assembled system message, layer by layer, with the retrieval behind it.
+         */
+        PromptPreviewResponse: {
+            /** Context Window */
+            context_window: number | null;
+            /** Layers */
+            layers: components["schemas"]["PromptLayerResponse"][];
+            /** Model Name */
+            model_name: string | null;
+            /** Overflowed */
+            overflowed: boolean;
+            retrieval: components["schemas"]["RetrievalPreviewResponse"];
+            /** System Message */
+            system_message: string;
+            /** Total Tokens */
+            total_tokens: number;
         };
         /**
          * RequestDetailResponse
@@ -2049,6 +2170,49 @@ export interface components {
             updated: number;
         };
         /**
+         * RetrievalPreviewResponse
+         * @description What Try retrieval returns. ``outcome`` distinguishes the four kinds of empty.
+         */
+        RetrievalPreviewResponse: {
+            /** Chunks */
+            chunks: components["schemas"]["RetrievedChunkResponse"][];
+            /** Doc Max Tokens */
+            doc_max_tokens: number;
+            /** Error */
+            error: string | null;
+            /** Injected Tokens */
+            injected_tokens: number;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Outcome */
+            outcome: string;
+            /** Query */
+            query: string;
+        };
+        /** RetrievedChunkResponse */
+        RetrievedChunkResponse: {
+            /** Chunk Index */
+            chunk_index: number;
+            /** Connector Id */
+            connector_id: string | null;
+            /** Document Id */
+            document_id: string | null;
+            /** Id */
+            id: string;
+            /** Injected */
+            injected: boolean;
+            /** Page Or Section */
+            page_or_section: string | null;
+            /** Score */
+            score: number;
+            /** Source Name */
+            source_name: string;
+            /** Text */
+            text: string;
+            /** Tokens */
+            tokens: number;
+        };
+        /**
          * SearchHit
          * @description One chunk, with everything needed to judge whether retrieval is working: the score,
          *     the text, and where in which file it came from.
@@ -2126,6 +2290,8 @@ export interface components {
         SummaryResponse: {
             /** Completion Tokens */
             completion_tokens: number;
+            /** Empty Retrieval Rate */
+            empty_retrieval_rate: number;
             /** Error Groups */
             error_groups: components["schemas"]["ErrorGroupResponse"][];
             /** Error Rate */
@@ -2141,6 +2307,10 @@ export interface components {
             /** Requests */
             requests: number;
             retrieval: components["schemas"]["PercentilesResponse"];
+            /** Retrieval Attempts */
+            retrieval_attempts: number;
+            /** Retrieval Empty */
+            retrieval_empty: number;
             /** Status Classes */
             status_classes: {
                 [key: string]: number;
@@ -3019,6 +3189,41 @@ export interface operations {
             };
         };
     };
+    prompt_preview_api_v1_gateways__gateway_id__prompt_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     test_gateway_api_v1_gateways__gateway_id__test_post: {
         parameters: {
             query?: never;
@@ -3041,6 +3246,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GatewayTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    try_retrieval_api_v1_gateways__gateway_id__try_retrieval_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetrievalPreviewResponse"];
                 };
             };
             /** @description Validation Error */

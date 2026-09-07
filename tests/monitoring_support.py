@@ -260,12 +260,19 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
 
     # Three streamed requests on a second gateway, ten minutes apart, one per status
     # class — the fixture for bucketing, grouping and the error taxonomy at once.
+    # The retrieval half rides on the same three rows: all three searched, and only the
+    # first found anything. That makes the empty-retrieval rate on this gateway two in
+    # three, against twenty requests on the other gateway that never searched at all —
+    # which is exactly the distinction the rate has to survive.
+    not_served = "Model 'gpt-9' is not served by gateway 'acme-chat'."
+    timed_out = "[upstream:acme-gpt] did not respond within 5s."
+    #: status, error code, message, ttft, total, retrieval ms, found anything
     streamed = (
-        (200, None, None, 10, 50),
-        (404, "model_not_found", "Model 'gpt-9' is not served by gateway 'acme-chat'.", 20, 60),
-        (504, "upstream_timeout", "[upstream:acme-gpt] did not respond within 5s.", 30, 70),
+        (200, None, None, 10, 50, 12, True),
+        (404, "model_not_found", not_served, 20, 60, 30, False),
+        (504, "upstream_timeout", timed_out, 30, 70, 45, False),
     )
-    for index, (status, code, message, ttft, latency) in enumerate(streamed):
+    for index, (status, code, message, ttft, latency, retrieval_ms, found) in enumerate(streamed):
         logs.append(
             make_log_row(
                 acme,
@@ -277,6 +284,23 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
                 streamed=True,
                 latency_ttft_ms=ttft,
                 latency_total_ms=latency,
+                latency_retrieval_ms=retrieval_ms,
+                memory_tokens=180 if found else None,
+                retrieved_chunk_ids=(
+                    [
+                        {
+                            "id": "chunk-1",
+                            "score": 0.71,
+                            "document_id": str(uuid7()),
+                            "source_name": "handbook.md",
+                            "page_or_section": "p. 12",
+                            "chunk_index": 0,
+                            "injected": True,
+                        }
+                    ]
+                    if found
+                    else []
+                ),
                 upstream_model_id=mini_model_id,
                 model_name="acme-mini",
                 completion_tokens=10 if status == 200 else None,

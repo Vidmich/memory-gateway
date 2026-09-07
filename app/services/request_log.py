@@ -239,6 +239,31 @@ class RequestRecorder:
         self._record.upstream_model_id = target.id
         self._record.model_name = target.name
 
+    def retrieval(self, *, latency_ms: int | None) -> None:
+        """How long the memory subsystem took, when it ran at all.
+
+        ``None`` for a gateway with no connectors attached, and that is not the same as
+        zero: a zero would claim the gateway measured retrieval and found it instant,
+        which would drag the p95 chart toward a number nobody waited for. The column is
+        nullable for exactly this reason.
+        """
+        self._record.latency_retrieval_ms = latency_ms
+
+    def injected(self, *, tokens: int, chunks: Sequence[Mapping[str, Any]]) -> None:
+        """What memory put into the prompt, per routing attempt.
+
+        Plain mappings rather than a retrieval type, for the same reason
+        :meth:`attempts` takes dictionaries: this module records what happened and has no
+        business importing the subsystem that made it happen. The shape is a jsonb
+        column's shape anyway.
+
+        Called once per attempt, and the last call wins — matching :meth:`prepared`,
+        because two targets with different context windows can inject different amounts
+        and the row must describe the one that answered.
+        """
+        self._record.memory_tokens = tokens
+        self._record.retrieved_chunk_ids = [dict(chunk) for chunk in chunks]
+
     def attempts(self, records: Sequence[Mapping[str, Any]]) -> None:
         """The routing chain, already in its JSON form.
 

@@ -296,6 +296,36 @@ async def searching_a_collection_that_does_not_exist_returns_nothing(
 
 
 @check
+async def a_collection_reports_the_width_it_was_built_with(
+    store: VectorStore, org: uuid.UUID
+) -> None:
+    """Retrieval asks before it searches, so an index built by a different embedding
+    model is refused loudly instead of returning neighbours that mean nothing."""
+    await store.ensure_collection(org, dimension=DIMENSION)
+
+    assert await store.dimension(org) == DIMENSION
+
+
+@check
+async def an_organization_with_no_collection_has_no_width(
+    store: VectorStore, org: uuid.UUID
+) -> None:
+    """``None``, not zero: nothing has been indexed, which is not a mismatch."""
+    assert await store.dimension(org) is None
+
+
+@check
+async def a_dropped_collection_stops_reporting_a_width(store: VectorStore, org: uuid.UUID) -> None:
+    """The one case a cached width could be wrong about, so it is the one asserted."""
+    await store.ensure_collection(org, dimension=DIMENSION)
+    assert await store.dimension(org) == DIMENSION
+
+    await store.drop(org)
+
+    assert await store.dimension(org) is None
+
+
+@check
 async def dropping_a_collection_removes_everything(store: VectorStore, org: uuid.UUID) -> None:
     await seed(
         store,

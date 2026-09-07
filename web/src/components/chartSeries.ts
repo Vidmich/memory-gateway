@@ -97,6 +97,20 @@ export function latencySeries(buckets: readonly BucketResponse[]): Series[] {
   ])
 }
 
+/**
+ * Retrieval, as two lines that answer different questions.
+ *
+ * `empty_rate` is a fraction and `p95` is milliseconds, so they are deliberately *not*
+ * on one chart: a shared y-axis would flatten a rate between 0 and 1 into the axis line
+ * next to a latency in the hundreds. The rate is the quality signal and gets the chart;
+ * the p95 already has a line on the latency chart next to the totals it is part of.
+ */
+export function retrievalSeries(buckets: readonly BucketResponse[]): Series[] {
+  return seriesFrom(buckets, [
+    { name: 'empty_rate', label: 'retrieved nothing' },
+  ])
+}
+
 export function tokenSeries(buckets: readonly BucketResponse[]): Series[] {
   return seriesFrom(buckets, [
     { name: 'prompt', label: 'Prompt' },

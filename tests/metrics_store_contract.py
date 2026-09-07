@@ -21,6 +21,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 
+import pytest
+
 from app.core.tenancy import TenantScope
 from app.db.models import Organization
 from app.services.metrics_store import LogFilters, MetricsRepository
@@ -431,7 +433,10 @@ async def a_token_series_carries_three_lines(fixture: Fixture) -> None:
         name: sum(bucket.series.get(name, 0) for bucket in buckets)
         for name in ("prompt", "completion", "memory")
     }
-    assert totals == {"prompt": 300.0, "completion": 150.0, "memory": 0.0}
+    # Memory is non-zero because one seeded request injected documents. It is a separate
+    # line rather than part of the prompt total precisely so an organization can see what
+    # retrieval costs them (SPEC §10.1).
+    assert totals == {"prompt": 300.0, "completion": 150.0, "memory": 180.0}
 
 
 async def a_latency_series_carries_the_percentiles(fixture: Fixture) -> None:
@@ -459,6 +464,79 @@ async def a_latency_series_omits_a_measurement_nothing_carried(fixture: Fixture)
         )
 
     assert "ttft_p95" not in buckets[0].series
+
+
+async def the_empty_retrieval_rate_counts_only_searches_that_ran(fixture: Fixture) -> None:
+    """Task 10 calls this the key quality signal, and the denominator is what makes it
+    one: twenty of Acme's requests never searched, so counting them would dilute a
+    two-in-three failure into one in eight and hide it."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        summary = await transaction.summary(fixture.window())
+
+    assert summary.retrieval_attempts == 3
+    assert summary.retrieval_empty == 2
+    assert summary.empty_retrieval_rate == pytest.approx(2 / 3)
+
+
+async def a_gateway_that_never_retrieved_has_no_rate_at_all(fixture: Fixture) -> None:
+    """Zero over zero is not zero percent. A gateway with no connectors attached must
+    read as "not applicable" rather than as a perfect score."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        summary = await transaction.summary(fixture.window(gateway_id=fixture.acme_gateway_id))
+
+    assert summary.retrieval_attempts == 0
+    assert summary.empty_retrieval_rate == 0.0
+
+
+async def retrieval_percentiles_ignore_requests_that_did_not_search(
+    fixture: Fixture,
+) -> None:
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        summary = await transaction.summary(fixture.window())
+
+    assert summary.retrieval.p50 == 30
+    assert summary.retrieval.p99 == 45
+
+
+async def a_retrieval_series_carries_the_rate_and_the_counts(fixture: Fixture) -> None:
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        buckets = await transaction.timeseries(
+            fixture.window(gateway_id=fixture.other_gateway_id),
+            metric="retrieval",
+            group_by="none",
+            interval_seconds=86_400,
+        )
+
+    series = buckets[0].series
+    assert series["attempts"] == 3.0
+    assert series["empty"] == 2.0
+    assert series["empty_rate"] == pytest.approx(2 / 3)
+    assert series["p95"] == 45.0
+
+
+async def a_retrieval_series_omits_the_rate_when_nothing_searched(
+    fixture: Fixture,
+) -> None:
+    """A flat line at zero would read as "this gateway always finds what it needs"."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        buckets = await transaction.timeseries(
+            fixture.window(gateway_id=fixture.acme_gateway_id),
+            metric="retrieval",
+            group_by="none",
+            interval_seconds=86_400,
+        )
+
+    assert buckets[0].series["attempts"] == 0.0
+    assert "empty_rate" not in buckets[0].series
+
+
+async def memory_tokens_are_summed_separately_from_the_rest(fixture: Fixture) -> None:
+    """SPEC §10.1: an organization has to be able to see what retrieval costs them,
+    which means it cannot be folded into the prompt total."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        summary = await transaction.summary(fixture.window())
+
+    assert summary.memory_tokens == 180
 
 
 Check = Callable[[Fixture], Awaitable[None]]
@@ -500,4 +578,10 @@ CHECKS: tuple[Check, ...] = (
     a_token_series_carries_three_lines,
     a_latency_series_carries_the_percentiles,
     a_latency_series_omits_a_measurement_nothing_carried,
+    the_empty_retrieval_rate_counts_only_searches_that_ran,
+    a_gateway_that_never_retrieved_has_no_rate_at_all,
+    retrieval_percentiles_ignore_requests_that_did_not_search,
+    a_retrieval_series_carries_the_rate_and_the_counts,
+    a_retrieval_series_omits_the_rate_when_nothing_searched,
+    memory_tokens_are_summed_separately_from_the_rest,
 )

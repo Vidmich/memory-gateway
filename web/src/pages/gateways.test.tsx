@@ -10,10 +10,14 @@ import { AuthProvider } from '@/auth/AuthContext'
 import { ToastProvider } from '@/components/Toast'
 import {
   makeApiKey,
+  makeConnector,
   makeGateway,
   makeGatewayProbe,
   makeIssuedKey,
   makeModel,
+  makePromptPreview,
+  makeRetrievalPreview,
+  makeRetrievedChunk,
   makeSeries,
   makeUser,
 } from '@/test/factories'
@@ -26,6 +30,8 @@ type ServerOptions = {
   issued?: ReturnType<typeof makeIssuedKey>
   probe?: ReturnType<typeof makeGatewayProbe>
   counts?: ReturnType<typeof makeSeries>
+  connectors?: ReturnType<typeof makeConnector>[]
+  retrieval?: ReturnType<typeof makeRetrievalPreview>
   saveError?: { status: number; code: string; message: string; param?: string }
 }
 
@@ -58,6 +64,19 @@ function fakeServer(options: ServerOptions = {}) {
     if (path === '/api/v1/auth/me') return Promise.resolve(json(user))
     if (path === '/api/v1/auth/logout') return Promise.resolve(new Response(null, { status: 204 }))
 
+    if (path.endsWith('/try-retrieval') && method === 'POST') {
+      return Promise.resolve(json(options.retrieval ?? makeRetrievalPreview()))
+    }
+    if (path.endsWith('/prompt-preview') && method === 'POST') {
+      return Promise.resolve(
+        json(makePromptPreview({ retrieval: options.retrieval ?? makeRetrievalPreview() })),
+      )
+    }
+    if (path.startsWith('/api/v1/connectors')) {
+      return Promise.resolve(
+        json({ items: options.connectors ?? [makeConnector()], next_cursor: null }),
+      )
+    }
     if (path.endsWith('/test') && method === 'POST') {
       return Promise.resolve(json(options.probe ?? makeGatewayProbe()))
     }
@@ -303,9 +322,9 @@ describe('the editor', () => {
     for (const name of ['Routing', 'Memory', 'Prompt', 'Logging', 'Limits', 'Keys']) {
       expect(screen.getByRole('heading', { name })).toBeInTheDocument()
     }
-    // Memory and Limits, now that Logging is built. The count is asserted rather than
-    // left implicit so filling one in has to come here and say so.
-    expect(screen.getAllByText('Coming soon')).toHaveLength(2)
+    // Limits alone, now that Logging and Memory are built. The count is asserted rather
+    // than left implicit so filling one in has to come here and say so.
+    expect(screen.getAllByText('Coming soon')).toHaveLength(1)
   })
 
   it('makes the slug read-only and says why', async () => {
@@ -825,5 +844,203 @@ describe('the logging section', () => {
     await person.click(screen.getByRole('button', { name: 'Save changes' }))
 
     expect(await screen.findByText(/repeats a group that itself repeats/)).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// memory (task 10)
+// ---------------------------------------------------------------------------
+
+describe('the memory section', () => {
+  it('offers this organization’s connectors with what is in them', async () => {
+    const { client } = fakeServer({
+      connectors: [makeConnector({ name: 'Product docs', counts: { indexed: 4 } })],
+    })
+    renderAt(client, '/gateways/g1')
+
+    expect(await screen.findByLabelText(/Product docs/)).toBeInTheDocument()
+    expect(screen.getByText('4 documents indexed')).toBeInTheDocument()
+  })
+
+  it('says plainly that a gateway with no connectors retrieves nothing', async () => {
+    // The default state, and the answer to "why does it not use my documents".
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+
+    expect(await screen.findByText(/retrieves nothing/)).toBeInTheDocument()
+  })
+
+  it('saves the attached connectors and the retrieval knobs', async () => {
+    const { client, requests } = fakeServer({
+      connectors: [makeConnector({ id: 'cn1', name: 'Product docs' })],
+    })
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.click(await screen.findByLabelText(/Product docs/))
+    await person.clear(screen.getByLabelText('Minimum score'))
+    await person.type(screen.getByLabelText('Minimum score'), '0.5')
+    await person.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'PATCH')).toBe(true))
+    const body = lastBody(requests, 'PATCH').memory_config as Record<string, unknown>
+    expect(body.connector_ids).toEqual(['cn1'])
+    expect(body.doc_min_score).toBe(0.5)
+  })
+
+  it('does not send the conversation-memory half, which task 12 owns', async () => {
+    // The blob is deep-merged server-side, so a key this form omits is a key it cannot
+    // wipe — which is what lets two sections of one editor save independently.
+    const { client, requests } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.clear(await screen.findByLabelText('Chunks to retrieve'))
+    await person.type(screen.getByLabelText('Chunks to retrieve'), '8')
+    await person.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'PATCH')).toBe(true))
+    expect(lastBody(requests, 'PATCH').memory_config).not.toHaveProperty('memory_top_k')
+  })
+
+  it('refuses to save a score the server would reject, before the round trip', async () => {
+    const { client, requests } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.clear(await screen.findByLabelText('Minimum score'))
+    await person.type(screen.getByLabelText('Minimum score'), '5')
+
+    expect(screen.getByText(/cosine similarity/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+    expect(requests.filter((request) => request.method === 'PATCH')).toHaveLength(0)
+  })
+
+  it('hides the turn count until the strategy uses it', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    expect(screen.queryByLabelText('Turns to include')).not.toBeInTheDocument()
+    await person.selectOptions(
+      await screen.findByLabelText('What to search for'),
+      'last_n_turns',
+    )
+
+    expect(screen.getByLabelText('Turns to include')).toBeInTheDocument()
+  })
+
+  it('says what the failure policy actually does, as a consequence', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.selectOptions(
+      await screen.findByLabelText('If retrieval fails'),
+      'fail_closed',
+    )
+
+    expect(screen.getByText(/refused with a 503/)).toBeInTheDocument()
+  })
+})
+
+describe('try retrieval', () => {
+  it('shows the chunks that would be injected, with their scores', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.type(await screen.findByLabelText('Question'), 'how do refunds work')
+    await person.click(screen.getByRole('button', { name: 'Try retrieval' }))
+
+    expect(await screen.findByText('0.71')).toBeInTheDocument()
+    expect(screen.getByText(/handbook/)).toBeInTheDocument()
+    expect(screen.getByText(/1 chunk would be injected/)).toBeInTheDocument()
+  })
+
+  it('sends the unsaved settings, so tuning does not change the live endpoint', async () => {
+    const { client, requests } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.clear(await screen.findByLabelText('Minimum score'))
+    await person.type(screen.getByLabelText('Minimum score'), '0.6')
+    await person.type(screen.getByLabelText('Question'), 'refunds')
+    await person.click(screen.getByRole('button', { name: 'Try retrieval' }))
+
+    await waitFor(() =>
+      expect(requests.some((r) => r.path.endsWith('/try-retrieval'))).toBe(true),
+    )
+    const body = requests.find((r) => r.path.endsWith('/try-retrieval'))!.body
+    expect((body.memory_config as Record<string, unknown>).doc_min_score).toBe(0.6)
+    // And nothing was saved.
+    expect(requests.filter((request) => request.method === 'PATCH')).toHaveLength(0)
+  })
+
+  it('marks a chunk that would not survive the token budget', async () => {
+    // The interesting failure: the right passage was found and fell off the end.
+    const { client } = fakeServer({
+      retrieval: makeRetrievalPreview({
+        chunks: [makeRetrievedChunk(), makeRetrievedChunk({ id: 'ch2', injected: false })],
+      }),
+    })
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.type(await screen.findByLabelText('Question'), 'refunds')
+    await person.click(screen.getByRole('button', { name: 'Try retrieval' }))
+
+    expect(await screen.findByText('over budget')).toBeInTheDocument()
+    expect(screen.getByText(/1 dropped/)).toBeInTheDocument()
+  })
+
+  it('says which kind of empty an empty result is', async () => {
+    const { client } = fakeServer({
+      retrieval: makeRetrievalPreview({ outcome: 'empty', chunks: [], injected_tokens: 0 }),
+    })
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.type(await screen.findByLabelText('Question'), 'refunds')
+    await person.click(screen.getByRole('button', { name: 'Try retrieval' }))
+
+    expect(await screen.findByText(/score floor is too high/)).toBeInTheDocument()
+  })
+
+  it('shows a retrieval failure as a diagnostic rather than an outage', async () => {
+    const { client } = fakeServer({
+      retrieval: makeRetrievalPreview({
+        outcome: 'timeout',
+        chunks: [],
+        error: 'The knowledge base did not answer within 800 ms.',
+      }),
+    })
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.type(await screen.findByLabelText('Question'), 'refunds')
+    await person.click(screen.getByRole('button', { name: 'Try retrieval' }))
+
+    expect(await screen.findByText(/did not answer within 800 ms/)).toBeInTheDocument()
+  })
+
+  it('draws the assembled prompt layer by layer with a token count each', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.type(await screen.findByLabelText('Question'), 'refunds')
+    await person.click(screen.getByRole('button', { name: 'Show the whole prompt' }))
+
+    expect(await screen.findByText('Documents')).toBeInTheDocument()
+    expect(screen.getByText('61 tokens')).toBeInTheDocument()
+  })
+
+  it('cannot be run before the gateway has been saved once', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/new')
+
+    expect(await screen.findByText('Save the gateway first.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try retrieval' })).toBeDisabled()
   })
 })

@@ -36,6 +36,7 @@ from app.schemas.openai import ChatMessage, ChatRequest, ChatResponse
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.params import Resolved
 from app.services.proxy import Prepared
+from app.services.retrieval import Recall
 from app.services.routing import (
     RETRY_TABLE,
     Attempts,
@@ -67,10 +68,21 @@ class ScriptedProxy:
         self.answers: dict[str, Any] = answers or {}
         self.called: list[str] = []
         self.delays: dict[str, float] = {}
+        self.recalls: list[Recall | None] = []
 
     def prepare(
-        self, request: ChatRequest, gateway: ResolvedGateway, target: UpstreamTarget
+        self,
+        request: ChatRequest,
+        gateway: ResolvedGateway,
+        target: UpstreamTarget,
+        *,
+        recall: Recall | None = None,
     ) -> Prepared:
+        # `recall` is accepted and ignored: what these tests assert on is which targets
+        # were called, and prompt assembly has its own file. That it is threaded through
+        # per attempt at all is asserted by
+        # `test_the_same_retrieval_is_assembled_into_every_attempt`.
+        self.recalls.append(recall)
         return Prepared(request=request, params=Resolved(values={}), target=target)
 
     async def complete(self, prepared: Prepared) -> ChatResponse:

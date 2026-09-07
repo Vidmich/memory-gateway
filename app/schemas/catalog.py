@@ -36,11 +36,17 @@ MAX_URL = 2000
 MAX_SYSTEM_CONTEXT = 8000
 MIN_TIMEOUT_SECONDS = 1
 MAX_TIMEOUT_SECONDS = 600
+#: A context window has to be big enough to hold a prompt and small enough to be a real
+#: number. The ceiling is generous — the largest published windows are around 2M tokens —
+#: because the wrong failure here is refusing a value a provider actually offers.
+MIN_CONTEXT_WINDOW = 256
+MAX_CONTEXT_WINDOW = 10_000_000
 
 Name = Annotated[str, Field(min_length=1, max_length=MAX_NAME)]
 BaseUrl = Annotated[str, Field(min_length=1, max_length=MAX_URL)]
 ModelId = Annotated[str, Field(min_length=1, max_length=MAX_NAME)]
 Timeout = Annotated[int, Field(ge=MIN_TIMEOUT_SECONDS, le=MAX_TIMEOUT_SECONDS)]
+ContextWindow = Annotated[int, Field(ge=MIN_CONTEXT_WINDOW, le=MAX_CONTEXT_WINDOW)]
 SystemContext = Annotated[str, Field(max_length=MAX_SYSTEM_CONTEXT)]
 Description = Annotated[str, Field(max_length=MAX_DESCRIPTION)]
 
@@ -109,6 +115,9 @@ class ModelResponse(BaseModel):
     system_context: str | None
     default_params: dict[str, Any]
     timeout_seconds: int
+    #: ``None`` means the window is not known, not that it is unlimited — see the column's
+    #: docstring. The gateway's overflow guard is skipped for such a model.
+    context_window: int | None
     enabled: bool
     #: Whether *this* caller may change it. Answered by the server so the UI and the API
     #: cannot disagree about who owns a row.
@@ -137,6 +146,7 @@ class ModelResponse(BaseModel):
             system_context=model.system_context,
             default_params=dict(model.default_params or {}),
             timeout_seconds=model.timeout_seconds,
+            context_window=model.context_window,
             enabled=model.enabled,
             editable=view.editable,
             created_at=model.created_at,
@@ -158,6 +168,7 @@ class ModelCreateRequest(BaseModel):
     system_context: SystemContext | None = None
     default_params: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: Timeout = DEFAULT_TIMEOUT_SECONDS
+    context_window: ContextWindow | None = None
     enabled: bool = True
     #: ``org`` by default. Writing ``global`` needs ``platform:administer``, which the
     #: service checks — the route is open to anyone with ``resources:write``.
@@ -181,6 +192,7 @@ class ModelCreateRequest(BaseModel):
             system_context=self.system_context,
             default_params=self.default_params,
             timeout_seconds=self.timeout_seconds,
+            context_window=self.context_window,
             enabled=self.enabled,
             scope=self.scope,
         )
@@ -219,6 +231,10 @@ class ModelUpdateRequest(BaseModel):
     system_context: SystemContext | None = None
     default_params: dict[str, Any] | None = None
     timeout_seconds: Timeout | None = None
+    #: Genuinely nullable, unlike the fields in ``NOT_NULLABLE``: sending ``null`` is how
+    #: an operator says "I no longer claim to know this model's window", which switches
+    #: the overflow guard back off.
+    context_window: ContextWindow | None = None
     enabled: bool | None = None
 
     _check_url = field_validator("base_url")(_validate_base_url)
@@ -254,6 +270,7 @@ class ModelUpdateRequest(BaseModel):
             system_context=maybe("system_context"),
             default_params=maybe("default_params"),
             timeout_seconds=maybe("timeout_seconds"),
+            context_window=maybe("context_window"),
             enabled=maybe("enabled"),
         )
 

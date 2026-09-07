@@ -45,6 +45,9 @@ class UpstreamModel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="auth_type_is_known",
         ),
         CheckConstraint("timeout_seconds > 0", name="timeout_is_positive"),
+        CheckConstraint(
+            "context_window IS NULL OR context_window > 0", name="context_window_is_positive"
+        ),
         # A global model belongs to nobody; an org model must name its owner. Enforced in
         # the database because SPEC §5.3 makes this an isolation boundary, not a nicety.
         CheckConstraint(
@@ -98,4 +101,12 @@ class UpstreamModel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     timeout_seconds: Mapped[int] = mapped_column(
         Integer, nullable=False, default=DEFAULT_TIMEOUT_SECONDS
     )
+    #: The provider's context window in tokens, when the operator has told us (task 10).
+    #: Nullable, and ``NULL`` means *unknown* rather than *unlimited*: the prompt
+    #: assembler's overflow guard is skipped entirely for a model whose window nobody has
+    #: stated, because a guessed window would refuse to inject memory into requests that
+    #: would have been fine. There is no sound platform default — the number differs by
+    #: two orders of magnitude across providers — so the honest states are "known" and
+    #: "not known", and this column is which one holds.
+    context_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

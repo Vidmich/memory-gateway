@@ -100,6 +100,18 @@ class VectorStore(Protocol):
         """Remove the whole collection. Offboarding, and nothing else."""
         ...
 
+    async def dimension(self, organization_id: uuid.UUID) -> int | None:
+        """The vector width this tenant's collection was built with, or ``None`` when
+        there is no collection yet.
+
+        Retrieval asks so it can refuse to search an index built by a different embedding
+        model. Without it a changed ``EMBEDDING_DIMENSION`` is a silent failure: Qdrant
+        rejects a mismatched query vector with a message about dimensions, which under
+        ``fail_open`` becomes "the model answered without its documents" on every request
+        and nothing anywhere says why.
+        """
+        ...
+
     async def search(
         self,
         organization_id: uuid.UUID,
@@ -133,6 +145,8 @@ class QdrantVectorStore:
         #: data: the worst case for a stale entry is an upsert against a collection
         #: somebody deleted, which fails loudly and is retried.
         self._ensured: set[str] = set()
+        #: Vector width per collection — see :meth:`dimension`.
+        self._widths: dict[str, int] = {}
 
     async def ensure_collection(self, organization_id: uuid.UUID, *, dimension: int) -> None:
         from qdrant_client import models
@@ -200,8 +214,30 @@ class QdrantVectorStore:
     async def drop(self, organization_id: uuid.UUID) -> None:
         name = collection_for(organization_id)
         self._ensured.discard(name)
+        self._widths.pop(name, None)
         if await self._client.collection_exists(name):
             await self._client.delete_collection(name)
+
+    async def dimension(self, organization_id: uuid.UUID) -> int | None:
+        """One round trip per collection per process, then a dictionary lookup.
+
+        Cached because it is read on the request path and a collection's width cannot
+        change without the collection being recreated — which happens through
+        :meth:`drop`, in this process for a delete and in the worker for a reindex. The
+        stale case is therefore a *worker* recreating a collection this process has
+        already seen, and it costs one request's retrieval before the resulting error
+        clears the entry.
+        """
+        name = collection_for(organization_id)
+        if (cached := self._widths.get(name)) is not None:
+            return cached
+        if not await self._client.collection_exists(name):
+            return None
+        info = await self._client.get_collection(name)
+        size = _vector_size(info)
+        if size is not None:
+            self._widths[name] = size
+        return size
 
     async def search(
         self,
@@ -266,6 +302,25 @@ class QdrantVectorStore:
         return int(result.count)
 
 
+def _vector_size(info: Any) -> int | None:
+    """The width out of a Qdrant ``CollectionInfo``, whichever shape it is in.
+
+    A collection can be configured with a single unnamed vector or a mapping of named
+    ones. This build only ever creates the first, but reading the second rather than
+    raising means a collection somebody made by hand reports a width instead of breaking
+    every request through the gateway that reads it.
+    """
+    params = getattr(getattr(info, "config", None), "params", None)
+    vectors = getattr(params, "vectors", None)
+    if vectors is None:
+        return None
+    if isinstance(vectors, dict):
+        sizes = {getattr(value, "size", None) for value in vectors.values()}
+        return next(iter(sizes)) if len(sizes) == 1 else None
+    size = getattr(vectors, "size", None)
+    return int(size) if size is not None else None
+
+
 def _equals(key: str, value: str) -> Any:
     from qdrant_client import models
 
@@ -322,6 +377,9 @@ class MemoryVectorStore:
         name = collection_for(organization_id)
         self.collections.pop(name, None)
         self.dimensions.pop(name, None)
+
+    async def dimension(self, organization_id: uuid.UUID) -> int | None:
+        return self.dimensions.get(collection_for(organization_id))
 
     async def search(
         self,

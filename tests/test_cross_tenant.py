@@ -80,6 +80,16 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ScopedEndpoint("PATCH", f"/api/v1/gateways/{FOREIGN_GATEWAY}", {"name": "Owned"}),
     ScopedEndpoint("DELETE", f"/api/v1/gateways/{FOREIGN_GATEWAY}"),
     ScopedEndpoint("POST", f"/api/v1/gateways/{FOREIGN_GATEWAY}/test", {"message": "hi"}),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/gateways/{FOREIGN_GATEWAY}/try-retrieval",
+        {"query": "what is the refund policy"},
+    ),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/gateways/{FOREIGN_GATEWAY}/prompt-preview",
+        {"query": "what is the refund policy"},
+    ),
     ScopedEndpoint("GET", f"/api/v1/gateways/{FOREIGN_GATEWAY}/keys"),
     ScopedEndpoint(
         "POST",

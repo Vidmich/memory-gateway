@@ -106,7 +106,7 @@ export function useSummary(
 export function useSeries(
   window: Window,
   filters: LogFilters,
-  metric: 'requests' | 'latency' | 'tokens',
+  metric: 'requests' | 'latency' | 'tokens' | 'retrieval',
   groupBy: 'none' | 'status_class' | 'model' | 'gateway' = 'none',
   interval?: number,
 ): UseQueryResult<SeriesResponse> {

@@ -80,6 +80,30 @@ class JobMetrics:
 
 
 @dataclass(frozen=True)
+class RetrievalMetrics:
+    """Document retrieval, as three numbers (SPEC §6.3, task 10).
+
+    ``attempts`` is labelled by outcome and one of those labels is the point of the whole
+    struct. ``outcome="empty"`` over ``hit + empty`` is the **empty-retrieval rate**, and
+    it is the only signal that distinguishes a gateway whose knowledge base answers its
+    users from one that is misconfigured — a wrong connector, a score floor set too high,
+    an index that never finished building. All three produce perfectly healthy-looking
+    traffic: normal latency, no errors, and answers that quietly come from nowhere.
+
+    ``skipped`` is a separate label rather than folded into ``empty`` for the same reason:
+    a gateway with no connectors attached is not retrieving nothing, it is not
+    retrieving, and averaging the two together would hide the misconfiguration inside the
+    deliberate choice.
+
+    ``injected_tokens`` is what memory costs, per request, in the unit providers bill in.
+    """
+
+    attempts: Counter
+    duration: Histogram
+    injected_tokens: Histogram
+
+
+@dataclass(frozen=True)
 class Metrics:
     registry: CollectorRegistry
     http_requests: Counter
@@ -89,6 +113,7 @@ class Metrics:
     logs: LogMetrics
     routing: RoutingMetrics
     jobs: JobMetrics
+    retrieval: RetrievalMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -131,6 +156,35 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         logs=build_log_metrics(registry),
         routing=build_routing_metrics(registry),
         jobs=build_job_metrics(registry),
+        retrieval=build_retrieval_metrics(registry),
+    )
+
+
+def build_retrieval_metrics(registry: CollectorRegistry) -> RetrievalMetrics:
+    """Split out like the others, so a retriever can be built in a test on its own."""
+    return RetrievalMetrics(
+        attempts=Counter(
+            "retrieval_attempts_total",
+            "Document retrievals by outcome: hit, empty, timeout, error, skipped.",
+            labelnames=("outcome",),
+            registry=registry,
+        ),
+        duration=Histogram(
+            "retrieval_duration_seconds",
+            "How long retrieval took, for requests where it ran.",
+            # Tighter than the HTTP buckets and centred on the numbers that matter here:
+            # SPEC §4.2 budgets retrieval well under 150 ms, and the default timeout is
+            # 800 ms, so both need a bucket edge to sit on for a percentile to mean
+            # anything near them.
+            buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.5, 0.8, 1.5, 3.0),
+            registry=registry,
+        ),
+        injected_tokens=Histogram(
+            "retrieval_injected_tokens",
+            "Tokens of memory added to a prompt, per request.",
+            buckets=(0, 100, 250, 500, 1000, 2000, 4000, 8000),
+            registry=registry,
+        ),
     )
 
 

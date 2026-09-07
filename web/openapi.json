@@ -1506,7 +1506,7 @@
         "type": "object"
       },
       "MemoryConfig": {
-        "description": "SPEC \u00a76.3. Task 10 makes these do something; the shape is settled now.\n\n``connector_ids`` is empty by default, which means no document memory \u2014 a gateway\nthat silently started reading every connector in the organization would be a\ndisclosure bug, so the safe default is \"nothing\".",
+        "description": "SPEC \u00a76.3 \u2014 what this gateway retrieves, and what happens when it cannot.\n\n``connector_ids`` is empty by default, which means no document memory \u2014 a gateway\nthat silently started reading every connector in the organization would be a\ndisclosure bug, so the safe default is \"nothing\". Empty is also a *fast* path rather\nthan a filter that matches nothing: :mod:`app.services.retrieval` skips the embedding\nand the vector call entirely, so an unconfigured gateway costs no latency at all.\n\n``on_retrieval_error`` is the only field here that is about the product rather than\nabout quality, and it is a real choice with no safe default. ``fail_open`` serves an\nungrounded answer when the index is unreachable, which is right for a support bot\nthat is better than nothing; ``fail_closed`` returns 503, which is right for an\nassistant whose whole value is that it only answers from the handbook. The platform\ndefault is ``fail_open`` because availability is the more common preference, and the\neditor says in words what the other one does.",
         "properties": {
           "connector_ids": {
             "items": {
@@ -1565,6 +1565,13 @@
             "title": "On Retrieval Error",
             "type": "string"
           },
+          "query_n_turns": {
+            "default": 3,
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Query N Turns",
+            "type": "integer"
+          },
           "query_strategy": {
             "default": "last_user_message",
             "enum": [
@@ -1574,6 +1581,13 @@
             "title": "Query Strategy",
             "type": "string"
           },
+          "retrieval_timeout_ms": {
+            "default": 800,
+            "maximum": 5000.0,
+            "minimum": 50.0,
+            "title": "Retrieval Timeout Ms",
+            "type": "integer"
+          },
           "version": {
             "default": 1,
             "title": "Version",
@@ -1581,6 +1595,35 @@
           }
         },
         "title": "MemoryConfig",
+        "type": "object"
+      },
+      "MemoryPreviewRequest": {
+        "additionalProperties": false,
+        "description": "A question to try, optionally against settings that have not been saved.\n\n``memory_config`` is the same partial blob ``PATCH`` accepts and is merged the same\nway, so the tuning loop is: change a number, press Try, read the scores \u2014 without\nchanging what live callers of this endpoint are getting between attempts.",
+        "properties": {
+          "memory_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Config"
+          },
+          "query": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "MemoryPreviewRequest",
         "type": "object"
       },
       "ModelCard": {
@@ -1623,6 +1666,19 @@
             "minLength": 1,
             "title": "Base Url",
             "type": "string"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 256.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window"
           },
           "credential": {
             "anyOf": [
@@ -1744,6 +1800,17 @@
             "title": "Base Url",
             "type": "string"
           },
+          "context_window": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -1852,6 +1919,7 @@
           "system_context",
           "default_params",
           "timeout_seconds",
+          "context_window",
           "enabled",
           "editable",
           "created_at",
@@ -1874,6 +1942,19 @@
             "minLength": 1,
             "title": "Base Url",
             "type": "string"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 256.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window"
           },
           "credential": {
             "anyOf": [
@@ -2031,6 +2112,19 @@
               }
             ],
             "title": "Base Url"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 256.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window"
           },
           "credential": {
             "anyOf": [
@@ -2652,6 +2746,35 @@
         "title": "ProbeResponse",
         "type": "object"
       },
+      "PromptLayerResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "text",
+          "tokens"
+        ],
+        "title": "PromptLayerResponse",
+        "type": "object"
+      },
       "PromptMessageResponse": {
         "properties": {
           "content": {
@@ -2668,6 +2791,67 @@
           "content"
         ],
         "title": "PromptMessageResponse",
+        "type": "object"
+      },
+      "PromptPreviewResponse": {
+        "additionalProperties": false,
+        "description": "The assembled system message, layer by layer, with the retrieval behind it.",
+        "properties": {
+          "context_window": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window"
+          },
+          "layers": {
+            "items": {
+              "$ref": "#/components/schemas/PromptLayerResponse"
+            },
+            "title": "Layers",
+            "type": "array"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "overflowed": {
+            "title": "Overflowed",
+            "type": "boolean"
+          },
+          "retrieval": {
+            "$ref": "#/components/schemas/RetrievalPreviewResponse"
+          },
+          "system_message": {
+            "title": "System Message",
+            "type": "string"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "layers",
+          "system_message",
+          "total_tokens",
+          "context_window",
+          "model_name",
+          "overflowed",
+          "retrieval"
+        ],
+        "title": "PromptPreviewResponse",
         "type": "object"
       },
       "RequestDetailResponse": {
@@ -2984,6 +3168,143 @@
         "title": "ResyncResponse",
         "type": "object"
       },
+      "RetrievalPreviewResponse": {
+        "additionalProperties": false,
+        "description": "What Try retrieval returns. ``outcome`` distinguishes the four kinds of empty.",
+        "properties": {
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/RetrievedChunkResponse"
+            },
+            "title": "Chunks",
+            "type": "array"
+          },
+          "doc_max_tokens": {
+            "title": "Doc Max Tokens",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "injected_tokens": {
+            "title": "Injected Tokens",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "outcome",
+          "latency_ms",
+          "error",
+          "chunks",
+          "injected_tokens",
+          "doc_max_tokens"
+        ],
+        "title": "RetrievalPreviewResponse",
+        "type": "object"
+      },
+      "RetrievedChunkResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "chunk_index": {
+            "title": "Chunk Index",
+            "type": "integer"
+          },
+          "connector_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connector Id"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "injected": {
+            "title": "Injected",
+            "type": "boolean"
+          },
+          "page_or_section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Or Section"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "source_name": {
+            "title": "Source Name",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "score",
+          "text",
+          "source_name",
+          "page_or_section",
+          "document_id",
+          "connector_id",
+          "chunk_index",
+          "tokens",
+          "injected"
+        ],
+        "title": "RetrievedChunkResponse",
+        "type": "object"
+      },
       "SearchHit": {
         "description": "One chunk, with everything needed to judge whether retrieval is working: the score,\nthe text, and where in which file it came from.",
         "properties": {
@@ -3177,6 +3498,10 @@
             "title": "Completion Tokens",
             "type": "integer"
           },
+          "empty_retrieval_rate": {
+            "title": "Empty Retrieval Rate",
+            "type": "number"
+          },
           "error_groups": {
             "items": {
               "$ref": "#/components/schemas/ErrorGroupResponse"
@@ -3214,6 +3539,14 @@
           "retrieval": {
             "$ref": "#/components/schemas/PercentilesResponse"
           },
+          "retrieval_attempts": {
+            "title": "Retrieval Attempts",
+            "type": "integer"
+          },
+          "retrieval_empty": {
+            "title": "Retrieval Empty",
+            "type": "integer"
+          },
           "status_classes": {
             "additionalProperties": {
               "type": "integer"
@@ -3239,6 +3572,9 @@
           "prompt_tokens",
           "completion_tokens",
           "memory_tokens",
+          "retrieval_attempts",
+          "retrieval_empty",
+          "empty_retrieval_rate",
           "models",
           "error_groups"
         ],
@@ -4664,6 +5000,60 @@
         ]
       }
     },
+    "/api/v1/gateways/{gateway_id}/prompt-preview": {
+      "post": {
+        "description": "The fully assembled system message for a sample question, layer by layer.\n\nDistinct from ``/test``, which sends a real completion and reports what the provider\nreceived. This one costs a retrieval and no tokens, so it is the one you press while\nediting; ``/test`` is the one that proves the whole path.",
+        "operationId": "prompt_preview_api_v1_gateways__gateway_id__prompt_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prompt Preview",
+        "tags": [
+          "gateways"
+        ]
+      }
+    },
     "/api/v1/gateways/{gateway_id}/test": {
       "post": {
         "description": "Send a probe completion through the real proxy path.\n\nReturns the assembled prompt as well as the answer, which is the part that makes this\na debugging tool rather than a health check: it shows what the system context became\nwithout waiting for real traffic to appear in the request log.",
@@ -4713,6 +5103,60 @@
           }
         },
         "summary": "Test Gateway",
+        "tags": [
+          "gateways"
+        ]
+      }
+    },
+    "/api/v1/gateways/{gateway_id}/try-retrieval": {
+      "post": {
+        "description": "Which chunks this question would inject, at what score, and which survive the\ntoken budget.\n\nThe same retriever a live request uses, so the scores here are the scores there.",
+        "operationId": "try_retrieval_api_v1_gateways__gateway_id__try_retrieval_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Try Retrieval",
         "tags": [
           "gateways"
         ]

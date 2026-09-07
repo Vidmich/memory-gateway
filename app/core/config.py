@@ -57,8 +57,33 @@ class Settings(BaseSettings):
     encryption_master_key: str
     jwt_signing_key: str = Field(min_length=32)
 
+    # -- control-plane auth ------------------------------------------------
+    # Argon2id cost. Defaults follow the OWASP guidance for a server that also does
+    # other work; raise `password_memory_cost_kib` first — memory hardness is what
+    # actually costs an attacker with GPUs. Raising either is safe: existing hashes
+    # carry their own parameters and are upgraded on the owner's next login.
+    password_time_cost: int = Field(default=3, ge=1)
+    password_memory_cost_kib: int = Field(default=65536, ge=8)
+    password_parallelism: int = Field(default=1, ge=1)
+
+    access_token_ttl_seconds: int = Field(default=15 * 60, ge=60)
+    refresh_token_ttl_seconds: int = Field(default=14 * 24 * 3600, ge=300)
+    #: "Remember me" unchecked: the refresh cookie becomes a session cookie and the
+    #: token itself expires sooner.
+    refresh_token_short_ttl_seconds: int = Field(default=12 * 3600, ge=300)
+
+    #: Failed logins allowed per window before backoff, counted per IP and per email.
+    login_max_attempts: int = Field(default=5, ge=1)
+    login_attempt_window_seconds: int = Field(default=15 * 60, ge=1)
+    login_lockout_seconds: int = Field(default=15 * 60, ge=1)
+
     # -- addressing --------------------------------------------------------
     public_base_url: str
+    #: Origins allowed to call the control plane with credentials. The Vite dev server
+    #: runs on a different port, so in dev this is not the same origin as the API.
+    cors_origins: tuple[str, ...] = ()
+    #: Directory of built SPA assets to serve, if any. Empty in dev, where Vite serves them.
+    web_dist_dir: str = ""
 
     # -- upstream calls ----------------------------------------------------
     upstream_max_connections: int = Field(default=200, ge=1)

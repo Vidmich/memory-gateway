@@ -22,7 +22,7 @@ import pytest
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -32,11 +32,13 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.adapters.base import UpstreamTarget
+from app.api.control.deps import get_auth_service, get_settings_from_app
 from app.api.proxy.deps import get_authenticator, get_resolver
 from app.core.clients import Clients
 from app.core.config import Settings, get_settings
 from app.main import create_app
 from app.services.gateways import ResolvedGateway
+from tests.auth_support import PASSWORD, AuthFixture, build_auth
 from tests.support import (
     FakeAuthenticator,
     FakeResolver,
@@ -308,3 +310,67 @@ async def eventually(condition: Callable[[], bool], *, timeout_seconds: float = 
             return
         await asyncio.sleep(0.02)
     raise AssertionError("condition did not become true in time")
+
+
+# ---------------------------------------------------------------------------
+# control plane
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AuthHarness:
+    """The real app, with the auth service backed by in-memory storage.
+
+    Only the storage is faked. Routing, cookies, the exception handlers, the
+    authenticated-by-default router and the tokens themselves are the production ones.
+    """
+
+    app: FastAPI
+    client: AsyncClient
+    auth: AuthFixture
+
+    async def login(
+        self,
+        *,
+        email: str | None = None,
+        password: str | None = None,
+        remember: bool = False,
+    ) -> Response:
+        return await self.client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": email if email is not None else self.auth.user.email,
+                "password": password if password is not None else PASSWORD,
+                "remember": remember,
+            },
+        )
+
+    async def sign_in(self) -> str:
+        """Log in and return the access token, failing loudly if that did not work."""
+        response = await self.login()
+        assert response.status_code == 200, response.text
+        token: str = response.json()["access_token"]
+        return token
+
+    @staticmethod
+    def bearer(token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}"}
+
+
+def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastAPI:
+    application = create_app()
+    application.dependency_overrides[get_auth_service] = lambda: auth.service
+    if settings is not None:
+        application.dependency_overrides[get_settings_from_app] = lambda: settings
+    return application
+
+
+@pytest.fixture
+async def auth_harness() -> AsyncIterator[AuthHarness]:
+    fixture = build_auth()
+    application = build_auth_app(fixture)
+
+    async with application.router.lifespan_context(application):
+        transport = ASGITransport(app=application)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+            yield AuthHarness(app=application, client=http_client, auth=fixture)

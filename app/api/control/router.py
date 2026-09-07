@@ -1,0 +1,35 @@
+"""The control-plane router.
+
+Authenticated by default. ``authenticated_router`` carries ``require_identity`` as a
+router-level dependency, so every route added to it — by tasks 04 through 17 — is
+protected without the author remembering to say so. FastAPI cannot remove a router-level
+dependency from an individual route, and that is exactly the property wanted here: an
+endpoint can only be public by being registered on ``public_router``, which is a visible,
+reviewable act rather than a missing decorator.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+
+from app.api.control import auth
+from app.api.control.deps import require_identity
+
+API_PREFIX = "/api/v1"
+
+#: Everything reachable without an access token. Keep it short; each addition here is a
+#: piece of the control plane that anyone on the network can reach.
+public_router = APIRouter(prefix=API_PREFIX)
+
+#: Where later tasks register their routes.
+authenticated_router = APIRouter(prefix=API_PREFIX, dependencies=[Depends(require_identity)])
+
+public_router.include_router(auth.public_router)
+authenticated_router.include_router(auth.router)
+
+
+def build_control_router() -> APIRouter:
+    router = APIRouter()
+    router.include_router(public_router)
+    router.include_router(authenticated_router)
+    return router

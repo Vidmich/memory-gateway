@@ -11,9 +11,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
+from app.api.control.router import build_control_router
 from app.api.health import router as health_router
 from app.api.proxy.routes import router as proxy_router
+from app.api.spa import mount_spa
 from app.core import background
 from app.core.clients import Clients
 from app.core.config import Settings, get_settings
@@ -26,8 +29,13 @@ from app.core.middleware import (
     MetricsMiddleware,
     RequestIdMiddleware,
 )
+from app.core.passwords import build_hasher
 from app.services.api_keys import KeyAuthenticator
+from app.services.auth import AuthService
+from app.services.auth_provider import LocalPasswordProvider
+from app.services.auth_store import PostgresAuthStore
 from app.services.gateways import GatewayResolver
+from app.services.login_throttle import LoginThrottle, RedisThrottleStore
 from app.services.proxy import ProxyService
 
 logger = logging.getLogger(__name__)
@@ -53,6 +61,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.gateway_resolver = GatewayResolver(clients.session_factory, secret_box)
         app.state.key_authenticator = KeyAuthenticator(clients.session_factory)
         app.state.proxy_service = ProxyService(clients.http)
+
+        hasher = build_hasher(settings)
+        app.state.auth_service = AuthService(
+            PostgresAuthStore(clients.session_factory),
+            provider=LocalPasswordProvider(hasher),
+            hasher=hasher,
+            # Redis, not memory: the counters have to be shared, or N replicas mean N
+            # times the allowed attempts.
+            throttle=LoginThrottle(RedisThrottleStore(clients.redis), settings),
+            settings=settings,
+        )
 
         logger.info("service started", extra={"environment": settings.environment})
         try:
@@ -82,10 +101,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(AccessLogMiddleware)
     app.add_middleware(RequestIdMiddleware)
 
+    if settings.cors_origins:
+        # Only for a split-origin deployment (the Vite dev server on another port).
+        # In production the SPA is served from this process, so the list is empty and
+        # the middleware is never added.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_origins),
+            allow_credentials=True,  # the refresh cookie
+            allow_methods=["*"],
+            allow_headers=["authorization", "content-type"],
+            expose_headers=["x-gateway-request-id"],
+        )
+
     register_exception_handlers(app)
 
     app.include_router(health_router)
+    app.include_router(build_control_router())
     app.include_router(proxy_router)
+    # Last: the SPA mount is at "/" and matches everything the routers above did not.
+    mount_spa(app, settings.web_dist_dir)
 
     return app
 

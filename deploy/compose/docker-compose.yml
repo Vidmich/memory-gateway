@@ -34,6 +34,17 @@ services:
       ENCRYPTION_MASTER_KEY: ZGV2LW9ubHktbWFzdGVyLWtleS0zMi1ieXRlcyEhISE=
       JWT_SIGNING_KEY: dev-only-jwt-signing-key-change-me-please
       PUBLIC_BASE_URL: http://localhost:8000
+      # Argon2id at production cost adds ~100 ms to every login; the dev stack does not
+      # need that, and the defaults in .env.example are what a deployment gets.
+      PASSWORD_MEMORY_COST_KIB: "16384"
+      PASSWORD_TIME_COST: "2"
+      # The image ships the built SPA at /srv/web, but in development the `web` service
+      # below serves it from source with hot reload. Blanking this keeps one answer to
+      # "which UI am I looking at".
+      WEB_DIST_DIR: ""
+      # The Vite dev server is a different origin, so the login request is cross-origin
+      # and needs credentials allowed. Not used in production, where the API serves the UI.
+      CORS_ORIGINS: '["http://localhost:5173"]'
       # Read only by `python -m app.cli seed`; the service itself never looks at them.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
@@ -140,17 +151,30 @@ services:
     restart: "no"
 
   web:
-    # Placeholder until task 03 replaces this with the Vite dev server.
-    image: nginx:1.27-alpine
+    image: node:22-alpine
+    working_dir: /srv/web
+    # `npm ci` on every start keeps the container's packages in step with the lockfile
+    # without a rebuild; it is a no-op when nothing changed.
+    command: ["sh", "-c", "npm ci && npm run dev -- --host 0.0.0.0"]
+    environment:
+      # Vite proxies /api here, so the browser only ever sees one origin in development.
+      VITE_API_PROXY: http://api:8000
     ports:
-      - "5173:80"
+      - "5173:5173"
     volumes:
-      - ../../web:/usr/share/nginx/html:ro
+      - ../../web:/srv/web
+      # node_modules stays in a container-local volume: the host's copy is built for the
+      # host's platform, and on Windows or macOS bind-mounting it is both wrong and slow.
+      - web-node-modules:/srv/web/node_modules
+    depends_on:
+      api:
+        condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:5173/"]
       interval: 10s
       timeout: 3s
-      retries: 5
+      retries: 10
+      start_period: 60s
     restart: unless-stopped
 
 volumes:
@@ -158,3 +182,4 @@ volumes:
   redis-data:
   qdrant-data:
   minio-data:
+  web-node-modules:

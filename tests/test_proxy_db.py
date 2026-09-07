@@ -21,6 +21,7 @@ from app.cli import DEMO_SLUG, SeedOptions, seed_demo
 from app.core import background, keys
 from app.core.crypto import SecretBox
 from app.core.ids import uuid7
+from app.core.passwords import Hasher
 from app.db.models import ApiKey, Gateway, GatewayTarget, Organization, UpstreamModel
 from app.services.api_keys import KeyAuthenticator
 from app.services.gateways import GatewayResolver
@@ -347,14 +348,20 @@ def seed_options(model: str = "gpt-4o-mini") -> SeedOptions:
     )
 
 
+@pytest.fixture
+def hasher() -> Hasher:
+    """Deliberately weak. These tests are about the seed, not about Argon2."""
+    return Hasher(time_cost=1, memory_cost_kib=8, parallelism=1)
+
+
 async def _count(session: AsyncSession, model: type[Any]) -> int:
     return int((await session.execute(select(func.count()).select_from(model))).scalar_one())
 
 
 async def test_seed_creates_a_working_demo_gateway(
-    db_session: AsyncSession, secret_box: SecretBox
+    db_session: AsyncSession, secret_box: SecretBox, hasher: Hasher
 ) -> None:
-    token = await seed_demo(db_session, seed_options(), secret_box)
+    token = (await seed_demo(db_session, seed_options(), secret_box, hasher)).api_key
 
     assert token is not None
     gateway = (
@@ -368,39 +375,42 @@ async def test_seed_creates_a_working_demo_gateway(
     assert key.gateway_id == gateway.id
 
 
-async def test_seed_is_idempotent(db_session: AsyncSession, secret_box: SecretBox) -> None:
-    await seed_demo(db_session, seed_options(), secret_box)
+async def test_seed_is_idempotent(
+    db_session: AsyncSession, secret_box: SecretBox, hasher: Hasher
+) -> None:
+    await seed_demo(db_session, seed_options(), secret_box, hasher)
     before = [await _count(db_session, model) for model in (Organization, UpstreamModel, Gateway)]
 
-    second = await seed_demo(db_session, seed_options("gpt-4o"), secret_box)
+    second = await seed_demo(db_session, seed_options("gpt-4o"), secret_box, hasher)
 
     assert [
         await _count(db_session, model) for model in (Organization, UpstreamModel, Gateway)
     ] == before
     assert await _count(db_session, GatewayTarget) == 1
-    assert second is None, "an existing key is kept, since its plaintext cannot be reshown"
+    assert second.api_key is None, "an existing key is kept: its plaintext cannot be reshown"
+    assert second.admin_password is None, "and neither can the superadmin's password"
 
 
 async def test_seed_updates_the_upstream_in_place(
-    db_session: AsyncSession, secret_box: SecretBox
+    db_session: AsyncSession, secret_box: SecretBox, hasher: Hasher
 ) -> None:
-    await seed_demo(db_session, seed_options(), secret_box)
+    await seed_demo(db_session, seed_options(), secret_box, hasher)
 
-    await seed_demo(db_session, seed_options("gpt-4o"), secret_box)
+    await seed_demo(db_session, seed_options("gpt-4o"), secret_box, hasher)
 
     model = (await db_session.execute(select(UpstreamModel))).scalar_one()
     assert model.upstream_model_id == "gpt-4o"
 
 
 async def test_rotating_revokes_the_previous_key(
-    db_session: AsyncSession, secret_box: SecretBox
+    db_session: AsyncSession, secret_box: SecretBox, hasher: Hasher
 ) -> None:
-    first = await seed_demo(db_session, seed_options(), secret_box)
+    first = (await seed_demo(db_session, seed_options(), secret_box, hasher)).api_key
     assert first is not None
 
     options = seed_options()
     options.rotate_key = True
-    second = await seed_demo(db_session, options, secret_box)
+    second = (await seed_demo(db_session, options, secret_box, hasher)).api_key
 
     assert second is not None and second != first
     parsed = keys.parse(first)

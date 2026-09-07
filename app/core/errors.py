@@ -42,12 +42,16 @@ class AppError(Exception):
         *,
         details: dict[str, Any] | None = None,
         param: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.details = details or {}
         #: OpenAI ``error.param`` — which request field is at fault, when one is.
         self.param = param
+        #: Response headers the status is meaningless without: ``Retry-After`` on a 429,
+        #: ``WWW-Authenticate`` on a 401.
+        self.headers = headers or {}
 
 
 class NotFound(AppError):
@@ -116,6 +120,7 @@ def error_response(
     details: dict[str, Any] | None = None,
     openai_type: str | None = None,
     param: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     if is_data_plane(request):
         # The four keys are all present, `null` included: the OpenAI SDKs read them
@@ -128,7 +133,7 @@ def error_response(
                 "code": code,
             }
         }
-        return JSONResponse(status_code=status_code, content=openai_body)
+        return JSONResponse(status_code=status_code, content=openai_body, headers=headers)
 
     body: dict[str, Any] = {
         "error": {
@@ -139,7 +144,7 @@ def error_response(
     }
     if details:
         body["error"]["details"] = details
-    return JSONResponse(status_code=status_code, content=body)
+    return JSONResponse(status_code=status_code, content=body, headers=headers)
 
 
 async def handle_app_error(request: Request, exc: Exception) -> JSONResponse:
@@ -152,6 +157,7 @@ async def handle_app_error(request: Request, exc: Exception) -> JSONResponse:
         details=exc.details,
         openai_type=exc.openai_type,
         param=exc.param,
+        headers=exc.headers,
     )
 
 

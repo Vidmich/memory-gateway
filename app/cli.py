@@ -1,16 +1,20 @@
 """Operator commands. ``python -m app.cli <command>``.
 
-Task 02 has no configuration API yet, so the demo gateway is created here. Everything this
-does will be doable from the UI after task 06; the command stays useful for bootstrapping
-a fresh environment.
+``seed`` bootstraps a usable environment: a superadmin to log into the UI with, and — when
+a provider credential is available — the demo organization, upstream model, gateway and
+API key that the data plane needs.
+
+Everything here will be doable from the UI after task 06. The command stays useful for
+the first run, where there is no account to log in with yet.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
-import sys
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -21,14 +25,19 @@ from app.core import keys
 from app.core.config import Settings, get_settings
 from app.core.crypto import SecretBox, secret_hint
 from app.core.ids import uuid7
+from app.core.passwords import Hasher, build_hasher
 from app.db.base import Base
-from app.db.models import ApiKey, Gateway, GatewayTarget, Organization, UpstreamModel
+from app.db.models import ApiKey, Gateway, GatewayTarget, Organization, UpstreamModel, User
 from app.db.session import create_engine, create_session_factory
 
 DEMO_SLUG = "demo"
 DEMO_KEY_NAME = "demo"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_ADMIN_EMAIL = "admin@example.com"
+#: 24 URL-safe characters. Long enough that nobody is tempted to keep it, which is the
+#: point — it exists to get you to the password-change screen.
+ADMIN_PASSWORD_BYTES = 18
 
 
 @dataclass
@@ -38,13 +47,29 @@ class SeedOptions:
     credential: str | None
     auth_type: str
     rotate_key: bool
+    admin_email: str = DEFAULT_ADMIN_EMAIL
+    rotate_admin_password: bool = False
+    #: False when no provider credential is available; the superadmin is still seeded.
+    seed_gateway: bool = True
+
+
+@dataclass
+class SeedResult:
+    """What was created. ``None`` means "already existed and cannot be shown again"."""
+
+    admin_email: str
+    admin_password: str | None
+    api_key: str | None
+    gateway_seeded: bool
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cli")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    seed = commands.add_parser("seed", help="Create or update the demo org, model, gateway and key")
+    seed = commands.add_parser(
+        "seed", help="Create or update the superadmin, and the demo gateway and key"
+    )
     seed.add_argument(
         "--rotate-key",
         action="store_true",
@@ -57,24 +82,64 @@ def main(argv: list[str] | None = None) -> int:
         help="Configure the upstream with no credential, for a local provider such as "
         "Ollama or vLLM",
     )
+    seed.add_argument(
+        "--admin-email",
+        default=os.getenv("SEED_ADMIN_EMAIL", DEFAULT_ADMIN_EMAIL),
+        help=f"Email of the superadmin to create (default: {DEFAULT_ADMIN_EMAIL})",
+    )
+    seed.add_argument(
+        "--rotate-admin-password",
+        action="store_true",
+        help="Set a new random password for the superadmin and print it once",
+    )
+
+    commands.add_parser(
+        "openapi",
+        help="Print the OpenAPI schema to stdout (the frontend's typed client is "
+        "generated from it)",
+    )
 
     args = parser.parse_args(argv)
+    if args.command == "openapi":
+        return dump_openapi()
+
     # `required=True` on the subparsers means argparse has already rejected anything else.
-    return asyncio.run(run_seed(args.rotate_key, no_auth=args.no_auth))
+    return asyncio.run(
+        run_seed(
+            args.rotate_key,
+            no_auth=args.no_auth,
+            admin_email=args.admin_email,
+            rotate_admin_password=args.rotate_admin_password,
+        )
+    )
 
 
-async def run_seed(rotate_key: bool, *, no_auth: bool) -> int:
+def dump_openapi() -> int:
+    """Write the schema the frontend's types are generated from.
+
+    Imported lazily so that `seed` does not pay for building an application it will not
+    use, and sorted so the output is byte-stable — the drift check in CI compares it.
+    """
+    from app.main import create_app
+
+    print(json.dumps(create_app().openapi(), indent=2, sort_keys=True))
+    return 0
+
+
+async def run_seed(
+    rotate_key: bool,
+    *,
+    no_auth: bool,
+    admin_email: str = DEFAULT_ADMIN_EMAIL,
+    rotate_admin_password: bool = False,
+) -> int:
     settings = get_settings()
 
     credential = os.getenv("OPENAI_API_KEY")
-    if not credential and not no_auth:
-        print(
-            "OPENAI_API_KEY is not set.\n"
-            "  Set it to seed a gateway that talks to a real provider, or pass --no-auth\n"
-            "  to seed one pointing at a local, unauthenticated upstream.",
-            file=sys.stderr,
-        )
-        return 1
+    # A missing provider key is no longer fatal. Task 03's demo needs the superadmin, and
+    # that does not depend on an upstream; the gateway half is simply skipped, and the
+    # report says so.
+    seed_gateway = bool(credential) or no_auth
 
     options = SeedOptions(
         base_url=os.getenv("OPENAI_BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
@@ -82,17 +147,25 @@ async def run_seed(rotate_key: bool, *, no_auth: bool) -> int:
         credential=None if no_auth else credential,
         auth_type="none" if no_auth else "bearer",
         rotate_key=rotate_key,
+        admin_email=admin_email,
+        rotate_admin_password=rotate_admin_password,
+        seed_gateway=seed_gateway,
     )
 
     engine = create_engine(settings)
     try:
         async with create_session_factory(engine)() as session:
-            token = await seed_demo(session, options, SecretBox.from_settings(settings))
+            result = await seed_demo(
+                session,
+                options,
+                SecretBox.from_settings(settings),
+                build_hasher(settings),
+            )
             await session.commit()
     finally:
         await engine.dispose()
 
-    _report(settings, options, token)
+    _report(settings, options, result)
     return 0
 
 
@@ -100,19 +173,63 @@ async def seed_demo(
     session: AsyncSession,
     options: SeedOptions,
     secret_box: SecretBox,
-) -> str | None:
-    """Create or update the demo configuration.
+    hasher: Hasher,
+) -> SeedResult:
+    """Create or update the seeded configuration.
 
     Idempotent: every object is looked up by its natural key and updated in place, so
     re-running after changing ``OPENAI_MODEL`` repoints the existing gateway instead of
-    creating a second one. Returns the new key's plaintext, or ``None`` when an existing
-    key was kept.
+    creating a second one. Secrets that already exist are never re-shown — printing a
+    password nobody set would be worse than admitting it cannot be recovered.
     """
     organization = await _upsert_organization(session)
-    model = await _upsert_model(session, organization, options, secret_box)
-    gateway = await _upsert_gateway(session, organization)
-    await _upsert_target(session, gateway, model)
-    return await _ensure_key(session, gateway, rotate=options.rotate_key)
+    admin_password = await _ensure_superadmin(session, options, hasher)
+
+    token: str | None = None
+    if options.seed_gateway:
+        model = await _upsert_model(session, organization, options, secret_box)
+        gateway = await _upsert_gateway(session, organization)
+        await _upsert_target(session, gateway, model)
+        token = await _ensure_key(session, gateway, rotate=options.rotate_key)
+
+    return SeedResult(
+        admin_email=options.admin_email,
+        admin_password=admin_password,
+        api_key=token,
+        gateway_seeded=options.seed_gateway,
+    )
+
+
+async def _ensure_superadmin(
+    session: AsyncSession, options: SeedOptions, hasher: Hasher
+) -> str | None:
+    """Create the platform superadmin, or reset its password on request.
+
+    Returns the plaintext when one was generated, ``None`` when an existing account was
+    left alone. A superadmin has no ``organization_id`` — it is a platform account, and
+    the CHECK constraint on ``users`` enforces that rather than trusting this code.
+    """
+    existing = await _by(session, User, User.email == options.admin_email)
+
+    if existing is not None and not options.rotate_admin_password:
+        return None
+
+    password = secrets.token_urlsafe(ADMIN_PASSWORD_BYTES)
+    if existing is None:
+        existing = User(
+            id=uuid7(),
+            organization_id=None,
+            email=options.admin_email,
+            role="superadmin",
+            name="Platform Admin",
+            status="active",
+        )
+        session.add(existing)
+
+    existing.password_hash = hasher.hash(password)
+    existing.status = "active"
+    await session.flush()
+    return password
 
 
 async def _upsert_organization(session: AsyncSession) -> Organization:
@@ -232,7 +349,23 @@ async def _by[T: Base](
     return (await session.execute(select(model).where(*where))).scalars().first()
 
 
-def _report(settings: Settings, options: SeedOptions, token: str | None) -> None:
+def _report(settings: Settings, options: SeedOptions, result: SeedResult) -> None:
+    print("Sign in to the UI:\n")
+    print(f"  email    : {result.admin_email}")
+    if result.admin_password is None:
+        print("  password : (unchanged — an account with this email already exists)")
+        print("             Re-run with --rotate-admin-password to set a new one.")
+    else:
+        print(f"  password : {result.admin_password}")
+        print("             Shown once. Change it after signing in.")
+    print()
+
+    if not result.gateway_seeded:
+        print("Skipped the demo gateway: OPENAI_API_KEY is not set.")
+        print("  Set it and re-run to seed a gateway that talks to a real provider, or")
+        print("  pass --no-auth for a local, unauthenticated upstream.")
+        return
+
     base = f"{settings.public_base_url}/g/{DEMO_SLUG}/v1"
     print("Demo gateway ready.\n")
     print(f"  base_url : {base}")
@@ -241,12 +374,12 @@ def _report(settings: Settings, options: SeedOptions, token: str | None) -> None
     if options.credential:
         print(f"  provider key: {secret_hint(options.credential)} (encrypted at rest)")
     print()
-    if token is None:
+    if result.api_key is None:
         print("  An API key named 'demo' already exists and its plaintext cannot be shown")
         print("  again. Re-run with --rotate-key to revoke it and issue a new one.")
     else:
         print("  API key (shown once, store it now):")
-        print(f"    {token}")
+        print(f"    {result.api_key}")
     print()
     print("Try it:")
     print(f'  curl {base}/models -H "Authorization: Bearer $MG_KEY"')

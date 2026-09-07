@@ -1,6 +1,24 @@
 # Multi-stage build. Task 18 hardens this further (read-only rootfs, distroless-style
 # runtime, vulnerability scanning); what matters here is that dependencies are a cached
 # layer and the runtime image carries no build tooling.
+#
+# One image serves both the API and the UI. That is not just convenience: same-origin
+# means the refresh cookie needs no SameSite=None, there is no CORS preflight in front of
+# the login request, and there is one thing to deploy and roll back rather than two that
+# can be at different versions.
+
+FROM node:22-alpine AS web-builder
+
+WORKDIR /srv/web
+
+# `npm ci` from the lockfile, in its own layer, so it is reused until the lockfile moves.
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web/ ./
+RUN npm run build
+
+# ---------------------------------------------------------------------------
 
 FROM ghcr.io/astral-sh/uv:0.5-python3.12-bookworm-slim AS builder
 
@@ -21,7 +39,8 @@ FROM python:3.12-slim-bookworm AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/srv/.venv/bin:$PATH"
+    PATH="/srv/.venv/bin:$PATH" \
+    WEB_DIST_DIR=/srv/web
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
@@ -34,6 +53,7 @@ COPY --from=builder --chown=gateway:gateway /srv/.venv /srv/.venv
 COPY --chown=gateway:gateway alembic.ini ./
 COPY --chown=gateway:gateway migrations ./migrations
 COPY --chown=gateway:gateway app ./app
+COPY --from=web-builder --chown=gateway:gateway /srv/web/dist ./web
 COPY --chown=gateway:gateway deploy/compose/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 RUN chmod +x /usr/local/bin/entrypoint.sh

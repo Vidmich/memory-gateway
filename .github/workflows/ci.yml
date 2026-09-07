@@ -53,8 +53,19 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     env:
       DATABASE_URL: postgresql+asyncpg://gateway:gateway@localhost:5432/gateway
+      REDIS_URL: redis://localhost:6379/0
       # Database-backed tests skip on a laptop with the stack down. In CI they must run,
       # so an unapplied migration fails the build instead of quietly disappearing.
       REQUIRE_DB_TESTS: "1"
@@ -70,6 +81,77 @@ jobs:
 
       - name: pytest
         run: uv run pytest --cov --cov-report=term-missing
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - name: eslint
+        run: npm run lint
+
+      - name: tsc
+        run: npm run typecheck
+
+      - name: vitest
+        run: npm run test
+
+      - name: production build
+        run: npm run build
+
+  api-client:
+    name: generated API client is current
+    runs-on: ubuntu-latest
+
+    # Dev-safe values: nothing is connected to, the app is only built far enough to
+    # produce its OpenAPI schema.
+    env:
+      DATABASE_URL: postgresql+asyncpg://gateway:gateway@localhost:5432/gateway
+      REDIS_URL: redis://localhost:6379/0
+      QDRANT_URL: http://localhost:6333
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: memory-gateway
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      ENCRYPTION_MASTER_KEY: ZGV2LW9ubHktbWFzdGVyLWtleS0zMi1ieXRlcyEhISE=
+      JWT_SIGNING_KEY: ci-only-jwt-signing-key-at-least-32-chars
+      PUBLIC_BASE_URL: http://localhost:8000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: uv sync --all-groups
+
+      - run: npm ci
+        working-directory: web
+
+      # Regenerates and fails if the committed client differs from the live schema — the
+      # frontend's types are only worth anything if they are the server's.
+      - name: openapi drift
+        run: make openapi-check
 
   docker:
     name: image builds

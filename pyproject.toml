@@ -18,6 +18,9 @@ dependencies = [
     "httpx>=0.28",
     "prometheus-client>=0.21",
     "cryptography>=43.0",
+    "argon2-cffi>=23.1",
+    "pyjwt>=2.10",
+    "email-validator>=2.2",
 ]
 
 [dependency-groups]
@@ -126,6 +129,11 @@ env = [
     "D:S3_SECRET_ACCESS_KEY=minioadmin",
     "D:ENCRYPTION_MASTER_KEY=dGVzdC1tYXN0ZXIta2V5LTMyLWJ5dGVzLWxvbmchISE=",
     "D:JWT_SIGNING_KEY=test-jwt-signing-key-at-least-32-chars",
+    # Argon2id at production cost is ~100 ms per hash, and the auth tests hash on almost
+    # every case. These are the two knobs that make the suite fast; a dedicated test
+    # asserts the *defaults* are still strong.
+    "D:PASSWORD_TIME_COST=1",
+    "D:PASSWORD_MEMORY_COST_KIB=8",
     "D:PUBLIC_BASE_URL=http://localhost:8000",
 ]
 

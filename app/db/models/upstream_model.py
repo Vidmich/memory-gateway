@@ -61,6 +61,10 @@ class UpstreamModel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             unique=True,
             postgresql_where=text("organization_id IS NULL"),
         ),
+        # `organization_id` leads, as it does on every composite index here, so the
+        # scoped list query is an index scan and adding row-level security later stays
+        # mechanical (task 04 Notes).
+        Index("ix_upstream_models_organization_id_id", "organization_id", "id"),
     )
 
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -79,6 +83,10 @@ class UpstreamModel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     auth_type: Mapped[str] = mapped_column(String(32), nullable=False, default="bearer")
     # Envelope-encrypted (app/core/crypto.py). Never returned by any API; SPEC §5.4.
     credential_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # The display form — `sk-...4f2a` — derived from the plaintext at write time. Stored
+    # rather than computed so rendering a list never needs the master key, and so a row
+    # written under a rotated key still shows something rather than failing to decrypt.
+    credential_hint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     extra_headers: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )

@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     #: token itself expires sooner.
     refresh_token_short_ttl_seconds: int = Field(default=12 * 3600, ge=300)
 
+    #: "Test connection" presses allowed per user per window. Every one is an outbound
+    #: call to a provider, billed to whoever owns the model, so it needs a ceiling — but
+    #: a generous one, because getting a base URL right takes a few tries.
+    model_test_max_attempts: int = Field(default=20, ge=1)
+    model_test_window_seconds: int = Field(default=60, ge=1)
+
     #: Failed logins allowed per window before backoff, counted per IP and per email.
     login_max_attempts: int = Field(default=5, ge=1)
     login_attempt_window_seconds: int = Field(default=15 * 60, ge=1)

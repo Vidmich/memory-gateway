@@ -32,7 +32,7 @@ from app.core.config import Settings, get_settings
 from app.core.errors import Conflict, NotFound, Validation
 from app.core.ids import uuid7
 from app.core.passwords import Hasher, PasswordPolicy
-from app.core.tenancy import TenantScope
+from app.core.tenancy import Actor, TenantScope
 from app.db.models import Gateway, Invitation, Organization, User
 from app.db.models.invitation import INVITABLE_ROLES
 from app.services.directory_store import DirectoryStore, DirectoryTransaction
@@ -48,14 +48,6 @@ INVITATION_TTL_DAYS = 7
 #: "expired". The token is a bearer credential handed out by email, so a caller holding a
 #: wrong one learns nothing about which of those it is.
 INVITATION_UNUSABLE = "This invitation link is no longer valid. Ask for a new one."
-
-
-@dataclass(frozen=True, slots=True)
-class Actor:
-    """Who is asking, and what they may see. Both come from the session."""
-
-    user_id: uuid.UUID
-    scope: TenantScope
 
 
 @dataclass(frozen=True, slots=True)
@@ -537,3 +529,13 @@ class DirectoryService:
 #: narrowed to the invitation's own organization the moment that row is read. Named
 #: rather than inlined so the one place this bypass exists is greppable.
 _ACCEPTANCE_SCOPE = TenantScope(role="superadmin", organization_id=None)
+
+
+__all__ = [
+    "INVITATION_TTL_DAYS",
+    "Actor",
+    "DirectoryService",
+    "InvitationPreview",
+    "IssuedInvitation",
+    "OrganizationView",
+]

@@ -15,9 +15,10 @@ from fastapi import Depends, Request
 from app.core.config import Settings
 from app.core.errors import Forbidden, Unauthorized, Validation
 from app.core.keys import bearer_token
-from app.core.tenancy import TenantScope
+from app.core.tenancy import Actor, TenantScope
 from app.services.auth import AuthenticationRequired, AuthService, Identity, RequestContext
-from app.services.directory import Actor, DirectoryService
+from app.services.catalog import CatalogService
+from app.services.directory import DirectoryService
 from app.services.permissions import Capability, allows
 
 #: Sent on every 401 from the control plane. The SPA keys its refresh-and-retry off the
@@ -41,6 +42,11 @@ def get_auth_service(request: Request) -> AuthService:
 
 def get_directory_service(request: Request) -> DirectoryService:
     service: DirectoryService = request.app.state.directory_service
+    return service
+
+
+def get_catalog_service(request: Request) -> CatalogService:
+    service: CatalogService = request.app.state.catalog_service
     return service
 
 

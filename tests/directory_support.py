@@ -16,21 +16,37 @@ from dataclasses import dataclass, field
 
 from app.core.config import Settings, get_settings
 from app.core.passwords import Hasher, build_hasher
-from app.core.tenancy import TenantScope
-from app.db.models import Organization, User
-from app.services.directory import Actor, DirectoryService
+from app.core.tenancy import Actor, TenantScope
+from app.db.models import Gateway, Organization, UpstreamModel, User
+from app.services.catalog import CatalogService
+from app.services.directory import DirectoryService
 from app.services.memory_db import MemoryDatabase
 from tests.auth_support import PASSWORD, AuthFixture, build_auth, make_organization, make_user
+from tests.catalog_support import (
+    ACME_SECRET,
+    PLATFORM_SECRET,
+    FakeProbe,
+    make_gateway_row,
+    make_model,
+    make_target_row,
+)
 
 
 @dataclass
 class World:
-    """Two organizations, one of every role, and a platform account."""
+    """Two organizations, one of every role, a platform account, and a model each.
+
+    The catalog half mirrors the directory half deliberately: two org models with
+    different owners, one global model owned by nobody, and one gateway pointing at
+    Acme's model so the referenced-delete guard has something real to refuse.
+    """
 
     settings: Settings
     hasher: Hasher
     database: MemoryDatabase
     directory: DirectoryService
+    catalog: CatalogService
+    probe: FakeProbe
     auth: AuthFixture
 
     acme: Organization
@@ -41,6 +57,11 @@ class World:
     acme_member: User
     acme_viewer: User
     globex_admin: User
+
+    acme_model: UpstreamModel
+    globex_model: UpstreamModel
+    global_model: UpstreamModel
+    acme_gateway: Gateway
 
     #: Every user, keyed by the short name the tests use.
     people: dict[str, User] = field(default_factory=dict)
@@ -96,6 +117,29 @@ def build_world(*, settings: Settings | None = None) -> World:
         organization=acme,
     )
 
+    acme_model = make_model(
+        organization=acme,
+        name="acme-gpt",
+        credential=ACME_SECRET,
+        secret_box=auth.secret_box,
+    )
+    globex_model = make_model(organization=globex, name="globex-gpt")
+    global_model = make_model(
+        organization=None,
+        name="shared-gpt-4o",
+        credential=PLATFORM_SECRET,
+        secret_box=auth.secret_box,
+        # An operator's private routing detail, and the sharpest reason a tenant must not
+        # read a global model's headers: this one is an auth header.
+        extra_headers={"x-operator-token": "operator-only-value"},
+    )
+    for model in (acme_model, globex_model, global_model):
+        database.add_model(model)
+
+    acme_gateway = make_gateway_row(acme, slug="acme-chat")
+    database.add_gateway(acme_gateway)
+    database.add_target(make_target_row(acme_gateway.id, acme_model.id))
+
     return World(
         settings=settings,
         hasher=hasher,
@@ -103,6 +147,8 @@ def build_world(*, settings: Settings | None = None) -> World:
         # The same instance the app's dependency override hands out, so a test cannot
         # accidentally exercise two services over one database.
         directory=auth.directory,
+        catalog=auth.catalog,
+        probe=auth.probe,
         auth=auth,
         acme=acme,
         globex=globex,
@@ -111,6 +157,10 @@ def build_world(*, settings: Settings | None = None) -> World:
         acme_member=people["acme_member"],
         acme_viewer=people["acme_viewer"],
         globex_admin=people["globex_admin"],
+        acme_model=acme_model,
+        globex_model=globex_model,
+        global_model=global_model,
+        acme_gateway=acme_gateway,
         people=people,
     )
 

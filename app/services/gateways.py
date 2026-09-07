@@ -40,6 +40,10 @@ class ResolvedGateway:
     system_context: str | None = None
     param_overrides: Mapping[str, Any] = field(default_factory=dict)
     targets: tuple[UpstreamTarget, ...] = ()
+    #: Models this gateway points at that are switched off. Carried so the 503 can say
+    #: *which* model is disabled instead of "no usable target" — the difference between
+    #: an operator fixing it in one click and going looking for the problem.
+    disabled: tuple[str, ...] = ()
 
     @property
     def virtual_model(self) -> str:
@@ -58,10 +62,26 @@ class ResolvedGateway:
         one target and picking it is not a decision.
         """
         if not self.targets:
-            raise GatewayUnavailable(
-                f"Gateway '{self.slug}' has no enabled upstream model configured."
-            )
+            raise GatewayUnavailable(self._misconfiguration())
         return self.targets[0]
+
+    def _misconfiguration(self) -> str:
+        """Why this gateway cannot serve, in terms the operator can act on.
+
+        A generic "no usable target" is technically true and practically useless: the two
+        causes need different fixes, and one of them is a single toggle.
+        """
+        if self.disabled:
+            models = ", ".join(f"'{name}'" for name in self.disabled)
+            subject = "model" if len(self.disabled) == 1 else "models"
+            return (
+                f"Gateway '{self.slug}' points at the disabled upstream {subject} {models}. "
+                f"Enable it under Models, or point the gateway at another one."
+            )
+        return (
+            f"Gateway '{self.slug}' has no upstream model configured. "
+            f"Add one under Models and point this gateway at it."
+        )
 
 
 class GatewayResolver:
@@ -104,6 +124,11 @@ class GatewayResolver:
             system_context=gateway.system_context,
             param_overrides=dict(gateway.param_overrides or {}),
             targets=tuple(self._to_target(target) for target in _usable(gateway)),
+            disabled=tuple(
+                target.upstream_model.name
+                for target in gateway.targets
+                if not target.upstream_model.enabled
+            ),
         )
 
     def _to_target(self, target: GatewayTarget) -> UpstreamTarget:

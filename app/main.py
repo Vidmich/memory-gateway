@@ -34,11 +34,15 @@ from app.services.api_keys import KeyAuthenticator
 from app.services.auth import AuthService
 from app.services.auth_provider import LocalPasswordProvider
 from app.services.auth_store import PostgresAuthStore
+from app.services.catalog import CatalogService
+from app.services.catalog_store import PostgresCatalogStore
 from app.services.directory import DirectoryService
 from app.services.directory_store import PostgresDirectoryStore
 from app.services.gateways import GatewayResolver
 from app.services.login_throttle import LoginThrottle, RedisThrottleStore
+from app.services.model_probe import ModelProbe
 from app.services.proxy import ProxyService
+from app.services.rate_limit import FixedWindowLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +81,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.directory_service = DirectoryService(
             PostgresDirectoryStore(clients.session_factory),
             hasher=hasher,
+            settings=settings,
+        )
+        app.state.catalog_service = CatalogService(
+            PostgresCatalogStore(clients.session_factory),
+            secret_box=secret_box,
+            # The same pool the proxy uses, so a probe warms the connection a real
+            # request will reuse — and so a misconfigured pool fails in both places.
+            probe=ModelProbe(clients.http),
+            test_limiter=FixedWindowLimiter(
+                store=RedisThrottleStore(clients.redis),
+                action="model-test",
+                limit=settings.model_test_max_attempts,
+                window_seconds=settings.model_test_window_seconds,
+            ),
             settings=settings,
         )
 

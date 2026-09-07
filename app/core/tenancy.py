@@ -128,3 +128,15 @@ class TenantScope:
         if self.organization_id is None:
             raise Forbidden("This action must be performed inside an organization.")
         return self.organization_id
+
+
+@dataclass(frozen=True, slots=True)
+class Actor:
+    """Who is asking, and what they may see. Both come from the session.
+
+    Lives here rather than beside any one service because every domain service takes one:
+    the directory in task 04, the model catalog in 05, gateways in 06.
+    """
+
+    user_id: uuid.UUID
+    scope: TenantScope

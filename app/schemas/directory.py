@@ -23,6 +23,7 @@ from app.core.passwords import MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH
 from app.db.models import Invitation, Organization, User
 from app.db.models.invitation import INVITABLE_ROLES
 from app.db.models.organization import ORGANIZATION_STATUSES
+from app.schemas.common import Page
 from app.services.directory import InvitationPreview, IssuedInvitation, OrganizationView
 
 #: Lower-case, hyphen-separated, no leading or trailing hyphen. The slug appears in the
@@ -37,18 +38,6 @@ Name = Annotated[str, Field(min_length=1, max_length=200)]
 #: far more than the handful of defaults later tasks put there, and small enough that it
 #: cannot be used as free storage or to make a row expensive to read.
 MAX_SETTINGS_BYTES = 16 * 1024
-
-
-class Page[ItemT](BaseModel):
-    """One page of a cursor-paginated list (SPEC §12.2).
-
-    ``next_cursor`` is ``None`` on the last page. There is no total: counting a large
-    table on every request costs more than the page does, and the UI pages rather than
-    showing "of N".
-    """
-
-    items: list[ItemT]
-    next_cursor: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -269,3 +258,20 @@ def invitation_status(invitation: Invitation) -> str:
     if invitation.expires_at <= datetime.now(UTC):
         return "expired"
     return "pending"
+
+
+#: Re-exported so a caller reading directory responses has one import.
+__all__ = [
+    "InvitationAcceptRequest",
+    "InvitationCreateRequest",
+    "InvitationPreviewResponse",
+    "InvitationResponse",
+    "IssuedInvitationResponse",
+    "MemberResponse",
+    "MemberUpdateRequest",
+    "OrganizationCreateRequest",
+    "OrganizationResponse",
+    "OrganizationUpdateRequest",
+    "Page",
+    "invitation_status",
+]

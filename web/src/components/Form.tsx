@@ -130,3 +130,54 @@ export function SubmitButton({
     </button>
   )
 }
+
+
+/** Same contract as `TextInput`, for the fields that need more than one line. */
+export function TextArea({
+  id,
+  invalid,
+  describedBy,
+  ...props
+}: {
+  id: string
+  invalid: boolean
+  describedBy: string | undefined
+} & React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      id={id}
+      aria-invalid={invalid || undefined}
+      aria-describedby={describedBy}
+      className={`w-full rounded-md border px-3 py-2 font-mono text-sm focus:outline-none ${
+        invalid ? 'border-red-400 focus:border-red-500' : 'border-slate-300 focus:border-slate-500'
+      }`}
+      {...props}
+    />
+  )
+}
+
+export function Select({
+  id,
+  invalid,
+  describedBy,
+  children,
+  ...props
+}: {
+  id: string
+  invalid: boolean
+  describedBy: string | undefined
+} & React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      id={id}
+      aria-invalid={invalid || undefined}
+      aria-describedby={describedBy}
+      className={`w-full rounded-md border bg-white px-3 py-2 text-sm focus:outline-none ${
+        invalid ? 'border-red-400 focus:border-red-500' : 'border-slate-300 focus:border-slate-500'
+      }`}
+      {...props}
+    >
+      {children}
+    </select>
+  )
+}

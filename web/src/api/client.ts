@@ -23,6 +23,8 @@ export type ErrorBody = {
     code?: string
     message?: string
     request_id?: string
+    /** Which request field the message is about, when the server named one. */
+    param?: string
     details?: unknown
   }
 }
@@ -34,16 +36,31 @@ export class ApiError extends Error {
     message: string,
     readonly details?: unknown,
     readonly requestId?: string,
+    readonly param?: string,
   ) {
     super(message)
     this.name = 'ApiError'
   }
 
-  /** Field-level messages, keyed by field name, for `Form` to render inline. */
+  /**
+   * Field-level messages, keyed by field name, for `Form` to render inline.
+   *
+   * Two sources, because there are two kinds of failure. Request *validation* fails
+   * before the endpoint runs and reports a list under `details.errors`; a rule the
+   * server alone knows — a name already taken, a parameter outside the provider's range
+   * — fails inside it and names one field in `param`.
+   */
   get fieldErrors(): Record<string, string> {
     const details = this.details as { errors?: { loc?: string[]; msg?: string }[] } | undefined
     const errors = details?.errors
-    if (!Array.isArray(errors)) return {}
+
+    if (!Array.isArray(errors)) {
+      // `default_params.temperature` belongs to the `default_params` input, so the
+      // first segment is the field — the opposite end from FastAPI's `loc`, which is
+      // rooted at "body".
+      const field = this.param?.split('.')[0]
+      return field ? { [field]: this.message } : {}
+    }
 
     const byField: Record<string, string> = {}
     for (const item of errors) {
@@ -198,6 +215,7 @@ async function toError(response: Response): Promise<ApiError> {
     error?.message ?? response.statusText ?? 'Request failed',
     error?.details,
     error?.request_id,
+    error?.param,
   )
 }
 

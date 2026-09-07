@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import (
 from app.adapters.base import UpstreamTarget
 from app.api.control.deps import (
     get_auth_service,
+    get_catalog_service,
     get_directory_service,
     get_settings_from_app,
 )
@@ -366,6 +367,7 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     application = create_app()
     application.dependency_overrides[get_auth_service] = lambda: auth.service
     application.dependency_overrides[get_directory_service] = lambda: auth.directory
+    application.dependency_overrides[get_catalog_service] = lambda: auth.catalog
     if settings is not None:
         application.dependency_overrides[get_settings_from_app] = lambda: settings
     return application
@@ -382,6 +384,7 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
         # dependency alone would leave that call talking to PostgreSQL.
         application.state.auth_service = fixture.service
         application.state.directory_service = fixture.directory
+        application.state.catalog_service = fixture.catalog
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield AuthHarness(app=application, client=http_client, auth=fixture)
@@ -439,6 +442,7 @@ async def directory() -> AsyncIterator[DirectoryHarness]:
     async with application.router.lifespan_context(application):
         application.state.auth_service = world.auth.service
         application.state.directory_service = world.directory
+        application.state.catalog_service = world.catalog
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield DirectoryHarness(app=application, client=http_client, world=world)

@@ -26,6 +26,14 @@ export type IssuedInvitationResponse = components['schemas']['IssuedInvitationRe
 export type InvitationPreviewResponse = components['schemas']['InvitationPreviewResponse']
 export type InvitationAcceptRequest = components['schemas']['InvitationAcceptRequest']
 
+export type ModelResponse = components['schemas']['ModelResponse']
+export type ModelCreateRequest = components['schemas']['ModelCreateRequest']
+export type ModelUpdateRequest = components['schemas']['ModelUpdateRequest']
+export type ModelTestRequest = components['schemas']['ModelTestRequest']
+export type CredentialStatus = components['schemas']['CredentialStatus']
+export type ProbeResponse = components['schemas']['ProbeResponse']
+
 export type OrganizationPage = components['schemas']['Page_OrganizationResponse_']
 export type MemberPage = components['schemas']['Page_MemberResponse_']
 export type InvitationPage = components['schemas']['Page_InvitationResponse_']
+export type ModelPage = components['schemas']['Page_ModelResponse_']

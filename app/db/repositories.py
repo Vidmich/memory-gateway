@@ -15,12 +15,19 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import ColumnElement, Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.tenancy import TenantScope
-from app.db.models import Invitation, Organization, User
-from app.db.scoping import ScopedRepository, unscoped
+from app.db.models import (
+    Gateway,
+    GatewayTarget,
+    Invitation,
+    Organization,
+    UpstreamModel,
+    User,
+)
+from app.db.scoping import ScopedRepository, scoped, unscoped
 
 
 class UserRepository(ScopedRepository[User]):
@@ -155,3 +162,150 @@ class OrganizationRepository:
         )
         rows = (await self._session.execute(statement)).all()
         return {row[0]: row[1] for row in rows if row[0] is not None}
+
+
+# ---------------------------------------------------------------------------
+# the model catalog
+# ---------------------------------------------------------------------------
+#
+# `upstream_models` is the first table with **two** scopes: a row either belongs to one
+# organization or to the platform, and every org user can read the platform's rows
+# (SPEC §5.3, the global catalog). So the read is deliberately wider than
+# `ScopedRepository.select()`, and the widening is written once, here, as a matched pair:
+# a SQL clause and the row-level predicate that must mean the same thing. They are three
+# lines apart for the same reason `TenantScope.clause` and `.permits` are — the memory
+# store in `app/services/catalog_store.py` uses the second, and a contract test runs the
+# same assertions through both.
+#
+# What the widening adds is `organization_id IS NULL`, which is platform-owned. It can
+# never reach another tenant's row, and `test_cross_tenant.py` holds that.
+
+
+def visible_models_clause(scope: TenantScope) -> ColumnElement[bool]:
+    """``WHERE`` for "models this scope may see": its own, plus the usable catalog.
+
+    A *disabled* global model is not offered to tenants. It cannot serve a request, so
+    listing it would only invite somebody to point a gateway at something switched off.
+    The platform sees it either way, because the platform is who switches it back on.
+    """
+    shared: ColumnElement[bool] = UpstreamModel.organization_id.is_(None)
+    if not scope.is_platform:
+        shared = and_(shared, UpstreamModel.enabled.is_(True))
+    return or_(scope.clause(UpstreamModel), shared)
+
+
+def model_is_visible(
+    scope: TenantScope, organization_id: uuid.UUID | None, *, enabled: bool
+) -> bool:
+    """The same question about a row already in hand."""
+    if organization_id is None:
+        return scope.is_platform or enabled
+    return scope.permits(organization_id)
+
+
+class UpstreamModelRepository(ScopedRepository[UpstreamModel]):
+    """Reads are dual-scope; writes are not.
+
+    Every method that changes a row starts from :meth:`ScopedRepository.select`, so an
+    org user editing a global model finds nothing and gets a 404 — the same answer as for
+    a model that does not exist. Only :meth:`visible` and the reads built on it widen,
+    and they are read-only by construction.
+    """
+
+    model = UpstreamModel
+
+    def visible(self) -> Select[tuple[UpstreamModel]]:
+        return (
+            select(UpstreamModel)
+            .where(visible_models_clause(self._scope))
+            .execution_options(**scoped())
+        )
+
+    async def get_visible(self, model_id: uuid.UUID) -> UpstreamModel | None:
+        """For reading one model, including a global one. Editing uses ``get``."""
+        statement = self.visible().where(UpstreamModel.id == model_id)
+        return (await self._session.execute(statement)).scalars().first()
+
+    def page(
+        self,
+        *,
+        after: uuid.UUID | None,
+        limit: int,
+        scope_filter: str | None = None,
+        enabled: bool | None = None,
+    ) -> Select[tuple[UpstreamModel]]:
+        statement = self.visible().order_by(UpstreamModel.id.desc()).limit(limit + 1)
+        if after is not None:
+            statement = statement.where(UpstreamModel.id < after)
+        if scope_filter is not None:
+            statement = statement.where(UpstreamModel.scope == scope_filter)
+        if enabled is not None:
+            statement = statement.where(UpstreamModel.enabled.is_(enabled))
+        return statement
+
+    async def name_taken(self, name: str, *, excluding: uuid.UUID | None = None) -> bool:
+        """Within this scope only.
+
+        Two organizations may both call a model "gpt-4o", and the unique constraint is
+        per organization. The global catalog has its own partial index, and a superadmin
+        creating a global model is at platform scope, where this reads the global rows.
+        """
+        statement = self.select().where(UpstreamModel.name == name.strip())
+        if excluding is not None:
+            statement = statement.where(UpstreamModel.id != excluding)
+        return (await self._session.execute(statement)).scalars().first() is not None
+
+    async def global_name_taken(self, name: str, *, excluding: uuid.UUID | None = None) -> bool:
+        """Only the global catalog, whatever the scope.
+
+        A superadmin who has assumed an organization still creates global models into one
+        namespace, so the check cannot ride on the scope.
+        """
+        statement = (
+            select(UpstreamModel.id)
+            .where(
+                UpstreamModel.name == name.strip(),
+                UpstreamModel.organization_id.is_(None),
+            )
+            .execution_options(**unscoped("global model names are one namespace; existence only"))
+        )
+        if excluding is not None:
+            statement = statement.where(UpstreamModel.id != excluding)
+        return (await self._session.execute(statement)).first() is not None
+
+    async def add_global(self, model: UpstreamModel) -> UpstreamModel:
+        """Insert a platform-owned row.
+
+        Separate from :meth:`ScopedRepository.add`, which stamps the scope's organization
+        onto the row and would therefore refuse this one. Named rather than a flag so
+        "which call sites create rows nobody owns" is a grep.
+        """
+        model.organization_id = None
+        model.scope = "global"
+        self._session.add(model)
+        await self._session.flush()
+        return model
+
+
+class GatewayRepository(ScopedRepository[Gateway]):
+    """Only what task 05 needs: which gateways point at a model. Task 06 fills it in."""
+
+    model = Gateway
+
+    async def referencing(self, model_id: uuid.UUID) -> Sequence[Gateway]:
+        """Gateways in scope with a target on this model.
+
+        Scoped, and that is right in both directions. An org user deleting their own
+        model can only be blocked by their own gateways, because SPEC §5.3 forbids a
+        gateway referencing another organization's model. A superadmin deleting a global
+        model is at platform scope, where the clause is ``true()`` and every referencing
+        gateway is found — which is the case that matters, since a global model is the
+        one that can be referenced from anywhere.
+        """
+        statement = (
+            self.select()
+            .join(GatewayTarget, GatewayTarget.gateway_id == Gateway.id)
+            .where(GatewayTarget.upstream_model_id == model_id)
+            .order_by(Gateway.slug)
+        )
+        return (await self._session.execute(statement)).scalars().unique().all()

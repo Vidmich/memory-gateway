@@ -27,6 +27,13 @@ from tests.conftest import DirectoryHarness
 FOREIGN_ORGANIZATION = "{organization_id}"
 FOREIGN_MEMBER = "{member_id}"
 FOREIGN_INVITATION = "{invitation_id}"
+FOREIGN_MODEL = "{model_id}"
+
+#: A model owned by nobody. It is *visible* to every organization (SPEC §5.3, the
+#: global catalog), which is exactly why it needs rows of its own here: every write
+#: route must still answer 404, or "you can see it" would quietly become "you can
+#: change it".
+GLOBAL_MODEL = "{global_model_id}"
 
 
 @dataclass(frozen=True)
@@ -60,6 +67,18 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ScopedEndpoint("DELETE", f"/api/v1/members/{FOREIGN_MEMBER}"),
     ScopedEndpoint("DELETE", f"/api/v1/invitations/{FOREIGN_INVITATION}"),
     ScopedEndpoint("POST", f"/api/v1/invitations/{FOREIGN_INVITATION}/resend"),
+    ScopedEndpoint("GET", f"/api/v1/models/{FOREIGN_MODEL}"),
+    ScopedEndpoint("PATCH", f"/api/v1/models/{FOREIGN_MODEL}", {"name": "owned"}),
+    ScopedEndpoint("DELETE", f"/api/v1/models/{FOREIGN_MODEL}"),
+    ScopedEndpoint("POST", f"/api/v1/models/{FOREIGN_MODEL}/test"),
+)
+
+#: The global catalog is readable by everyone, so a foreign-id test on ``GET`` would be
+#: wrong — it is meant to succeed. These are the write routes, which must not.
+GLOBAL_MODEL_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
+    ScopedEndpoint("PATCH", f"/api/v1/models/{GLOBAL_MODEL}", {"name": "owned"}),
+    ScopedEndpoint("DELETE", f"/api/v1/models/{GLOBAL_MODEL}"),
+    ScopedEndpoint("POST", f"/api/v1/models/{GLOBAL_MODEL}/test"),
 )
 
 
@@ -76,6 +95,7 @@ async def foreign_ids(harness: DirectoryHarness) -> dict[str, str]:
         FOREIGN_ORGANIZATION: str(world.globex.id),
         FOREIGN_MEMBER: str(world.globex_admin.id),
         FOREIGN_INVITATION: str(issued.invitation.id),
+        FOREIGN_MODEL: str(world.globex_model.id),
     }
 
 
@@ -102,7 +122,7 @@ async def test_an_id_that_does_not_exist_answers_identically(
     """The whole point: "not yours" and "not there" have to be the same answer, or the
     difference between them is the leak."""
     path = endpoint.template
-    for placeholder in (FOREIGN_ORGANIZATION, FOREIGN_MEMBER, FOREIGN_INVITATION):
+    for placeholder in (FOREIGN_ORGANIZATION, FOREIGN_MEMBER, FOREIGN_INVITATION, FOREIGN_MODEL):
         path = path.replace(placeholder, str(uuid7()))
 
     response = await directory.as_user(
@@ -117,7 +137,7 @@ async def test_the_table_is_not_quietly_wrong(endpoint: ScopedEndpoint) -> None:
     """A template with no placeholder would pass every test above by testing nothing."""
     assert any(
         placeholder in endpoint.template
-        for placeholder in (FOREIGN_ORGANIZATION, FOREIGN_MEMBER, FOREIGN_INVITATION)
+        for placeholder in (FOREIGN_ORGANIZATION, FOREIGN_MEMBER, FOREIGN_INVITATION, FOREIGN_MODEL)
     )
 
 
@@ -133,7 +153,14 @@ async def test_the_net_covers_every_scoped_route(directory: DirectoryHarness) ->
         for method in operations
     }
 
-    covered = {f"{endpoint.method} {endpoint.template}" for endpoint in SCOPED_ENDPOINTS}
+    covered = {
+        f"{endpoint.method} {endpoint.template}"
+        for endpoint in SCOPED_ENDPOINTS
+        # The global-catalog rows point at the same routes with a different placeholder.
+    } | {
+        f"{endpoint.method} {endpoint.template.replace(GLOBAL_MODEL, FOREIGN_MODEL)}"
+        for endpoint in GLOBAL_MODEL_ENDPOINTS
+    }
     exempt = {
         # Unauthenticated by design: the token in the path is the credential, and the
         # invitation it resolves to is what establishes the organization.
@@ -212,3 +239,49 @@ async def test_the_assume_header_still_cannot_reach_a_foreign_row(
     )
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# the global catalog: visible to all, writable by the platform alone
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("endpoint", GLOBAL_MODEL_ENDPOINTS, ids=str)
+async def test_an_org_user_cannot_write_a_global_model(
+    endpoint: ScopedEndpoint, directory: DirectoryHarness
+) -> None:
+    """404, not 403.
+
+    A 403 here would confirm that the id names a real model — which for the global
+    catalog it does — but the shape of the answer has to match the rest of the net, or
+    the difference becomes the thing worth probing.
+    """
+    path = endpoint.template.replace(GLOBAL_MODEL, str(directory.world.global_model.id))
+
+    response = await directory.as_user(
+        directory.world.acme_admin, endpoint.method, path, json_body=endpoint.body
+    )
+
+    assert response.status_code == 404, f"{endpoint} -> {response.status_code} {response.text}"
+
+
+async def test_an_org_user_can_read_a_global_model(directory: DirectoryHarness) -> None:
+    """The other half. If this ever starts failing, the isolation above has been bought
+    by breaking the feature."""
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin, "GET", f"/api/v1/models/{world.global_model.id}"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["editable"] is False
+
+
+async def test_a_model_list_never_includes_another_organization(
+    directory: DirectoryHarness,
+) -> None:
+    world = directory.world
+    response = await directory.as_user(world.acme_admin, "GET", "/api/v1/models")
+
+    names = {item["name"] for item in response.json()["items"]}
+    assert names == {world.acme_model.name, world.global_model.name}

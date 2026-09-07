@@ -237,9 +237,7 @@ class MemoryDirectoryTransaction:
         if model is User:
             rows = list(self._db.users.values())
         elif model is Gateway:
-            # Nothing creates gateways in memory until task 06 needs it; an absent table
-            # counts as zero rather than pretending otherwise.
-            rows = ()
+            rows = list(self._db.gateways.values())
         counts: dict[uuid.UUID, int] = {}
         for row in rows:
             organization_id = getattr(row, "organization_id", None)

@@ -10,7 +10,9 @@ import type {
   CurrentUser,
   InvitationResponse,
   MemberResponse,
+  ModelResponse,
   OrganizationResponse,
+  ProbeResponse,
 } from '@/api/types'
 
 const NOW = '2026-09-06T12:00:00Z'
@@ -86,6 +88,55 @@ export function makeInvitation(overrides: Partial<InvitationResponse> = {}): Inv
     expires_at: '2026-09-13T12:00:00Z',
     accepted_at: null,
     created_at: NOW,
+    ...overrides,
+  }
+}
+
+export function makeModel(overrides: Partial<ModelResponse> = {}): ModelResponse {
+  return {
+    id: 'mo1',
+    organization_id: 'o1',
+    scope: 'org',
+    name: 'acme-gpt',
+    description: null,
+    base_url: 'https://api.openai.com/v1',
+    dialect: 'openai',
+    upstream_model_id: 'gpt-4o-mini',
+    auth_type: 'bearer',
+    credential: { configured: true, hint: 'sk-...4f2a' },
+    extra_headers: {},
+    system_context: null,
+    default_params: {},
+    timeout_seconds: 60,
+    enabled: true,
+    editable: true,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  }
+}
+
+/** A model from the operator's shared catalog, as an org user sees it: no hint, no
+ * headers, and not editable. */
+export function makeGlobalModel(overrides: Partial<ModelResponse> = {}): ModelResponse {
+  return makeModel({
+    id: 'mo-global',
+    organization_id: null,
+    scope: 'global',
+    name: 'shared-gpt-4o',
+    credential: { configured: true, hint: null },
+    editable: false,
+    ...overrides,
+  })
+}
+
+export function makeProbe(overrides: Partial<ProbeResponse> = {}): ProbeResponse {
+  return {
+    ok: true,
+    latency_ms: 340,
+    upstream_status: 200,
+    error_message: null,
+    model_echo: 'gpt-4o-mini',
     ...overrides,
   }
 }

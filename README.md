@@ -8,10 +8,11 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 04 complete** — the OpenAI-compatible proxy works end to end,
-there is a web UI you can sign into, and it holds multiple isolated customer
-organizations with their own members and roles. Model, gateway and connector screens
-start in task 05; until then gateways are created with `make seed`.
+Current state: **task 05 complete** — the OpenAI-compatible proxy works end to end,
+there is a web UI you can sign into, it holds multiple isolated customer organizations
+with their own members and roles, and upstream models are configured from that UI with
+their credentials encrypted and a **Test connection** button that reports the real
+upstream error. Gateways still come from `make seed` until task 06.
 
 ## Quick start (Docker)
 
@@ -83,6 +84,44 @@ Roles are org-wide (SPEC §5.2) and defined once as data in `app/services/permis
 `GET /api/v1/auth/me` returns the resolved set, so the UI hides and disables controls
 from one source of truth. That is presentation only — the API refuses the same call
 whether or not the button was rendered.
+
+## Models
+
+**Models** is where completions actually go: a base URL, a dialect, the provider's own
+model id, and a credential. A gateway points at one of these (task 06 makes that
+editable; until then `make seed` wires it).
+
+Two tabs, over one endpoint — `?scope=` is a filter, so a model cannot show up in one
+view and be missing from the other:
+
+- **Our models** — this organization's own. Full CRUD for `resources:write`.
+- **Global catalog** — models the platform operator shares with every tenant. Org users
+  read them and point gateways at them; only a superadmin can create or edit one.
+
+**Test connection** sends a one-token completion through the *same adapter the proxy
+uses* and reports `OK, 340 ms` or the provider's own words — `401 invalid_api_key`. It
+works on an unsaved draft too, so a base URL can be checked before it is stored. Almost
+every misconfiguration is a wrong base URL, which is what the provider presets (OpenAI,
+Azure, Groq, Together, OpenRouter, vLLM, Ollama) exist to prevent.
+
+Credentials are **write-only** (SPEC §5.4). They are encrypted with envelope encryption
+before storage, and no endpoint returns one — not for any role, superadmin included.
+Responses carry `{"configured": true, "hint": "sk-…4f2a"}`, and the hint is computed from
+the plaintext at write time and stored, so rendering the list never touches the master
+key. Rotation is replacement: `PATCH` with the credential omitted keeps what is there, an
+explicit `null` clears it, and a string replaces it. An org user reading a *global* model
+sees neither its hint nor its `extra_headers` — headers are applied last and can contain
+an auth header, which is exactly what the credential field protects.
+
+`default_params` is validated against the documented OpenAI parameters with the
+providers' own bounds, so a mistyped `temprature` is a 422 on the form rather than a 400
+from the provider on somebody else's request an hour later. At request time the layers
+merge model → gateway → client, lowest precedence first.
+
+Deleting a model a gateway points at is refused and names the gateways; the foreign key
+is `ON DELETE RESTRICT`, so the database would refuse it regardless. Disabling is always
+allowed and takes effect on the next request — the gateway then answers 503 saying which
+model is switched off.
 
 ## Try the proxy
 
@@ -178,7 +217,7 @@ and fails if the committed copy has drifted; `make openapi` updates it.
 ```
 app/
   api/        routers — health, proxy/ (data plane), control/ (the UI's API:
-              auth, directory), spa.py (serves the built SPA in production)
+              auth, directory, models), spa.py (serves the built SPA in production)
   adapters/   upstream dialects — openai now, anthropic in task 16
   core/       config, logging, errors, ids, metrics, middleware, clients,
               crypto (envelope encryption), keys (API key format), passwords
@@ -188,7 +227,9 @@ app/
   schemas/    the OpenAI wire format, control-plane request/response bodies
   services/   gateway resolution, API-key auth, prompt assembly, forwarding, SSE,
               control-plane auth (auth, auth_provider, auth_store, login_throttle),
-              tenancy (permissions, directory, directory_store, pagination)
+              tenancy (permissions, directory, directory_store, pagination),
+              the model catalog (catalog, catalog_store, model_probe, params,
+              rate_limit)
   workers/    background jobs (task 09)
   cli.py      operator commands — `python -m app.cli seed | openapi`
 migrations/   alembic
@@ -199,7 +240,7 @@ web/          the React SPA
   src/components/  DataTable, Form, ConfirmDialog, EmptyState, StatusBadge, CopyButton
   src/layout/   the app shell — sidebar, user menu, support banner
   src/pages/    login, dashboard, organizations, members, org settings,
-                invitation acceptance
+                invitation acceptance, models (list and editor)
   e2e/          Playwright
 ```
 
@@ -228,6 +269,10 @@ first request. See [.env.example](.env.example) for the full list.
 | `GET`/`DELETE /api/v1/invitations[/{id}]` | List pending invitations; revoke one. |
 | `POST /api/v1/invitations/{id}/resend` | Mint a new link; the previous one stops working. |
 | `GET`/`POST /api/v1/invitations/accept/{token}` | Public. Validate a link, then create the account. |
+| `GET`/`POST /api/v1/models` | List (own + global catalog, filterable by `scope` and `enabled`) and create. |
+| `GET`/`PATCH`/`DELETE /api/v1/models/{id}` | Read, edit, delete. Delete is refused while a gateway points at it. |
+| `POST /api/v1/models/{id}/test` | Probe the stored configuration. One token, rate-limited per user. |
+| `POST /api/v1/models/test` | Probe an unsaved draft, before storing a credential. |
 | `GET /healthz` | Liveness. Checks nothing else — a dependency outage must not get the pod restarted into the same outage. |
 | `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. |
 | `GET /metrics` | Prometheus. Request counts and latency labelled by route template. |
@@ -253,3 +298,8 @@ an instance out of the load balancer.
 Suspending an organization takes effect immediately, not at the next token expiry: its
 members are refused at login, at refresh, and on every control-plane request. A
 superadmin is unaffected, because somebody has to be able to un-suspend it.
+
+"Test connection" is rate-limited per user (20 a minute by default,
+`MODEL_TEST_MAX_ATTEMPTS`), because every press is an outbound call billed to whoever
+owns the model. Like the login throttle it fails open when Redis is unreachable; the
+exposure is bounded by what the action costs, which is one token.

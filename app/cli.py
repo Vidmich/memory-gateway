@@ -271,6 +271,8 @@ async def _upsert_model(
     model.credential_ciphertext = (
         secret_box.encrypt(options.credential) if options.credential else None
     )
+    # Stored alongside the ciphertext so the Models screen renders without the master key.
+    model.credential_hint = secret_hint(options.credential) if options.credential else None
     model.extra_headers = {}
     model.default_params = {}
     model.timeout_seconds = 60

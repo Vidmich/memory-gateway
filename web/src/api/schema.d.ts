@@ -221,6 +221,104 @@ export interface paths {
         patch: operations["update_member_api_v1_members__member_id__patch"];
         trace?: never;
     };
+    "/api/v1/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Models
+         * @description The caller's own models plus the global catalog, newest first.
+         *
+         *     One endpoint for both tabs: ``?scope=global`` and ``?scope=org`` are a filter over the
+         *     same list rather than two shapes, so the client pages them identically and a model
+         *     cannot appear in one view and not the other.
+         */
+        get: operations["list_models_api_v1_models_get"];
+        put?: never;
+        /** Create Model */
+        post: operations["create_model_api_v1_models_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Draft
+         * @description Probe a configuration that has not been saved.
+         *
+         *     Declared before ``/models/{model_id}`` so ``test`` is not swallowed as an id — FastAPI
+         *     matches in declaration order, and ``uuid.UUID`` would reject it with a 422 that reads
+         *     like the endpoint is broken.
+         */
+        post: operations["test_draft_api_v1_models_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{model_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Model */
+        get: operations["get_model_api_v1_models__model_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Model
+         * @description 409 with the referencing gateways named if one points at this model.
+         */
+        delete: operations["delete_model_api_v1_models__model_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Model
+         * @description Partial. An omitted ``credential`` keeps the stored one; an explicit ``null``
+         *     clears it. There is no way to read it back, so rotation is replacement.
+         */
+        patch: operations["update_model_api_v1_models__model_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/models/{model_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Model
+         * @description Send a one-token completion using the model exactly as stored.
+         *
+         *     Nothing about the request can be overridden here. A caller who could aim a *stored*
+         *     credential at a URL of their choosing would have a reveal endpoint in all but name.
+         */
+        post: operations["test_model_api_v1_models__model_id__test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organizations": {
         parameters: {
             query?: never;
@@ -358,6 +456,19 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * CredentialStatus
+         * @description SPEC §5.4: what a response may say about a stored secret, and no more.
+         *
+         *     ``hint`` can be ``None`` while ``configured`` is ``True`` — for a row written before
+         *     hints were stored, and for a global model being read by someone who does not own it.
+         */
+        CredentialStatus: {
+            /** Configured */
+            configured: boolean;
+            /** Hint */
+            hint?: string | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -505,6 +616,54 @@ export interface components {
              */
             owned_by: string;
         };
+        /** ModelCreateRequest */
+        ModelCreateRequest: {
+            /**
+             * Auth Type
+             * @default bearer
+             */
+            auth_type: string;
+            /** Base Url */
+            base_url: string;
+            /** Credential */
+            credential?: string | null;
+            /** Default Params */
+            default_params?: {
+                [key: string]: unknown;
+            };
+            /** Description */
+            description?: string | null;
+            /**
+             * Dialect
+             * @default openai
+             */
+            dialect: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Extra Headers */
+            extra_headers?: {
+                [key: string]: string;
+            };
+            /** Name */
+            name: string;
+            /**
+             * Scope
+             * @default org
+             */
+            scope: string;
+            /** System Context */
+            system_context?: string | null;
+            /**
+             * Timeout Seconds
+             * @default 60
+             */
+            timeout_seconds: number;
+            /** Upstream Model Id */
+            upstream_model_id: string;
+        };
         /** ModelList */
         ModelList: {
             /** Data */
@@ -514,6 +673,146 @@ export interface components {
              * @default list
              */
             object: string;
+        };
+        /** ModelResponse */
+        ModelResponse: {
+            /** Auth Type */
+            auth_type: string;
+            /** Base Url */
+            base_url: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            credential: components["schemas"]["CredentialStatus"];
+            /** Default Params */
+            default_params: {
+                [key: string]: unknown;
+            };
+            /** Description */
+            description: string | null;
+            /** Dialect */
+            dialect: string;
+            /** Editable */
+            editable: boolean;
+            /** Enabled */
+            enabled: boolean;
+            /** Extra Headers */
+            extra_headers: {
+                [key: string]: string;
+            };
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Organization Id */
+            organization_id: string | null;
+            /** Scope */
+            scope: string;
+            /** System Context */
+            system_context: string | null;
+            /** Timeout Seconds */
+            timeout_seconds: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Upstream Model Id */
+            upstream_model_id: string;
+        };
+        /**
+         * ModelTestRequest
+         * @description An unsaved draft to probe.
+         *
+         *     The same body as create, so the form can send exactly what it is about to save. It
+         *     inherits ``scope`` too, which the probe ignores — a connection does not care who owns
+         *     the row it will become.
+         */
+        ModelTestRequest: {
+            /**
+             * Auth Type
+             * @default bearer
+             */
+            auth_type: string;
+            /** Base Url */
+            base_url: string;
+            /** Credential */
+            credential?: string | null;
+            /** Default Params */
+            default_params?: {
+                [key: string]: unknown;
+            };
+            /** Description */
+            description?: string | null;
+            /**
+             * Dialect
+             * @default openai
+             */
+            dialect: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Extra Headers */
+            extra_headers?: {
+                [key: string]: string;
+            };
+            /** Name */
+            name: string;
+            /**
+             * Scope
+             * @default org
+             */
+            scope: string;
+            /** System Context */
+            system_context?: string | null;
+            /**
+             * Timeout Seconds
+             * @default 60
+             */
+            timeout_seconds: number;
+            /** Upstream Model Id */
+            upstream_model_id: string;
+        };
+        /**
+         * ModelUpdateRequest
+         * @description Partial. Only fields actually present in the body are applied.
+         */
+        ModelUpdateRequest: {
+            /** Auth Type */
+            auth_type?: string | null;
+            /** Base Url */
+            base_url?: string | null;
+            /** Credential */
+            credential?: string | null;
+            /** Default Params */
+            default_params?: {
+                [key: string]: unknown;
+            } | null;
+            /** Description */
+            description?: string | null;
+            /** Dialect */
+            dialect?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Extra Headers */
+            extra_headers?: {
+                [key: string]: string;
+            } | null;
+            /** Name */
+            name?: string | null;
+            /** System Context */
+            system_context?: string | null;
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+            /** Upstream Model Id */
+            upstream_model_id?: string | null;
         };
         /** OrganizationCreateRequest */
         OrganizationCreateRequest: {
@@ -596,6 +895,13 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** Page[ModelResponse] */
+        Page_ModelResponse_: {
+            /** Items */
+            items: components["schemas"]["ModelResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** Page[OrganizationResponse] */
         Page_OrganizationResponse_: {
             /** Items */
@@ -609,6 +915,23 @@ export interface components {
             current_password: string;
             /** New Password */
             new_password: string;
+        };
+        /**
+         * ProbeResponse
+         * @description The four things the button reports. Not an error envelope: "the upstream said 401"
+         *     is the successful answer to "does this work", and the UI renders it in red itself.
+         */
+        ProbeResponse: {
+            /** Error Message */
+            error_message?: string | null;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Model Echo */
+            model_echo?: string | null;
+            /** Ok */
+            ok: boolean;
+            /** Upstream Status */
+            upstream_status?: number | null;
         };
         /**
          * SessionResponse
@@ -1008,6 +1331,232 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemberResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_models_api_v1_models_get: {
+        parameters: {
+            query?: {
+                scope?: string | null;
+                enabled?: boolean | null;
+                cursor?: string | null;
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ModelResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_model_api_v1_models_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_draft_api_v1_models_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProbeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_model_api_v1_models__model_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_model_api_v1_models__model_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_model_api_v1_models__model_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_model_api_v1_models__model_id__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProbeResponse"];
                 };
             };
             /** @description Validation Error */

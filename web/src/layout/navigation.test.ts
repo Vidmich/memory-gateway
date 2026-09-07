@@ -20,6 +20,14 @@ describe('navigation', () => {
     }
   })
 
+  it('shows Models to every role, including a viewer', () => {
+    // Reading the catalog is `org:read`; the write controls inside the screen are what
+    // `resources:write` gates, and the API is what refuses.
+    const viewer = makeUser({ role: 'org_viewer', capabilities: ['org:read'] })
+
+    expect(labels(viewer)).toContain('Models')
+  })
+
   it('shows nothing that needs a capability before the user is known', () => {
     expect(labels(null)).not.toContain('Organizations')
   })

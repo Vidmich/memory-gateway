@@ -18,7 +18,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from app.db.models import Invitation, Organization, User, UserSession
+from app.db.models import (
+    Gateway,
+    GatewayTarget,
+    Invitation,
+    Organization,
+    UpstreamModel,
+    User,
+    UserSession,
+)
 
 
 @dataclass
@@ -27,6 +35,9 @@ class MemoryDatabase:
     organizations: dict[uuid.UUID, Organization] = field(default_factory=dict)
     sessions: dict[uuid.UUID, UserSession] = field(default_factory=dict)
     invitations: dict[uuid.UUID, Invitation] = field(default_factory=dict)
+    upstream_models: dict[uuid.UUID, UpstreamModel] = field(default_factory=dict)
+    gateways: dict[uuid.UUID, Gateway] = field(default_factory=dict)
+    gateway_targets: dict[uuid.UUID, GatewayTarget] = field(default_factory=dict)
 
     def add_user(self, user: User) -> User:
         self.users[user.id] = _stamped(user)
@@ -39,6 +50,18 @@ class MemoryDatabase:
     def add_invitation(self, invitation: Invitation) -> Invitation:
         self.invitations[invitation.id] = _stamped(invitation)
         return invitation
+
+    def add_model(self, model: UpstreamModel) -> UpstreamModel:
+        self.upstream_models[model.id] = _stamped(model)
+        return model
+
+    def add_gateway(self, gateway: Gateway) -> Gateway:
+        self.gateways[gateway.id] = _stamped(gateway)
+        return gateway
+
+    def add_target(self, target: GatewayTarget) -> GatewayTarget:
+        self.gateway_targets[target.id] = _stamped(target)
+        return target
 
 
 def _stamped[T: Any](row: T) -> T:

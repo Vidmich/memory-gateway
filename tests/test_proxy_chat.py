@@ -6,6 +6,7 @@ one the gateway actually put on the wire.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any
 
@@ -235,14 +236,69 @@ async def test_upstream_returning_a_non_completion_is_not_a_200(proxy: ProxyHarn
 
 
 async def test_gateway_with_no_enabled_target_is_unavailable(proxy: ProxyHarness) -> None:
-    import dataclasses
-
     proxy.resolver.gateway = dataclasses.replace(proxy.gateway, targets=())
 
     response = await post(proxy)
 
     assert response.status_code == 503
     assert response.json()["error"]["type"] == "server_error"
+
+
+async def test_a_gateway_with_nothing_configured_says_what_to_do(proxy: ProxyHarness) -> None:
+    """ "No usable target" is true and useless. The two causes need different fixes, and
+    the message has to say which one this is."""
+    proxy.resolver.gateway = dataclasses.replace(proxy.gateway, targets=(), disabled=())
+
+    message = (await post(proxy)).json()["error"]["message"]
+
+    assert "no upstream model configured" in message
+    assert "Add one under Models" in message
+
+
+async def test_a_disabled_model_is_named_in_the_503(proxy: ProxyHarness) -> None:
+    """The other cause, and the one that is a single toggle away from working. Naming the
+    model is the difference between fixing it and going looking for the problem."""
+    proxy.resolver.gateway = dataclasses.replace(
+        proxy.gateway, targets=(), disabled=("demo-upstream",)
+    )
+
+    message = (await post(proxy)).json()["error"]["message"]
+
+    assert "'demo-upstream'" in message
+    assert "disabled" in message
+
+
+async def test_two_disabled_models_are_both_named(proxy: ProxyHarness) -> None:
+    proxy.resolver.gateway = dataclasses.replace(
+        proxy.gateway, targets=(), disabled=("primary", "fallback")
+    )
+
+    message = (await post(proxy)).json()["error"]["message"]
+
+    assert "'primary', 'fallback'" in message
+    assert "disabled upstream models" in message
+
+
+async def test_editing_a_model_changes_the_next_request(proxy: ProxyHarness) -> None:
+    """No restart, and no cache to invalidate: the resolver reads the row per request.
+    Task 06 puts a cache here, and this is the behaviour it has to preserve."""
+    proxy.upstream.behaviour = Behaviour(body=completion())
+    await post(proxy)
+    assert proxy.upstream.last_request.body["model"] == "upstream-model"
+
+    proxy.retarget(upstream_model_id="gpt-4o-2024-11-20")
+    await post(proxy)
+
+    assert proxy.upstream.last_request.body["model"] == "gpt-4o-2024-11-20"
+
+
+async def test_editing_default_params_changes_the_next_request(proxy: ProxyHarness) -> None:
+    proxy.upstream.behaviour = Behaviour(body=completion())
+
+    proxy.retarget(default_params={"temperature": 0.15})
+    await post(proxy)
+
+    assert proxy.upstream.last_request.body["temperature"] == 0.15
 
 
 # -- secrets -----------------------------------------------------------------

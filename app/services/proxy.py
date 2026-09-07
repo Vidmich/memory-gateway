@@ -219,7 +219,7 @@ def _raise_for_upstream_status(response: httpx.Response, target: UpstreamTarget)
     if response.status_code < 400:
         return
 
-    message, error_type, error_code, param = _upstream_error_fields(response)
+    message, error_type, error_code, param = upstream_error_fields(response)
     raise UpstreamStatus(
         status_code=response.status_code,
         model_name=target.name,
@@ -230,9 +230,15 @@ def _raise_for_upstream_status(response: httpx.Response, target: UpstreamTarget)
     )
 
 
-def _upstream_error_fields(
+def upstream_error_fields(
     response: httpx.Response,
 ) -> tuple[str, str | None, str | None, str | None]:
+    """``(message, type, code, param)`` dug out of whatever the provider returned.
+
+    Public because the connectivity probe (:mod:`app.services.model_probe`) has to report
+    the same text the proxy would have relayed. If the two ever disagreed, "Test
+    connection" would say something the live request does not.
+    """
     payload: Any = None
     try:
         payload = response.json()

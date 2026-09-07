@@ -23,6 +23,9 @@ export type NavEntry = {
 
 export const NAVIGATION: readonly NavEntry[] = [
   { to: '/', label: 'Dashboard' },
+  // No capability: every role may read the catalog, and the write controls inside
+  // the screen are what `resources:write` gates.
+  { to: '/models', label: 'Models' },
   { to: '/settings', label: 'Organization', section: 'Settings' },
   { to: '/settings/members', label: 'Members' },
   {

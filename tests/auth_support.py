@@ -12,16 +12,21 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from app.core.config import Settings, get_settings
+from app.core.crypto import SecretBox
 from app.core.ids import uuid7
 from app.core.passwords import Hasher, build_hasher
 from app.db.models import Organization, User, UserSession
 from app.services.auth import AuthService, RequestContext
 from app.services.auth_provider import LocalPasswordProvider, PasswordCredentials
 from app.services.auth_store import AuthStore, MemoryAuthStore
+from app.services.catalog import CatalogService
+from app.services.catalog_store import MemoryCatalogStore
 from app.services.directory import DirectoryService
 from app.services.directory_store import MemoryDirectoryStore
 from app.services.login_throttle import LoginThrottle, MemoryThrottleStore
 from app.services.memory_db import MemoryDatabase
+from app.services.model_probe import Probe
+from tests.catalog_support import FakeProbe
 
 PASSWORD = "correct-horse-battery-staple"
 EMAIL = "ada@example.com"
@@ -57,13 +62,17 @@ def make_user(
 class AuthFixture:
     """A service wired to in-memory everything, plus the user it was built around.
 
-    ``directory`` shares the same :class:`MemoryDatabase`, because the flows that matter
-    cross both — accepting an invitation creates a member through the directory and then
-    opens a session through auth.
+    ``directory`` and ``catalog`` share the same :class:`MemoryDatabase`, because the
+    flows that matter cross them — accepting an invitation creates a member through the
+    directory and then opens a session through auth, and a model is only isolated
+    relative to the organizations the directory created.
     """
 
     service: AuthService
     directory: DirectoryService
+    catalog: CatalogService
+    secret_box: SecretBox
+    probe: FakeProbe
     store: MemoryAuthStore
     database: MemoryDatabase
     throttle_store: MemoryThrottleStore
@@ -101,6 +110,7 @@ def build_auth(
     organization: Organization | None = None,
     with_organization: bool = True,
     database: MemoryDatabase | None = None,
+    probe: Probe | None = None,
 ) -> AuthFixture:
     settings = settings or get_settings()
     hasher = hasher or build_hasher(settings)
@@ -128,9 +138,22 @@ def build_auth(
         hasher=hasher,
         settings=settings,
     )
+    secret_box = SecretBox.from_settings(settings)
+    fake_probe = FakeProbe()
+    catalog = CatalogService(
+        MemoryCatalogStore(database),
+        secret_box=secret_box,
+        probe=probe or fake_probe,
+        # No limiter: rate limiting is asserted directly in tests/test_rate_limit.py, and
+        # a counter shared across a test module would make every other test order-dependent.
+        settings=settings,
+    )
     return AuthFixture(
         service=service,
         directory=directory,
+        catalog=catalog,
+        secret_box=secret_box,
+        probe=fake_probe,
         store=memory_store,
         database=database,
         throttle_store=throttle_store,

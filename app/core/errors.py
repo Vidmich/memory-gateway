@@ -79,6 +79,23 @@ class Validation(AppError):
     code = "validation_error"
 
 
+class RateLimited(AppError):
+    """Too many of the same action, too quickly.
+
+    ``Retry-After`` is not optional here: a 429 without it leaves a client guessing, and
+    the guess is usually "immediately". Task 14 raises the same class from the real
+    request-rate limiter.
+    """
+
+    status_code = 429
+    code = "rate_limited"
+    openai_type = "rate_limit_error"
+
+    def __init__(self, message: str, *, retry_after_seconds: int) -> None:
+        super().__init__(message, headers={"retry-after": str(max(1, retry_after_seconds))})
+        self.retry_after_seconds = max(1, retry_after_seconds)
+
+
 class UpstreamError(AppError):
     status_code = 502
     code = "upstream_error"
@@ -142,6 +159,11 @@ def error_response(
             "request_id": request_id_of(request),
         }
     }
+    if param:
+        # Which field the message is about, so a form can show it next to that input
+        # rather than in a banner the user then has to match up by reading. Dotted for a
+        # nested one (`default_params.temperature`); the first segment is the form field.
+        body["error"]["param"] = param
     if details:
         body["error"]["details"] = details
     return JSONResponse(status_code=status_code, content=body, headers=headers)

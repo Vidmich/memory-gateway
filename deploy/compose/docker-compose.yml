@@ -34,6 +34,10 @@ services:
       ENCRYPTION_MASTER_KEY: ZGV2LW9ubHktbWFzdGVyLWtleS0zMi1ieXRlcyEhISE=
       JWT_SIGNING_KEY: dev-only-jwt-signing-key-change-me-please
       PUBLIC_BASE_URL: http://localhost:8000
+      # Read only by `python -m app.cli seed`; the service itself never looks at them.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
     ports:
       - "8000:8000"
     volumes:

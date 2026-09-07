@@ -17,6 +17,7 @@ dependencies = [
     "boto3>=1.35",
     "httpx>=0.28",
     "prometheus-client>=0.21",
+    "cryptography>=43.0",
 ]
 
 [dependency-groups]
@@ -26,9 +27,18 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pytest-env>=1.1",
+    # Streaming and real-socket tests can hang rather than fail; a per-test deadline turns
+    # that into a readable failure instead of a stuck CI job.
+    "pytest-timeout>=2.3",
     "pytest-cov>=6.0",
     "boto3-stubs[s3]>=1.35",
     "pre-commit>=4.0",
+    # The proxy tests drive a real upstream over a real socket rather than a
+    # transport mock, so SSE chunking and client disconnects behave as they will
+    # in production.
+    "uvicorn>=0.32",
+    # Used only by the live-provider integration test, which skips without a key.
+    "openai>=1.55",
 ]
 
 [tool.uv]
@@ -99,7 +109,9 @@ asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
 markers = [
     "db: requires a reachable PostgreSQL instance",
+    "live: calls a real provider; skipped without OPENAI_API_KEY",
 ]
+timeout = 30
 # "D:" means "default" — only applied when the variable is not already set,
 # so CI and local overrides win.
 env = [

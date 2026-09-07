@@ -45,8 +45,8 @@ revision: ## Autogenerate a migration: make revision m="add gateways"
 	@test -n "$(m)" || (echo "usage: make revision m=\"message\"" && exit 1)
 	$(UV) run alembic revision --autogenerate -m "$(m)"
 
-seed: ## Seed demo data (populated in task 02)
-	$(UV) run python -m app.db.seed
+seed: ## Create the demo org, upstream model, gateway and API key
+	$(UV) run python -m app.cli seed
 
 up: ## Start the full stack
 	$(COMPOSE) up -d --build

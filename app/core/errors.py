@@ -1,8 +1,13 @@
 """Application error hierarchy and the single place where errors become HTTP responses.
 
-Control-plane routes use the envelope below. The proxy routes must instead return the
-*OpenAI* error shape; task 02 registers its own handler for that subtree rather than
-changing this one.
+Two envelopes, chosen by path. Control-plane routes get the gateway's own shape, which
+carries the request id. Data-plane routes under ``/g/`` get the *OpenAI* error shape,
+because client SDKs parse it: returning anything else there turns a useful
+``AuthenticationError`` into an opaque ``APIStatusError`` at the caller.
+
+The choice is made here, once, rather than by a second set of handlers — an unhandled
+exception or a 405 from Starlette has to come out in the right shape too, and those never
+reach proxy code.
 """
 
 from __future__ import annotations
@@ -19,17 +24,30 @@ from app.core.logging import get_request_id
 
 logger = logging.getLogger(__name__)
 
+# Every data-plane route lives under this prefix; see app/api/proxy.
+DATA_PLANE_PREFIX = "/g/"
+
 
 class AppError(Exception):
     """Base class for expected failures with a known HTTP mapping."""
 
     status_code: int = 500
     code: str = "internal_error"
+    #: OpenAI ``error.type``, used when the failure surfaces on a data-plane route.
+    openai_type: str | None = None
 
-    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+        param: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.details = details or {}
+        #: OpenAI ``error.param`` — which request field is at fault, when one is.
+        self.param = param
 
 
 class NotFound(AppError):
@@ -77,6 +95,18 @@ def request_id_of(request: Request | None) -> str | None:
     return get_request_id()
 
 
+def is_data_plane(request: Request | None) -> bool:
+    return request is not None and request.scope.get("path", "").startswith(DATA_PLANE_PREFIX)
+
+
+def openai_error_type(status_code: int) -> str:
+    if status_code == 429:
+        return "rate_limit_error"
+    if status_code >= 500:
+        return "server_error"
+    return "invalid_request_error"
+
+
 def error_response(
     request: Request | None = None,
     *,
@@ -84,7 +114,22 @@ def error_response(
     code: str,
     message: str,
     details: dict[str, Any] | None = None,
+    openai_type: str | None = None,
+    param: str | None = None,
 ) -> JSONResponse:
+    if is_data_plane(request):
+        # The four keys are all present, `null` included: the OpenAI SDKs read them
+        # positionally-by-name and some clients assume they exist.
+        openai_body: dict[str, Any] = {
+            "error": {
+                "message": message,
+                "type": openai_type or openai_error_type(status_code),
+                "param": param,
+                "code": code,
+            }
+        }
+        return JSONResponse(status_code=status_code, content=openai_body)
+
     body: dict[str, Any] = {
         "error": {
             "code": code,
@@ -105,6 +150,8 @@ async def handle_app_error(request: Request, exc: Exception) -> JSONResponse:
         code=exc.code,
         message=exc.message,
         details=exc.details,
+        openai_type=exc.openai_type,
+        param=exc.param,
     )
 
 

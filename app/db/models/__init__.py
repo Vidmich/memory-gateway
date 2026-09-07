@@ -1,1 +1,22 @@
-"""SQLAlchemy models. The first domain tables arrive in task 02."""
+"""Every mapped table.
+
+Alembic's autogenerate compares ``Base.metadata`` against the database, and a model that
+is never imported is invisible to it — which produces a migration that silently drops
+tables. Importing them all here, and importing this package from ``migrations/env.py``,
+is what keeps that from happening.
+"""
+
+from __future__ import annotations
+
+from app.db.models.api_key import ApiKey
+from app.db.models.gateway import Gateway, GatewayTarget
+from app.db.models.organization import Organization
+from app.db.models.upstream_model import UpstreamModel
+
+__all__ = [
+    "ApiKey",
+    "Gateway",
+    "GatewayTarget",
+    "Organization",
+    "UpstreamModel",
+]

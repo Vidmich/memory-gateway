@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # -- addressing --------------------------------------------------------
     public_base_url: str
 
+    # -- upstream calls ----------------------------------------------------
+    upstream_max_connections: int = Field(default=200, ge=1)
+    upstream_max_keepalive_connections: int = Field(default=50, ge=0)
+
     # -- probes ------------------------------------------------------------
     readiness_timeout_seconds: float = Field(default=2.0, gt=0)
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import boto3
+import httpx
 from botocore.client import Config as BotoConfig
 from qdrant_client import AsyncQdrantClient
 from redis.asyncio import Redis
@@ -38,6 +39,7 @@ class Clients:
     qdrant: AsyncQdrantClient
     storage: S3Client
     bucket: str
+    http: httpx.AsyncClient
 
     @classmethod
     def create(cls, settings: Settings) -> Clients:
@@ -56,6 +58,7 @@ class Clients:
             ),
             storage=create_storage_client(settings),
             bucket=settings.s3_bucket,
+            http=create_http_client(settings),
         )
 
     async def aclose(self) -> None:
@@ -65,6 +68,7 @@ class Clients:
         the others open, which would leak connections across a restart loop.
         """
         for name, close in (
+            ("upstream-http", self.http.aclose()),
             ("redis", self.redis.aclose()),
             ("qdrant", self.qdrant.close()),
             ("postgres", self.engine.dispose()),
@@ -77,6 +81,26 @@ class Clients:
             self.storage.close()
         except Exception:
             logger.warning("failed to close client", extra={"client": "storage"}, exc_info=True)
+
+
+def create_http_client(settings: Settings) -> httpx.AsyncClient:
+    """The pool every upstream call shares.
+
+    One client for the process, not one per request: a fresh TLS handshake per completion
+    would spend most of the 150 ms budget in SPEC §4.2 before the provider sees anything.
+    The timeout is per-request instead, carried on each prepared request's extensions,
+    because it is a property of the upstream model rather than of the pool.
+    """
+    return httpx.AsyncClient(
+        timeout=None,
+        follow_redirects=False,
+        limits=httpx.Limits(
+            max_connections=settings.upstream_max_connections,
+            max_keepalive_connections=settings.upstream_max_keepalive_connections,
+            keepalive_expiry=30.0,
+        ),
+        headers={"user-agent": f"{settings.service_name}/{settings.version}"},
+    )
 
 
 def create_storage_client(settings: Settings) -> S3Client:

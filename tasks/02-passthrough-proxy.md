@@ -54,24 +54,24 @@ token, not all at once at the end.
 ## Work items
 
 ### Schema (minimal, forward-compatible)
-- [ ] `organizations(id, name, slug UNIQUE, status, created_at)` — created now purely so every
+- [x] `organizations(id, name, slug UNIQUE, status, created_at)` — created now purely so every
       later table can carry a real `organization_id` FK. Task 04 fills in the rest.
-- [ ] `upstream_models(id, organization_id NULL, scope, name, base_url, dialect,
+- [x] `upstream_models(id, organization_id NULL, scope, name, base_url, dialect,
       upstream_model_id, auth_type, credential_ciphertext, extra_headers_jsonb, system_context,
       default_params_jsonb, timeout_seconds, enabled)`.
-- [ ] `gateways(id, organization_id, slug UNIQUE, name, enabled, system_context,
+- [x] `gateways(id, organization_id, slug UNIQUE, name, enabled, system_context,
       param_overrides_jsonb)`.
-- [ ] `gateway_targets(id, gateway_id, upstream_model_id, priority, weight)` — created now with
+- [x] `gateway_targets(id, gateway_id, upstream_model_id, priority, weight)` — created now with
       exactly one row per gateway; task 08 makes the list meaningful.
-- [ ] `api_keys(id, gateway_id, name, key_hash, prefix, last_used_at, revoked_at)`.
-- [ ] Envelope encryption helper (`app/core/crypto.py`): AES-GCM data key wrapped by
+- [x] `api_keys(id, gateway_id, name, key_hash, prefix, last_used_at, revoked_at)`.
+- [x] Envelope encryption helper (`app/core/crypto.py`): AES-GCM data key wrapped by
       `ENCRYPTION_MASTER_KEY`. Used for `credential_ciphertext`.
 
 ### Schemas & adapter
-- [ ] Pydantic models for the OpenAI chat completion request and response, plus the streaming
+- [x] Pydantic models for the OpenAI chat completion request and response, plus the streaming
       chunk shape. Model the fields listed in SPEC §12.1; allow unknown fields to pass through
       to the upstream rather than rejecting them.
-- [ ] `UpstreamAdapter` protocol:
+- [x] `UpstreamAdapter` protocol:
       ```python
       class UpstreamAdapter(Protocol):
           def prepare(self, req: ChatRequest, model: UpstreamModel) -> httpx.Request: ...
@@ -79,63 +79,64 @@ token, not all at once at the end.
           def parse_stream(self, resp: httpx.Response) -> AsyncIterator[ChatChunk]: ...
       ```
       Design it so a future `tools` field threads through without restructuring (SPEC §16.1).
-- [ ] `OpenAIAdapter` implementation covering `bearer`, `api_key_header`, and `azure` auth
+- [x] `OpenAIAdapter` implementation covering `bearer`, `api_key_header`, and `azure` auth
       styles, plus `extra_headers`.
-- [ ] Parameter resolution order: model `default_params` → gateway `param_overrides` → client
+- [x] Parameter resolution order: model `default_params` → gateway `param_overrides` → client
       request. Locked params (task 06) are a later refinement; leave the merge point obvious.
 
 ### Auth
-- [ ] Key format `mg_<key_id>_<secret>`; store `sha256(secret)` and a display `prefix`.
+- [x] Key format `mg_<key_id>_<secret>`; store `sha256(secret)` and a display `prefix`.
       Parsing the id out of the token means one indexed lookup instead of scanning hashes.
-- [ ] `Authorization: Bearer` extraction, constant-time comparison, revoked/disabled checks.
-- [ ] `last_used_at` updated asynchronously (fire-and-forget) so auth never blocks on a write.
-- [ ] Resolve gateway by slug; 404 for unknown slug, 403 if the key does not belong to it.
+- [x] `Authorization: Bearer` extraction, constant-time comparison, revoked/disabled checks.
+- [x] `last_used_at` updated asynchronously (fire-and-forget) so auth never blocks on a write.
+- [x] Resolve gateway by slug; 404 for unknown slug, 403 if the key does not belong to it.
 
 ### Forwarding
-- [ ] Shared `httpx.AsyncClient` with connection pooling and per-model timeouts
+- [x] Shared `httpx.AsyncClient` with connection pooling and per-model timeouts
       (connect / read / total, with read timeout applied to time-to-first-byte).
-- [ ] Non-streaming: forward, parse, return.
-- [ ] Streaming: relay SSE **without buffering**. Iterate upstream bytes and yield downstream
+- [x] Non-streaming: forward, parse, return.
+- [x] Streaming: relay SSE **without buffering**. Iterate upstream bytes and yield downstream
       immediately; terminate with `data: [DONE]`.
-- [ ] Handle client disconnect mid-stream by cancelling the upstream request (do not keep paying
+- [x] Handle client disconnect mid-stream by cancelling the upstream request (do not keep paying
       for tokens nobody receives).
-- [ ] Response headers: `X-Gateway-Request-Id`, `X-Gateway-Model`.
-- [ ] Prepend the model's `system_context` to the message list. This is layer 1 of the eventual
+- [x] Response headers: `X-Gateway-Request-Id`, `X-Gateway-Model`.
+- [x] Prepend the model's `system_context` to the message list. This is layer 1 of the eventual
       assembler (SPEC §7) — put it behind a `PromptAssembler` seam now so task 10 extends rather
       than rewrites it.
 
 ### Errors
-- [ ] All proxy-route errors use the OpenAI error envelope:
+- [x] All proxy-route errors use the OpenAI error envelope:
       `{"error": {"message", "type", "param", "code"}}` — client SDKs parse this shape and will
       surface a useful exception instead of a generic one.
-- [ ] Upstream 4xx/5xx are relayed with their status and message, tagged so it is obvious the
+- [x] Upstream 4xx/5xx are relayed with their status and message, tagged so it is obvious the
       error came from upstream rather than the gateway.
-- [ ] Timeouts → 504. Connection failures → 502.
-- [ ] **Unsupported fields** (`tools`, `tool_choice`, `functions`, `function_call`, `logprobs`)
+- [x] Timeouts → 504. Connection failures → 502.
+- [x] **Unsupported fields** (`tools`, `tool_choice`, `functions`, `function_call`, `logprobs`)
       → 400 naming the field explicitly. Silently dropping `tools` produces an agent that
       narrates tool calls as prose, which is very expensive to diagnose.
 
 ### Endpoints
-- [ ] `POST /g/{slug}/v1/chat/completions`
-- [ ] `GET /g/{slug}/v1/models` — OpenAI list shape, returning the gateway's virtual model names.
+- [x] `POST /g/{slug}/v1/chat/completions`
+- [x] `GET /g/{slug}/v1/models` — OpenAI list shape, returning the gateway's virtual model names.
 
 ### Seed
 - [ ] `make seed` / `python -m app.cli seed`: creates a demo organization, an upstream model
       from `OPENAI_API_KEY` in the environment, a gateway with slug `demo`, and one API key —
-      printing the key plaintext once.
-- [ ] Idempotent: re-running updates rather than duplicating.
+      printing the key plaintext once. *(written; never run against a database — see below)*
+- [ ] Idempotent: re-running updates rather than duplicating. *(covered by `db`-marked tests
+      that skip on this machine)*
 
 ## Acceptance criteria
 
-- [ ] The official `openai` Python SDK works against the gateway with only `base_url` changed.
-- [ ] Streaming is genuinely incremental: first chunk reaches the client in under 200 ms plus
+- [x] The official `openai` Python SDK works against the gateway with only `base_url` changed.
+- [x] Streaming is genuinely incremental: first chunk reaches the client in under 200 ms plus
       upstream TTFT (verify by timestamping received chunks, not by eyeballing).
-- [ ] Invalid, revoked, and wrong-gateway keys each return the correct status and an OpenAI-shaped
+- [x] Invalid, revoked, and wrong-gateway keys each return the correct status and an OpenAI-shaped
       error body.
-- [ ] An upstream 429 is relayed as a 429, not converted to a 500.
-- [ ] Sending `tools` returns 400 with the field named.
-- [ ] Credentials never appear in logs, error messages, or responses.
-- [ ] Disconnecting a streaming client cancels the upstream call (assert on the mock server).
+- [x] An upstream 429 is relayed as a 429, not converted to a 500.
+- [x] Sending `tools` returns 400 with the field named.
+- [x] Credentials never appear in logs, error messages, or responses.
+- [x] Disconnecting a streaming client cancels the upstream call (assert on the mock server).
 
 ## Tests
 
@@ -153,3 +154,18 @@ token, not all at once at the end.
   twice — once synchronously and once properly.
 - Keep the gateway config lookup behind a `GatewayResolver` service. Task 06 adds Redis caching
   and invalidation behind the same interface.
+
+## Verification status
+
+Everything above was implemented and the suite is green — **313 passed, 26 skipped** — but
+three things could not be exercised on the development machine, and are called out rather
+than assumed:
+
+| Not verified here | Why | What covers it |
+|---|---|---|
+| The migration against a real PostgreSQL | No server and no Docker on this machine | 23 `db`-marked tests (schema constraints, resolver SQL, authenticator, seed idempotency), plus an offline test that renders the migration to SQL and compares every table, column and constraint name against the models. CI runs the `db` tests with `REQUIRE_DB_TESTS=1`, which turns the skip into a failure. |
+| `make seed` end to end | Same | `seed_demo` is covered by the `db`-marked tests; the CLI's argument parsing and its missing-key path were run by hand. |
+| A call to a real provider | No provider key available here | `test_against_a_real_provider`, marked `live` and skipped without `OPENAI_API_KEY`. Everything else runs against a real ASGI upstream over a real socket, including the official `openai` SDK. |
+
+The `docker compose up` demo inherits task 01's caveat: Docker is not installed here, so the
+compose stack has still never been built or run.

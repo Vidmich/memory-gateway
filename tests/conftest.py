@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -23,11 +24,27 @@ from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
+from app.adapters.base import UpstreamTarget
+from app.api.proxy.deps import get_authenticator, get_resolver
 from app.core.clients import Clients
 from app.core.config import Settings, get_settings
 from app.main import create_app
+from app.services.gateways import ResolvedGateway
+from tests.support import (
+    FakeAuthenticator,
+    FakeResolver,
+    MockUpstream,
+    make_gateway,
+    make_target,
+    serve,
+)
 
 TEST_DB_SUFFIX = "_pytest"
 
@@ -143,6 +160,22 @@ async def db_session(db_connection: AsyncConnection) -> AsyncIterator[AsyncSessi
         yield session
 
 
+@pytest.fixture
+def db_session_factory(db_connection: AsyncConnection) -> async_sessionmaker[AsyncSession]:
+    """A factory whose sessions join the test's transaction.
+
+    Services take a factory and open their own sessions; without this they would open a
+    second connection, outside the test's transaction, and see none of its rows.
+    ``create_savepoint`` keeps their ``commit()`` calls from ending the outer transaction
+    that the fixture rolls back.
+    """
+    return async_sessionmaker(
+        bind=db_connection,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -161,3 +194,117 @@ class FakeAsync:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+# ---------------------------------------------------------------------------
+# data plane
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def upstream() -> AsyncIterator[MockUpstream]:
+    """A scriptable provider on a real port."""
+    mock = MockUpstream()
+    async with serve(mock) as base_url:
+        mock.base_url = base_url
+        yield mock
+
+
+@dataclass
+class ProxyHarness:
+    """Everything a data-plane test needs, wired together."""
+
+    app: FastAPI
+    client: AsyncClient
+    upstream: MockUpstream
+    resolver: FakeResolver
+    authenticator: FakeAuthenticator
+    token: str
+
+    @property
+    def gateway(self) -> ResolvedGateway:
+        return self.resolver.gateway
+
+    @property
+    def target(self) -> UpstreamTarget:
+        return self.gateway.targets[0]
+
+    def url(self, path: str = "/chat/completions", *, slug: str | None = None) -> str:
+        return f"/g/{slug or self.gateway.slug}/v1{path}"
+
+    def headers(self, token: str | None = None) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token or self.token}"}
+
+    def retarget(self, **overrides: Any) -> None:
+        """Rebuild the resolved gateway with different upstream settings."""
+        target = replace(self.target, **overrides)
+        self.resolver.gateway = replace(self.gateway, targets=(target,))
+
+
+def build_proxy_app(resolver: FakeResolver, authenticator: FakeAuthenticator) -> FastAPI:
+    application = create_app()
+    application.dependency_overrides[get_resolver] = lambda: resolver
+    application.dependency_overrides[get_authenticator] = lambda: authenticator
+    return application
+
+
+def build_harness_parts(
+    upstream: MockUpstream, **target_overrides: Any
+) -> tuple[FakeResolver, FakeAuthenticator, str]:
+    target = make_target(f"{upstream.base_url}/v1", **target_overrides)
+    gateway = make_gateway(target)
+    resolver = FakeResolver(gateway=gateway)
+    authenticator = FakeAuthenticator()
+    return resolver, authenticator, authenticator.issue(gateway.id)
+
+
+@pytest.fixture
+async def proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
+    resolver, authenticator, token = build_harness_parts(upstream)
+    application = build_proxy_app(resolver, authenticator)
+
+    async with application.router.lifespan_context(application):
+        transport = ASGITransport(app=application)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+            yield ProxyHarness(
+                app=application,
+                client=http_client,
+                upstream=upstream,
+                resolver=resolver,
+                authenticator=authenticator,
+                token=token,
+            )
+
+
+@pytest.fixture
+async def live_proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
+    """The same harness, but the gateway is served over a real socket.
+
+    Needed wherever the behaviour under test is about the connection itself — streaming
+    timing and client disconnects do not exist in an in-process transport.
+    """
+    resolver, authenticator, token = build_harness_parts(upstream)
+    application = build_proxy_app(resolver, authenticator)
+
+    async with (
+        serve(application, lifespan="on") as base_url,
+        AsyncClient(base_url=base_url, timeout=30.0) as http_client,
+    ):
+        yield ProxyHarness(
+            app=application,
+            client=http_client,
+            upstream=upstream,
+            resolver=resolver,
+            authenticator=authenticator,
+            token=token,
+        )
+
+
+async def eventually(condition: Callable[[], bool], *, timeout_seconds: float = 5.0) -> None:
+    """Poll until a condition holds. Used where two servers must both notice something."""
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        if condition():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("condition did not become true in time")

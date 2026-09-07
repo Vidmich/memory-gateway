@@ -24,7 +24,7 @@ from app.core.ids import uuid7
 from app.core.passwords import Hasher
 from app.db.models import ApiKey, Gateway, GatewayTarget, Organization, UpstreamModel
 from app.services.api_keys import KeyAuthenticator
-from app.services.gateways import GatewayResolver
+from app.services.gateway_resolver import DatabaseGatewayResolver
 
 pytestmark = pytest.mark.db
 
@@ -206,7 +206,7 @@ async def test_resolver_returns_a_decrypted_target(
 ) -> None:
     gateway, _model, _ = await build_gateway(db_session, secret_box, slug="resolvable")
 
-    resolved = await GatewayResolver(db_session_factory, secret_box).resolve("resolvable")
+    resolved = await DatabaseGatewayResolver(db_session_factory, secret_box).resolve("resolvable")
 
     assert resolved.id == gateway.id
     assert resolved.virtual_model == "resolvable"
@@ -226,7 +226,7 @@ async def test_resolver_does_not_leak_the_credential_in_a_repr(
 ) -> None:
     await build_gateway(db_session, secret_box, slug="quiet")
 
-    resolved = await GatewayResolver(db_session_factory, secret_box).resolve("quiet")
+    resolved = await DatabaseGatewayResolver(db_session_factory, secret_box).resolve("quiet")
 
     assert CREDENTIAL not in repr(resolved.target())
 
@@ -235,7 +235,7 @@ async def test_unknown_slug_raises_not_found(
     db_session_factory: async_sessionmaker[AsyncSession], secret_box: SecretBox
 ) -> None:
     with pytest.raises(GatewayNotFound):
-        await GatewayResolver(db_session_factory, secret_box).resolve("no-such-gateway")
+        await DatabaseGatewayResolver(db_session_factory, secret_box).resolve("no-such-gateway")
 
 
 async def test_a_disabled_gateway_is_unavailable(
@@ -246,7 +246,7 @@ async def test_a_disabled_gateway_is_unavailable(
     await build_gateway(db_session, secret_box, slug="off", enabled=False)
 
     with pytest.raises(GatewayUnavailable):
-        await GatewayResolver(db_session_factory, secret_box).resolve("off")
+        await DatabaseGatewayResolver(db_session_factory, secret_box).resolve("off")
 
 
 async def test_a_disabled_model_is_skipped_rather_than_returned(
@@ -256,7 +256,7 @@ async def test_a_disabled_model_is_skipped_rather_than_returned(
 ) -> None:
     await build_gateway(db_session, secret_box, slug="empty", model_enabled=False)
 
-    resolved = await GatewayResolver(db_session_factory, secret_box).resolve("empty")
+    resolved = await DatabaseGatewayResolver(db_session_factory, secret_box).resolve("empty")
 
     assert resolved.targets == ()
     with pytest.raises(GatewayUnavailable):
@@ -276,7 +276,7 @@ async def test_a_credential_from_another_master_key_fails_loudly(
     )
 
     with pytest.raises(GatewayUnavailable):
-        await GatewayResolver(db_session_factory, secret_box).resolve("rotated")
+        await DatabaseGatewayResolver(db_session_factory, secret_box).resolve("rotated")
 
 
 # -- authenticator -----------------------------------------------------------

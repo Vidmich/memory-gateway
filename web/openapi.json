@@ -1,6 +1,110 @@
 {
   "components": {
     "schemas": {
+      "ApiKeyCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ApiKeyCreateRequest",
+        "type": "object"
+      },
+      "ApiKeyResponse": {
+        "description": "Everything about a key except the one thing that matters, which is gone.\n\n``prefix`` is the durable display form: it carries no secret, and it is what a\ncustomer compares against the key in their own config when working out which one to\nrevoke.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "gateway_id": {
+            "format": "uuid",
+            "title": "Gateway Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "prefix": {
+            "title": "Prefix",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          }
+        },
+        "required": [
+          "id",
+          "gateway_id",
+          "name",
+          "prefix",
+          "created_at",
+          "last_used_at",
+          "revoked_at",
+          "expires_at"
+        ],
+        "title": "ApiKeyResponse",
+        "type": "object"
+      },
       "CredentialStatus": {
         "description": "SPEC \u00a75.4: what a response may say about a stored secret, and no more.\n\n``hint`` can be ``None`` while ``configured`` is ``True`` \u2014 for a row written before\nhints were stored, and for a global model being read by someone who does not own it.",
         "properties": {
@@ -24,6 +128,457 @@
           "configured"
         ],
         "title": "CredentialStatus",
+        "type": "object"
+      },
+      "GatewayCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "limits": {
+            "additionalProperties": true,
+            "title": "Limits",
+            "type": "object"
+          },
+          "locked_params": {
+            "additionalProperties": true,
+            "title": "Locked Params",
+            "type": "object"
+          },
+          "logging_config": {
+            "additionalProperties": true,
+            "title": "Logging Config",
+            "type": "object"
+          },
+          "memory_config": {
+            "additionalProperties": true,
+            "title": "Memory Config",
+            "type": "object"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "param_overrides": {
+            "additionalProperties": true,
+            "title": "Param Overrides",
+            "type": "object"
+          },
+          "routing_mode": {
+            "default": "single",
+            "title": "Routing Mode",
+            "type": "string"
+          },
+          "slug": {
+            "maxLength": 63,
+            "minLength": 3,
+            "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+            "title": "Slug",
+            "type": "string"
+          },
+          "system_context": {
+            "anyOf": [
+              {
+                "maxLength": 32000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Context"
+          }
+        },
+        "required": [
+          "name",
+          "slug"
+        ],
+        "title": "GatewayCreateRequest",
+        "type": "object"
+      },
+      "GatewayResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "endpoint_url": {
+            "title": "Endpoint Url",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "key_count": {
+            "title": "Key Count",
+            "type": "integer"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/LimitsConfig"
+          },
+          "locked_params": {
+            "additionalProperties": true,
+            "title": "Locked Params",
+            "type": "object"
+          },
+          "logging_config": {
+            "$ref": "#/components/schemas/LoggingConfig"
+          },
+          "memory_config": {
+            "$ref": "#/components/schemas/MemoryConfig"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "param_overrides": {
+            "additionalProperties": true,
+            "title": "Param Overrides",
+            "type": "object"
+          },
+          "routing_mode": {
+            "title": "Routing Mode",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "system_context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Context"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/TargetSummary"
+            },
+            "title": "Targets",
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "organization_id",
+          "slug",
+          "name",
+          "description",
+          "enabled",
+          "routing_mode",
+          "endpoint_url",
+          "targets",
+          "system_context",
+          "param_overrides",
+          "locked_params",
+          "memory_config",
+          "logging_config",
+          "limits",
+          "key_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "GatewayResponse",
+        "type": "object"
+      },
+      "GatewayTestRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "GatewayTestRequest",
+        "type": "object"
+      },
+      "GatewayTestResponse": {
+        "description": "What the probe saw: the prompt, the answer, and where the time went.\n\nNot an error envelope. \"The upstream said 401\" is the successful answer to \"does this\ngateway work\", and the UI renders it in red itself.",
+        "properties": {
+          "assembled_prompt": {
+            "items": {
+              "$ref": "#/components/schemas/PromptMessageResponse"
+            },
+            "title": "Assembled Prompt",
+            "type": "array"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "locked_overrides": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Locked Overrides",
+            "type": "array"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "total_ms": {
+            "title": "Total Ms",
+            "type": "integer"
+          },
+          "upstream_ms": {
+            "title": "Upstream Ms",
+            "type": "integer"
+          },
+          "upstream_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Status"
+          }
+        },
+        "required": [
+          "ok",
+          "total_ms",
+          "upstream_ms",
+          "assembled_prompt"
+        ],
+        "title": "GatewayTestResponse",
+        "type": "object"
+      },
+      "GatewayUpdateRequest": {
+        "additionalProperties": false,
+        "description": "Partial. Only fields actually present in the body are applied.\n\n``model_id: null`` is meaningful and allowed: it detaches the gateway from its model,\nwhich is how you park an endpoint without deleting it.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limits"
+          },
+          "locked_params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked Params"
+          },
+          "logging_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logging Config"
+          },
+          "memory_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Config"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "param_overrides": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Param Overrides"
+          },
+          "routing_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Routing Mode"
+          },
+          "system_context": {
+            "anyOf": [
+              {
+                "maxLength": 32000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Context"
+          }
+        },
+        "title": "GatewayUpdateRequest",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -171,6 +726,24 @@
         "title": "InvitationResponse",
         "type": "object"
       },
+      "IssuedApiKeyResponse": {
+        "description": "The one response in this API with a live secret in it.\n\nReturned by ``POST /gateways/{id}/keys`` and nowhere else, because only the hash is\nstored. The client is expected to show it once with a warning and then forget it \u2014\nreloading the page cannot bring it back, and that is the property being protected.",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/ApiKeyResponse"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "token"
+        ],
+        "title": "IssuedApiKeyResponse",
+        "type": "object"
+      },
       "IssuedInvitationResponse": {
         "description": "The one response that carries the link.\n\nOnly the hash is stored, so this is the single moment it can be shown; the list\nendpoint has no ``accept_url`` field to leak later.",
         "properties": {
@@ -187,6 +760,124 @@
           "accept_url"
         ],
         "title": "IssuedInvitationResponse",
+        "type": "object"
+      },
+      "LimitsConfig": {
+        "description": "SPEC \u00a711. ``None`` means unlimited, which is the v1 default \u2014 task 14 enforces\nthese, and a limit that quietly existed before anyone set one would be a surprise\noutage rather than a policy.",
+        "properties": {
+          "concurrent_requests": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Concurrent Requests"
+          },
+          "requests_per_day": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests Per Day"
+          },
+          "requests_per_minute": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests Per Minute"
+          },
+          "tokens_per_minute": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens Per Minute"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "title": "LimitsConfig",
+        "type": "object"
+      },
+      "LoggingConfig": {
+        "description": "SPEC \u00a710.2. Full capture by default \u2014 bodies are what make distillation possible\n\u2014 and every part switchable.",
+        "properties": {
+          "enable_distillation": {
+            "default": true,
+            "title": "Enable Distillation",
+            "type": "boolean"
+          },
+          "log_assembled_prompt": {
+            "default": true,
+            "title": "Log Assembled Prompt",
+            "type": "boolean"
+          },
+          "log_metadata": {
+            "default": true,
+            "title": "Log Metadata",
+            "type": "boolean"
+          },
+          "log_request_body": {
+            "default": true,
+            "title": "Log Request Body",
+            "type": "boolean"
+          },
+          "log_response_body": {
+            "default": true,
+            "title": "Log Response Body",
+            "type": "boolean"
+          },
+          "metadata_retention_days": {
+            "default": 365,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Metadata Retention Days",
+            "type": "integer"
+          },
+          "redaction_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Redaction Patterns",
+            "type": "array"
+          },
+          "retention_days": {
+            "default": 30,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Retention Days",
+            "type": "integer"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "title": "LoggingConfig",
         "type": "object"
       },
       "LoginRequest": {
@@ -295,6 +986,84 @@
           }
         },
         "title": "MemberUpdateRequest",
+        "type": "object"
+      },
+      "MemoryConfig": {
+        "description": "SPEC \u00a76.3. Task 10 makes these do something; the shape is settled now.\n\n``connector_ids`` is empty by default, which means no document memory \u2014 a gateway\nthat silently started reading every connector in the organization would be a\ndisclosure bug, so the safe default is \"nothing\".",
+        "properties": {
+          "connector_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Connector Ids",
+            "type": "array"
+          },
+          "doc_max_tokens": {
+            "default": 2000,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Doc Max Tokens",
+            "type": "integer"
+          },
+          "doc_min_score": {
+            "default": 0.35,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Doc Min Score",
+            "type": "number"
+          },
+          "doc_top_k": {
+            "default": 6,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Doc Top K",
+            "type": "integer"
+          },
+          "memory_enabled": {
+            "default": true,
+            "title": "Memory Enabled",
+            "type": "boolean"
+          },
+          "memory_max_tokens": {
+            "default": 600,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Memory Max Tokens",
+            "type": "integer"
+          },
+          "memory_top_k": {
+            "default": 8,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Memory Top K",
+            "type": "integer"
+          },
+          "on_retrieval_error": {
+            "default": "fail_open",
+            "enum": [
+              "fail_open",
+              "fail_closed"
+            ],
+            "title": "On Retrieval Error",
+            "type": "string"
+          },
+          "query_strategy": {
+            "default": "last_user_message",
+            "enum": [
+              "last_user_message",
+              "last_n_turns"
+            ],
+            "title": "Query Strategy",
+            "type": "string"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "title": "MemoryConfig",
         "type": "object"
       },
       "ModelCard": {
@@ -998,6 +1767,33 @@
         "title": "OrganizationUpdateRequest",
         "type": "object"
       },
+      "Page_GatewayResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GatewayResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[GatewayResponse]",
+        "type": "object"
+      },
       "Page_InvitationResponse_": {
         "properties": {
           "items": {
@@ -1181,6 +1977,24 @@
         "title": "ProbeResponse",
         "type": "object"
       },
+      "PromptMessageResponse": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "PromptMessageResponse",
+        "type": "object"
+      },
       "SessionResponse": {
         "description": "What login and refresh both return.\n\nThe refresh token is deliberately absent: it lives in an httpOnly cookie the\nJavaScript never sees, which is the whole point of splitting the two.",
         "properties": {
@@ -1213,6 +2027,49 @@
           "user"
         ],
         "title": "SessionResponse",
+        "type": "object"
+      },
+      "TargetSummary": {
+        "description": "The model a gateway routes to, as much of it as a gateway screen needs.\n\nDeliberately not the full ``ModelResponse``: nothing here can carry a credential\nstatus, so the gateway editor cannot become a second place a hint is rendered.",
+        "properties": {
+          "dialect": {
+            "title": "Dialect",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "dialect",
+          "enabled",
+          "organization_id"
+        ],
+        "title": "TargetSummary",
         "type": "object"
       },
       "UserSummary": {
@@ -1460,6 +2317,397 @@
         ]
       }
     },
+    "/api/v1/gateways": {
+      "get": {
+        "operationId": "list_gateways_api_v1_gateways_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_GatewayResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Gateways",
+        "tags": [
+          "gateways"
+        ]
+      },
+      "post": {
+        "operationId": "create_gateway_api_v1_gateways_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GatewayCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Gateway",
+        "tags": [
+          "gateways"
+        ]
+      }
+    },
+    "/api/v1/gateways/{gateway_id}": {
+      "delete": {
+        "description": "Takes its keys and targets with it. Every deployed client stops working, which is\nwhy the UI asks for the slug to be typed.",
+        "operationId": "delete_gateway_api_v1_gateways__gateway_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Gateway",
+        "tags": [
+          "gateways"
+        ]
+      },
+      "get": {
+        "operationId": "get_gateway_api_v1_gateways__gateway_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Gateway",
+        "tags": [
+          "gateways"
+        ]
+      },
+      "patch": {
+        "description": "Partial. The three config sections are deep-merged, so a form that owns one\nsection can save without knowing what the others contain.\n\n``slug`` is refused rather than ignored \u2014 it is part of a URL clients have deployed.",
+        "operationId": "update_gateway_api_v1_gateways__gateway_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GatewayUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Gateway",
+        "tags": [
+          "gateways"
+        ]
+      }
+    },
+    "/api/v1/gateways/{gateway_id}/keys": {
+      "get": {
+        "description": "Not paginated: a gateway holds tens of keys, not thousands, and the screen shows\nthem all at once. The cap in the service is what keeps that true.",
+        "operationId": "list_keys_api_v1_gateways__gateway_id__keys_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ApiKeyResponse"
+                  },
+                  "title": "Response List Keys Api V1 Gateways  Gateway Id  Keys Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Keys",
+        "tags": [
+          "gateways"
+        ]
+      },
+      "post": {
+        "description": "The only response in this API containing a usable secret, and the only time this\none exists. Only ``sha256(secret)`` is stored, so it cannot be shown again.",
+        "operationId": "create_key_api_v1_gateways__gateway_id__keys_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedApiKeyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Key",
+        "tags": [
+          "gateways"
+        ]
+      }
+    },
+    "/api/v1/gateways/{gateway_id}/test": {
+      "post": {
+        "description": "Send a probe completion through the real proxy path.\n\nReturns the assembled prompt as well as the answer, which is the part that makes this\na debugging tool rather than a health check: it is the only way to see what the system\ncontext actually became before task 07's request log exists.",
+        "operationId": "test_gateway_api_v1_gateways__gateway_id__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GatewayTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Gateway",
+        "tags": [
+          "gateways"
+        ]
+      }
+    },
     "/api/v1/invitations": {
       "get": {
         "description": "No ``accept_url`` here, and there cannot be one: only the hash is stored. Use\nresend to mint a fresh link.",
@@ -1700,6 +2948,50 @@
         "summary": "Resend Invitation",
         "tags": [
           "directory"
+        ]
+      }
+    },
+    "/api/v1/keys/{key_id}": {
+      "delete": {
+        "description": "Soft. The row survives so task 07's request logs keep a reference that resolves,\nand the next request with this key is refused \u2014 key lookup is never cached.",
+        "operationId": "revoke_key_api_v1_keys__key_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Key",
+        "tags": [
+          "gateways"
         ]
       }
     },

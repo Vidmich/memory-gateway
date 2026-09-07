@@ -17,19 +17,20 @@ from dataclasses import dataclass, field
 from app.core.config import Settings, get_settings
 from app.core.passwords import Hasher, build_hasher
 from app.core.tenancy import Actor, TenantScope
-from app.db.models import Gateway, Organization, UpstreamModel, User
+from app.db.models import ApiKey, Gateway, Organization, UpstreamModel, User
 from app.services.catalog import CatalogService
 from app.services.directory import DirectoryService
+from app.services.gateways import GatewayService
 from app.services.memory_db import MemoryDatabase
 from tests.auth_support import PASSWORD, AuthFixture, build_auth, make_organization, make_user
 from tests.catalog_support import (
     ACME_SECRET,
     PLATFORM_SECRET,
     FakeProbe,
-    make_gateway_row,
     make_model,
     make_target_row,
 )
+from tests.gateway_support import FakeGatewayProbe, RecordingCache, make_gateway_row, make_key_row
 
 
 @dataclass
@@ -46,7 +47,10 @@ class World:
     database: MemoryDatabase
     directory: DirectoryService
     catalog: CatalogService
+    gateways: GatewayService
     probe: FakeProbe
+    gateway_probe: FakeGatewayProbe
+    cache: RecordingCache
     auth: AuthFixture
 
     acme: Organization
@@ -62,6 +66,9 @@ class World:
     globex_model: UpstreamModel
     global_model: UpstreamModel
     acme_gateway: Gateway
+    globex_gateway: Gateway
+    acme_key: ApiKey
+    globex_key: ApiKey
 
     #: Every user, keyed by the short name the tests use.
     people: dict[str, User] = field(default_factory=dict)
@@ -139,6 +146,16 @@ def build_world(*, settings: Settings | None = None) -> World:
     acme_gateway = make_gateway_row(acme, slug="acme-chat")
     database.add_gateway(acme_gateway)
     database.add_target(make_target_row(acme_gateway.id, acme_model.id))
+    acme_key, _ = make_key_row(acme_gateway.id, name="acme production")
+    database.add_key(acme_key)
+
+    # Globex gets the mirror image, so the cross-tenant net has a real foreign gateway
+    # and a real foreign key to aim at rather than invented ids.
+    globex_gateway = make_gateway_row(globex, slug="globex-chat")
+    database.add_gateway(globex_gateway)
+    database.add_target(make_target_row(globex_gateway.id, globex_model.id))
+    globex_key, _ = make_key_row(globex_gateway.id, name="globex production")
+    database.add_key(globex_key)
 
     return World(
         settings=settings,
@@ -148,7 +165,10 @@ def build_world(*, settings: Settings | None = None) -> World:
         # accidentally exercise two services over one database.
         directory=auth.directory,
         catalog=auth.catalog,
+        gateways=auth.gateways,
         probe=auth.probe,
+        gateway_probe=auth.gateway_probe,
+        cache=auth.cache,
         auth=auth,
         acme=acme,
         globex=globex,
@@ -161,6 +181,9 @@ def build_world(*, settings: Settings | None = None) -> World:
         globex_model=globex_model,
         global_model=global_model,
         acme_gateway=acme_gateway,
+        globex_gateway=globex_gateway,
+        acme_key=acme_key,
+        globex_key=globex_key,
         people=people,
     )
 

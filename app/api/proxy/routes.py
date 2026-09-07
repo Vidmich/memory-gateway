@@ -26,7 +26,7 @@ from app.api.proxy.errors import (
 from app.core import keys
 from app.schemas.openai import ChatRequest, ModelCard, ModelList
 from app.services.api_keys import AuthenticatedKey, KeyAuthenticator
-from app.services.gateways import GatewayResolver, ResolvedGateway
+from app.services.gateway_resolver import GatewayResolver, ResolvedGateway
 from app.services.proxy import ProxyService
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/g/{slug}/v1", tags=["proxy"])
 
 MODEL_HEADER = "X-Gateway-Model"
+#: Names the locked parameters that replaced a value the client asked for. Present only
+#: when something was actually overridden — a header on every response would be noise,
+#: and the one case it matters is a caller wondering why `temperature` had no effect.
+LOCKED_HEADER = "X-Gateway-Locked-Params"
 
 Resolver = Annotated[GatewayResolver, Depends(get_resolver)]
 Authenticator = Annotated[KeyAuthenticator, Depends(get_authenticator)]
@@ -62,13 +66,19 @@ async def chat_completions(
         )
 
     target = gateway.target()
+    prepared = service.prepare(chat, gateway, target)
     headers = {MODEL_HEADER: target.name}
+    if prepared.params.overridden:
+        # The gateway ignored something the client explicitly asked for. Saying so is the
+        # difference between "this endpoint ignores temperature" as a bug report and as a
+        # documented policy the caller can read off the response.
+        headers[LOCKED_HEADER] = ",".join(prepared.params.overridden)
 
     if chat.stream:
         # Opening the stream sends the request and checks the status *before* any bytes
         # go downstream, so an upstream failure is still an HTTP error rather than a
         # truncated 200.
-        stream = await service.open_stream(chat, gateway, target)
+        stream = await service.open_stream(prepared)
         return StreamingResponse(
             stream.frames(),
             media_type="text/event-stream",
@@ -81,7 +91,7 @@ async def chat_completions(
             },
         )
 
-    completion = await service.complete(chat, gateway, target)
+    completion = await service.complete(prepared)
     return JSONResponse(content=completion.model_dump(exclude_none=True), headers=headers)
 
 

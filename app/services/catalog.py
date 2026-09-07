@@ -8,7 +8,7 @@ rather than a reveal. What a response carries is
 ``{"configured": true, "hint": "sk-...4f2a"}``, and the hint is computed from the
 plaintext at write time and stored, so rendering a list never needs the master key. The
 one place a credential is decrypted is the request path — here for a connectivity probe,
-and in :class:`~app.services.gateways.GatewayResolver` for a real completion.
+and in :class:`~app.services.gateway_resolver.DatabaseGatewayResolver` for a real completion.
 
 **There are two scopes, and only one of them is writable.** Every read that lists or
 shows a model uses the wide view (own models plus the global catalog); every write starts
@@ -21,6 +21,13 @@ each of create, update and delete.
 RESTRICT``, so the database would refuse it anyway; refusing here is what makes the answer
 name the gateways instead of surfacing a constraint violation. Disabling is always
 allowed, and takes effect on the next request because the resolver reads the flag.
+
+**A change to a model reaches the gateways pointing at it immediately.** Every write here
+bumps the config-cache version of every gateway with a target on this model —
+:meth:`CatalogTransaction.slugs_referencing`, deliberately unscoped, because a *global*
+model is referenced from organizations the writer cannot see. Without that, rotating a
+credential would leave other tenants calling the provider with the old one for up to a
+minute.
 
 **A dialect with no adapter is refused at write time.** The column accepts ``anthropic``
 today and the UI offers it, but there is nothing registered to serve it until task 16 —
@@ -46,6 +53,7 @@ from app.core.tenancy import Actor
 from app.db.models import UpstreamModel
 from app.db.models.upstream_model import DEFAULT_TIMEOUT_SECONDS
 from app.services.catalog_store import CatalogStore, CatalogTransaction
+from app.services.gateway_resolver import ConfigCache
 from app.services.model_probe import Probe, ProbeResult
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
 from app.services.params import validate_params
@@ -160,12 +168,14 @@ class CatalogService:
         *,
         secret_box: SecretBox,
         probe: Probe,
+        cache: ConfigCache | None = None,
         test_limiter: FixedWindowLimiter | None = None,
         settings: Settings | None = None,
     ) -> None:
         self._store = store
         self._secret_box = secret_box
         self._probe = probe
+        self._cache = cache
         self._limiter = test_limiter
         self._settings = settings or get_settings()
 
@@ -298,6 +308,9 @@ class CatalogService:
                 self._store_credential(model, patch.credential)
 
             await transaction.commit()
+            # After the commit, so nothing can repopulate the cache from a row this
+            # transaction has not written yet.
+            await self._invalidate(transaction, model.id)
 
         self._log("model updated", actor, model, action="model.update")
         return ModelView(model=model, editable=True)
@@ -477,6 +490,15 @@ class CatalogService:
                 "This model's stored credential cannot be decrypted with the current "
                 "encryption key. Set the credential again to replace it."
             ) from None
+
+    async def _invalidate(self, transaction: CatalogTransaction, model_id: uuid.UUID) -> None:
+        """Bump the config-cache version of every gateway pointing at this model.
+
+        A no-op when no cache is wired, which is how the service tests run.
+        """
+        if self._cache is None:
+            return
+        await self._cache.invalidate(await transaction.slugs_referencing(model_id))
 
     async def _rate_limit(self, actor: Actor) -> None:
         if self._limiter is not None:

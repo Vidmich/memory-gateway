@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.db.models import (
+    ApiKey,
     Gateway,
     GatewayTarget,
     Invitation,
@@ -38,6 +39,7 @@ class MemoryDatabase:
     upstream_models: dict[uuid.UUID, UpstreamModel] = field(default_factory=dict)
     gateways: dict[uuid.UUID, Gateway] = field(default_factory=dict)
     gateway_targets: dict[uuid.UUID, GatewayTarget] = field(default_factory=dict)
+    api_keys: dict[uuid.UUID, ApiKey] = field(default_factory=dict)
 
     def add_user(self, user: User) -> User:
         self.users[user.id] = _stamped(user)
@@ -62,6 +64,10 @@ class MemoryDatabase:
     def add_target(self, target: GatewayTarget) -> GatewayTarget:
         self.gateway_targets[target.id] = _stamped(target)
         return target
+
+    def add_key(self, key: ApiKey) -> ApiKey:
+        self.api_keys[key.id] = _stamped(key)
+        return key
 
 
 def _stamped[T: Any](row: T) -> T:

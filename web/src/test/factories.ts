@@ -7,8 +7,12 @@
  */
 
 import type {
+  ApiKeyResponse,
   CurrentUser,
+  GatewayResponse,
+  GatewayTestResponse,
   InvitationResponse,
+  IssuedApiKeyResponse,
   MemberResponse,
   ModelResponse,
   OrganizationResponse,
@@ -137,6 +141,107 @@ export function makeProbe(overrides: Partial<ProbeResponse> = {}): ProbeResponse
     upstream_status: 200,
     error_message: null,
     model_echo: 'gpt-4o-mini',
+    ...overrides,
+  }
+}
+
+export function makeGateway(overrides: Partial<GatewayResponse> = {}): GatewayResponse {
+  return {
+    id: 'g1',
+    organization_id: 'o1',
+    slug: 'acme-support',
+    name: 'Support Bot',
+    description: null,
+    enabled: true,
+    routing_mode: 'single',
+    endpoint_url: 'https://localhost:8000/g/acme-support/v1',
+    targets: [
+      { id: 'mo1', name: 'acme-gpt', dialect: 'openai', enabled: true, organization_id: 'o1' },
+    ],
+    system_context: null,
+    param_overrides: {},
+    locked_params: {},
+    // The server always answers with the blob filled in, never `{}` — so the fixture
+    // does too, or a component reading a default would pass here and break in the app.
+    memory_config: {
+      version: 1,
+      connector_ids: [],
+      doc_top_k: 6,
+      doc_min_score: 0.35,
+      doc_max_tokens: 2000,
+      memory_enabled: true,
+      memory_top_k: 8,
+      memory_max_tokens: 600,
+      query_strategy: 'last_user_message',
+      on_retrieval_error: 'fail_open',
+    },
+    logging_config: {
+      version: 1,
+      log_metadata: true,
+      log_request_body: true,
+      log_assembled_prompt: true,
+      log_response_body: true,
+      retention_days: 30,
+      metadata_retention_days: 365,
+      redaction_patterns: [],
+      enable_distillation: true,
+    },
+    limits: {
+      version: 1,
+      requests_per_minute: null,
+      tokens_per_minute: null,
+      concurrent_requests: null,
+      requests_per_day: null,
+    },
+    key_count: 1,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  }
+}
+
+export function makeApiKey(overrides: Partial<ApiKeyResponse> = {}): ApiKeyResponse {
+  return {
+    id: 'k1',
+    gateway_id: 'g1',
+    name: 'production',
+    prefix: 'mg_1a2b3c4d',
+    created_at: NOW,
+    last_used_at: null,
+    revoked_at: null,
+    expires_at: null,
+    ...overrides,
+  }
+}
+
+/** The one response with a live secret on it. Used to prove it is shown once and then
+ * never appears again. */
+export function makeIssuedKey(
+  overrides: Partial<IssuedApiKeyResponse> = {},
+): IssuedApiKeyResponse {
+  return {
+    key: makeApiKey(),
+    token: 'mg_1a2b3c4d_shown-exactly-once',
+    ...overrides,
+  }
+}
+
+export function makeGatewayProbe(
+  overrides: Partial<GatewayTestResponse> = {},
+): GatewayTestResponse {
+  return {
+    ok: true,
+    total_ms: 412,
+    upstream_ms: 380,
+    assembled_prompt: [
+      { role: 'system', content: "You are Acme's support assistant. Be concise." },
+      { role: 'user', content: 'Hello!' },
+    ],
+    model_name: 'acme-gpt',
+    content: 'Hello — how can I help?',
+    upstream_status: null,
+    error_message: null,
+    locked_overrides: [],
     ...overrides,
   }
 }

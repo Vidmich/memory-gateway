@@ -62,8 +62,25 @@ class ModelNotFound(ProxyError):
         super().__init__(message, param="model")
 
 
+class GatewayDisabled(ProxyError):
+    """Switched off by its owner.
+
+    403 rather than 503, and the difference matters to a client. A 503 means "try again",
+    and an SDK will — every few seconds, indefinitely, against an endpoint somebody turned
+    off on purpose. A 403 is final, so the retry loop stops and the message is what gets
+    read.
+    """
+
+    status_code = 403
+    code = "gateway_disabled"
+
+
 class GatewayUnavailable(ProxyError):
-    """The gateway exists but cannot serve: disabled, or no usable target."""
+    """The gateway exists and is enabled, but has no usable target.
+
+    Retryable on purpose: the fix is a toggle in the UI, so a client backing off and
+    trying again is the behaviour that recovers on its own.
+    """
 
     status_code = 503
     code = "gateway_unavailable"

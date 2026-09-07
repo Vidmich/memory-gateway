@@ -8,6 +8,8 @@ import { ToastProvider } from '@/components/Toast'
 import { AppShell } from '@/layout/AppShell'
 import { AcceptInvitationPage } from '@/pages/AcceptInvitationPage'
 import { DashboardPage } from '@/pages/DashboardPage'
+import { GatewayFormPage } from '@/pages/GatewayFormPage'
+import { GatewaysPage } from '@/pages/GatewaysPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { MembersPage } from '@/pages/MembersPage'
 import { ModelFormPage } from '@/pages/ModelFormPage'
@@ -52,6 +54,11 @@ export function AppRoutes() {
             id, not by which fields exist. */}
         <Route path="/models/new" element={<ModelFormPage />} />
         <Route path="/models/:modelId" element={<ModelFormPage />} />
+        <Route path="/gateways" element={<GatewaysPage />} />
+        {/* `?clone=<id>` pre-fills from an existing gateway — the escape hatch for the
+            immutable slug. */}
+        <Route path="/gateways/new" element={<GatewayFormPage />} />
+        <Route path="/gateways/:gatewayId" element={<GatewayFormPage />} />
         <Route path="/settings" element={<OrganizationSettingsPage />} />
         <Route path="/settings/members" element={<MembersPage />} />
         {/* Rendering is gated by capability; the API is what actually refuses. */}

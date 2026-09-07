@@ -146,7 +146,7 @@ def test_the_client_wins_over_the_gateway_and_the_model() -> None:
         client={"temperature": 0.9},
     )
 
-    assert resolved == {"temperature": 0.9}
+    assert resolved.values == {"temperature": 0.9}
 
 
 def test_the_gateway_wins_over_the_model() -> None:
@@ -156,7 +156,7 @@ def test_the_gateway_wins_over_the_model() -> None:
         client={},
     )
 
-    assert resolved == {"temperature": 0.5}
+    assert resolved.values == {"temperature": 0.5}
 
 
 def test_layers_combine_rather_than_replace() -> None:
@@ -168,11 +168,11 @@ def test_layers_combine_rather_than_replace() -> None:
         client={"max_tokens": 50},
     )
 
-    assert resolved == {"temperature": 0.1, "max_tokens": 50, "top_p": 0.8}
+    assert resolved.values == {"temperature": 0.1, "max_tokens": 50, "top_p": 0.8}
 
 
 def test_missing_layers_are_treated_as_empty() -> None:
-    assert resolve_params(model_defaults=None, gateway_overrides=None, client=None) == {}
+    assert resolve_params(model_defaults=None, gateway_overrides=None, client=None).values == {}
 
 
 def test_the_merge_does_not_mutate_its_inputs() -> None:

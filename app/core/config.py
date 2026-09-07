@@ -72,9 +72,11 @@ class Settings(BaseSettings):
     #: token itself expires sooner.
     refresh_token_short_ttl_seconds: int = Field(default=12 * 3600, ge=300)
 
-    #: "Test connection" presses allowed per user per window. Every one is an outbound
-    #: call to a provider, billed to whoever owns the model, so it needs a ceiling — but
-    #: a generous one, because getting a base URL right takes a few tries.
+    #: Probe presses allowed per user per window, for "Test connection" on a model and
+    #: "Test gateway" on an endpoint alike — one setting because they cost the same thing
+    #: for the same reason. Every press is an outbound call billed to whoever owns the
+    #: model, so it needs a ceiling; a generous one, because getting a base URL right
+    #: takes a few tries.
     model_test_max_attempts: int = Field(default=20, ge=1)
     model_test_window_seconds: int = Field(default=60, ge=1)
 

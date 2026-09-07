@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -141,7 +141,13 @@ def _authenticator(session: _StubSession) -> KeyAuthenticator:
     return KeyAuthenticator(factory)
 
 
-def _record(key_hash: str, key_id: uuid.UUID, *, revoked: bool = False) -> ApiKey:
+def _record(
+    key_hash: str,
+    key_id: uuid.UUID,
+    *,
+    revoked: bool = False,
+    expires_at: datetime | None = None,
+) -> ApiKey:
     return ApiKey(
         id=key_id,
         gateway_id=uuid7(),
@@ -149,6 +155,7 @@ def _record(key_hash: str, key_id: uuid.UUID, *, revoked: bool = False) -> ApiKe
         key_hash=key_hash,
         prefix=keys.display_prefix(key_id),
         revoked_at=datetime.now(UTC) if revoked else None,
+        expires_at=expires_at,
     )
 
 
@@ -205,3 +212,80 @@ async def test_revoked_keys_are_told_they_are_revoked() -> None:
 
     with pytest.raises(AuthenticationFailed, match="revoked"):
         await _authenticator(session).authenticate(minted.token)
+
+
+# -- expiry ------------------------------------------------------------------
+
+
+async def test_an_expired_key_is_refused_and_told_when() -> None:
+    """Same reasoning as revocation: the caller demonstrably holds the key, so saying why
+    it stopped working leaks nothing and saves a support ticket."""
+    minted = keys.mint(uuid7())
+    expired = datetime.now(UTC) - timedelta(days=1)
+    session = _StubSession(_record(minted.key_hash, minted.key_id, expires_at=expired))
+
+    with pytest.raises(AuthenticationFailed, match="expired"):
+        await _authenticator(session).authenticate(minted.token)
+
+
+async def test_a_key_expiring_later_still_works() -> None:
+    minted = keys.mint(uuid7())
+    later = datetime.now(UTC) + timedelta(days=1)
+    session = _StubSession(_record(minted.key_hash, minted.key_id, expires_at=later))
+
+    result = await _authenticator(session).authenticate(minted.token)
+
+    assert result.id == minted.key_id
+
+
+async def test_a_key_with_no_expiry_never_expires() -> None:
+    minted = keys.mint(uuid7())
+    session = _StubSession(_record(minted.key_hash, minted.key_id))
+
+    assert (await _authenticator(session).authenticate(minted.token)).id == minted.key_id
+
+
+# -- last_used_at, at most once a minute -------------------------------------
+
+
+class _CountingRecorder:
+    """Stands in for the Redis gate: says yes once, then no."""
+
+    def __init__(self) -> None:
+        self.asked = 0
+
+    async def should_write(self, key_id: uuid.UUID) -> bool:
+        self.asked += 1
+        return self.asked == 1
+
+
+async def test_a_hot_key_writes_last_used_at_once_per_window() -> None:
+    """Otherwise every completion becomes a database write. Nothing depends on this
+    column being current to the second, which is what makes the trade available."""
+    minted = keys.mint(uuid7())
+    session = _StubSession(_record(minted.key_hash, minted.key_id))
+    recorder = _CountingRecorder()
+    factory = cast("async_sessionmaker[AsyncSession]", lambda: session)
+    authenticator = KeyAuthenticator(factory, recorder)
+
+    for _ in range(5):
+        await authenticator.authenticate(minted.token)
+    await background.drain(timeout_seconds=2)
+
+    assert recorder.asked == 5
+    assert len(session.statements) == 1
+
+
+async def test_the_recorder_fails_open() -> None:
+    """A Redis outage means the timestamp is written every request — the old behaviour,
+    costing a write — rather than never, which would make the column quietly wrong for
+    the length of the incident."""
+    from app.services.api_keys import LastUsedRecorder
+
+    class _BrokenRedis:
+        async def set(self, *args: object, **kwargs: object) -> bool:
+            raise ConnectionError("redis is down")
+
+    recorder = LastUsedRecorder(cast("Any", _BrokenRedis()))
+
+    assert await recorder.should_write(uuid7()) is True

@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -26,8 +27,8 @@ from app.api.proxy.errors import (
     UpstreamUnavailable,
 )
 from app.schemas.openai import ChatRequest, ChatResponse
-from app.services.gateways import ResolvedGateway
-from app.services.params import resolve_params
+from app.services.gateway_resolver import ResolvedGateway
+from app.services.params import Resolved, resolve_params
 from app.services.prompt import PromptAssembler, PromptLayer
 from app.services.sse import DONE, format_event
 
@@ -36,6 +37,20 @@ logger = logging.getLogger(__name__)
 # Longest upstream error text relayed to the client. A provider behind a misconfigured
 # proxy will happily return a full HTML page.
 MAX_UPSTREAM_MESSAGE = 1000
+
+
+@dataclass(frozen=True, slots=True)
+class Prepared:
+    """A request that has been through prompt assembly and the parameter merge.
+
+    Carries the merge result alongside the payload because the two are read at different
+    moments: the request goes upstream, the ``overridden`` list goes into a response
+    header that has to be written before any body.
+    """
+
+    request: ChatRequest
+    params: Resolved
+    target: UpstreamTarget
 
 
 class ProxyService:
@@ -49,16 +64,19 @@ class ProxyService:
 
     # -- request construction ------------------------------------------------
 
-    def build_outbound(
+    def prepare(
         self,
         request: ChatRequest,
         gateway: ResolvedGateway,
         target: UpstreamTarget,
-    ) -> ChatRequest:
-        """Apply the prompt layers and the parameter merge.
+    ) -> Prepared:
+        """Apply the prompt layers and the parameter merge, once.
 
         The result is still a ``ChatRequest``: the adapter's job starts at wire format,
-        not at policy, and a future ``tools`` field threads through here untouched.
+        not at policy, and a future ``tools`` field threads through here untouched. It is
+        a separate step from sending because the caller needs the merge *before* the
+        response exists — the locked-parameter header goes out with the status line, and
+        on a stream that is before the first token.
         """
         messages = self._assembler.assemble(
             request.messages,
@@ -72,23 +90,20 @@ class ProxyService:
             model_defaults=target.default_params,
             gateway_overrides=gateway.param_overrides,
             client=request.client_parameters(),
+            locked=gateway.locked_params,
         )
 
         payload: dict[str, Any] = request.model_dump(exclude_none=True)
-        payload.update(params)
+        payload.update(params.values)
         payload["messages"] = [message.model_dump(exclude_none=True) for message in messages]
-        return ChatRequest.model_validate(payload)
+        return Prepared(request=ChatRequest.model_validate(payload), params=params, target=target)
 
     # -- non-streaming -------------------------------------------------------
 
-    async def complete(
-        self,
-        request: ChatRequest,
-        gateway: ResolvedGateway,
-        target: UpstreamTarget,
-    ) -> ChatResponse:
+    async def complete(self, prepared: Prepared) -> ChatResponse:
+        target = prepared.target
         adapter = _adapter_for(target)
-        outbound = adapter.prepare(self.build_outbound(request, gateway, target), target)
+        outbound = adapter.prepare(prepared.request, target)
 
         try:
             response = await self._http.send(outbound)
@@ -112,15 +127,11 @@ class ProxyService:
 
     # -- streaming -----------------------------------------------------------
 
-    async def open_stream(
-        self,
-        request: ChatRequest,
-        gateway: ResolvedGateway,
-        target: UpstreamTarget,
-    ) -> UpstreamStream:
+    async def open_stream(self, prepared: Prepared) -> UpstreamStream:
         """Start the upstream call and validate its status. Nothing is yielded yet."""
+        target = prepared.target
         adapter = _adapter_for(target)
-        outbound = adapter.prepare(self.build_outbound(request, gateway, target), target)
+        outbound = adapter.prepare(prepared.request, target)
 
         try:
             response = await self._http.send(outbound, stream=True)

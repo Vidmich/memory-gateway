@@ -30,7 +30,7 @@ from app.core.middleware import (
     RequestIdMiddleware,
 )
 from app.core.passwords import build_hasher
-from app.services.api_keys import KeyAuthenticator
+from app.services.api_keys import KeyAuthenticator, LastUsedRecorder
 from app.services.auth import AuthService
 from app.services.auth_provider import LocalPasswordProvider
 from app.services.auth_store import PostgresAuthStore
@@ -38,7 +38,14 @@ from app.services.catalog import CatalogService
 from app.services.catalog_store import PostgresCatalogStore
 from app.services.directory import DirectoryService
 from app.services.directory_store import PostgresDirectoryStore
-from app.services.gateways import GatewayResolver
+from app.services.gateway_probe import ProxyGatewayProbe
+from app.services.gateway_resolver import (
+    CachedGatewayResolver,
+    DatabaseGatewayResolver,
+    GatewayCache,
+)
+from app.services.gateway_store import PostgresGatewayStore
+from app.services.gateways import GatewayService
 from app.services.login_throttle import LoginThrottle, RedisThrottleStore
 from app.services.model_probe import ModelProbe
 from app.services.proxy import ProxyService
@@ -64,9 +71,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # Built once, here, so a request pays for a dict lookup rather than for wiring.
         secret_box = SecretBox.from_settings(settings)
-        app.state.gateway_resolver = GatewayResolver(clients.session_factory, secret_box)
-        app.state.key_authenticator = KeyAuthenticator(clients.session_factory)
-        app.state.proxy_service = ProxyService(clients.http)
+        gateway_cache = GatewayCache(clients.redis)
+        source = DatabaseGatewayResolver(clients.session_factory, secret_box)
+        # The data plane reads through the cache; the control plane holds the same cache
+        # object so a write bumps the version the very next request checks.
+        resolver = CachedGatewayResolver(source, gateway_cache)
+        app.state.gateway_resolver = resolver
+        app.state.key_authenticator = KeyAuthenticator(
+            clients.session_factory, LastUsedRecorder(clients.redis, settings=settings)
+        )
+        proxy_service = ProxyService(clients.http)
+        app.state.proxy_service = proxy_service
 
         hasher = build_hasher(settings)
         app.state.auth_service = AuthService(
@@ -89,9 +104,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # The same pool the proxy uses, so a probe warms the connection a real
             # request will reuse — and so a misconfigured pool fails in both places.
             probe=ModelProbe(clients.http),
+            # A model's base URL or credential changing has to reach every gateway that
+            # points at it, including ones in other organizations for a global model.
+            cache=gateway_cache,
             test_limiter=FixedWindowLimiter(
                 store=RedisThrottleStore(clients.redis),
                 action="model-test",
+                limit=settings.model_test_max_attempts,
+                window_seconds=settings.model_test_window_seconds,
+            ),
+            settings=settings,
+        )
+        app.state.gateway_service = GatewayService(
+            PostgresGatewayStore(clients.session_factory),
+            # Through the *cached* resolver on purpose: "Test gateway" has to exercise
+            # what a customer's request exercises, cache included.
+            probe=ProxyGatewayProbe(resolver, proxy_service),
+            cache=gateway_cache,
+            test_limiter=FixedWindowLimiter(
+                store=RedisThrottleStore(clients.redis),
+                action="gateway-test",
                 limit=settings.model_test_max_attempts,
                 window_seconds=settings.model_test_window_seconds,
             ),

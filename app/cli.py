@@ -4,8 +4,10 @@
 a provider credential is available — the demo organization, upstream model, gateway and
 API key that the data plane needs.
 
-Everything here will be doable from the UI after task 06. The command stays useful for
-the first run, where there is no account to log in with yet.
+Everything the gateway half does is now doable from the UI. What is left that the UI
+cannot do is the first step: creating the superadmin there is nobody to log in as yet.
+The gateway seeding stays because a working ``/g/demo/v1`` on a fresh checkout is what
+makes the data plane testable before anyone has opened a browser.
 """
 
 from __future__ import annotations
@@ -290,7 +292,14 @@ async def _upsert_gateway(session: AsyncSession, organization: Organization) -> 
     gateway.name = "Demo Gateway"
     gateway.description = "Seeded by `python -m app.cli seed`."
     gateway.enabled = True
+    gateway.routing_mode = "single"
     gateway.param_overrides = {}
+    gateway.locked_params = {}
+    # Left empty rather than filled in: `app.schemas.gateway_config` supplies the defaults
+    # on read, and a second copy of them here is a second place to keep in step.
+    gateway.memory_config = {}
+    gateway.logging_config = {}
+    gateway.limits = {}
     await session.flush()
     return gateway
 

@@ -6,14 +6,20 @@ because the allowlist below is exactly the set of keys the merge is allowed to p
 
 The merge order, lowest precedence first:
 
-1. the upstream model's ``default_params`` — sensible values for that provider,
-2. the gateway's ``param_overrides``   — the organisation's house style for this endpoint,
-3. the client's request                — the caller's explicit intent.
+1. the upstream model's ``default_params``  — sensible values for that provider,
+2. the gateway's ``param_overrides``        — the org's house style for this endpoint,
+3. the client's request                     — the caller's explicit intent,
+4. the gateway's ``locked_params``          — values the client may not change.
 
-The client winning is deliberate for v1: an override is a *default*, not a cap. Task 06
-adds ``locked_params``, which is the mechanism for pinning a value regardless of what the
-client asks for — and it plugs in at the marked line below rather than by reordering this
-merge.
+Layers 2 and 4 are the same idea at different strengths, and the difference is only where
+they sit in this list. An *override* is a default the client can beat; a *lock* wins. Both
+have to exist: pinning ``temperature`` for every caller and suggesting one are different
+policies, and a system with only the first makes the endpoint useless for anyone with a
+legitimate reason to differ.
+
+A lock that actually changed something is reported back — see :class:`Resolved` — because
+silently ignoring what a client asked for is the failure mode this design has to answer
+for. The proxy turns that into a response header.
 """
 
 from __future__ import annotations
@@ -25,18 +31,41 @@ from typing import Any
 from app.core.errors import Validation
 
 
+@dataclass(frozen=True, slots=True)
+class Resolved:
+    """The merged parameters, and which of the client's own values a lock replaced.
+
+    ``overridden`` lists only keys the client actually sent with a *different* value.
+    Locking ``temperature: 0.2`` and receiving ``temperature: 0.2`` overrode nothing, and
+    reporting it would train people to ignore the header.
+    """
+
+    values: dict[str, Any]
+    overridden: tuple[str, ...] = ()
+
+
 def resolve_params(
     *,
     model_defaults: Mapping[str, Any] | None,
     gateway_overrides: Mapping[str, Any] | None,
     client: Mapping[str, Any] | None,
-) -> dict[str, Any]:
+    locked: Mapping[str, Any] | None = None,
+) -> Resolved:
     resolved: dict[str, Any] = {}
     resolved.update(model_defaults or {})
     resolved.update(gateway_overrides or {})
     resolved.update(client or {})
-    # Task 06: re-apply the gateway's locked params here, after the client's values.
-    return resolved
+
+    sent = client or {}
+    overridden = tuple(
+        name for name, value in (locked or {}).items() if name in sent and sent[name] != value
+    )
+    # Last, so a lock is a cap rather than another default. Ignored values are reported
+    # rather than merged: SPEC §12.1's principle is that a field the gateway will not
+    # honour fails loudly, and this is the one case where refusing the request outright
+    # would be worse — the client asked for something reasonable, the org said no.
+    resolved.update(locked or {})
+    return Resolved(values=resolved, overridden=overridden)
 
 
 # ---------------------------------------------------------------------------
@@ -107,12 +136,18 @@ def allowed_parameters() -> tuple[str, ...]:
     return tuple(sorted(PARAMETER_BOUNDS))
 
 
-def validate_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
+def validate_params(
+    params: Mapping[str, Any] | None, *, field: str = "default_params"
+) -> dict[str, Any]:
     """Return the parameters unchanged, or raise :class:`Validation` naming the field.
 
     Unknown keys are refused rather than passed through. A silently forwarded
     ``temprature`` is a default that never applies and gives no sign of it — the failure
     mode this whole function exists to remove.
+
+    ``field`` is the form field the value came from — ``default_params`` on a model,
+    ``param_overrides`` or ``locked_params`` on a gateway — so the 422 lands on the input
+    the user is looking at rather than on whichever one this function was written for.
     """
     if not params:
         return {}
@@ -123,25 +158,25 @@ def validate_params(params: Mapping[str, Any] | None) -> dict[str, Any]:
             raise Validation(
                 f"'{name}' is not a generation parameter this gateway sets. "
                 f"Allowed: {', '.join(allowed_parameters())}.",
-                param=f"default_params.{name}",
+                param=f"{field}.{name}",
             )
         if problem := bound.check(name, value):
-            raise Validation(problem, param=f"default_params.{name}")
+            raise Validation(problem, param=f"{field}.{name}")
         if name == "stop":
-            _check_stop(value)
+            _check_stop(value, field=field)
 
     return dict(params)
 
 
-def _check_stop(value: Any) -> None:
+def _check_stop(value: Any, *, field: str) -> None:
     sequences = [value] if isinstance(value, str) else value
     if len(sequences) > MAX_STOP_SEQUENCES:
         raise Validation(
-            f"'stop' accepts at most {MAX_STOP_SEQUENCES} sequences.", param="default_params.stop"
+            f"'stop' accepts at most {MAX_STOP_SEQUENCES} sequences.", param=f"{field}.stop"
         )
     for sequence in sequences:
         if not isinstance(sequence, str) or len(sequence) > MAX_STOP_LENGTH:
             raise Validation(
                 f"Each 'stop' sequence must be a string of at most {MAX_STOP_LENGTH} characters.",
-                param="default_params.stop",
+                param=f"{field}.stop",
             )

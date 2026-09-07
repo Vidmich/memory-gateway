@@ -22,7 +22,7 @@ from typing import Any
 from app.adapters.base import UpstreamTarget
 from app.core.crypto import SecretBox, secret_hint
 from app.core.ids import uuid7
-from app.db.models import Gateway, GatewayTarget, Organization, UpstreamModel
+from app.db.models import GatewayTarget, Organization, UpstreamModel
 from app.services.model_probe import ProbeResult
 
 #: Credentials with distinctive, greppable plaintexts. Nothing derives one from the
@@ -81,23 +81,6 @@ def make_model(
         model.credential_ciphertext = secret_box.encrypt(credential)
         model.credential_hint = secret_hint(credential)
     return model
-
-
-def make_gateway_row(
-    organization: Organization, *, slug: str = "demo", **overrides: Any
-) -> Gateway:
-    values: dict[str, Any] = {
-        "id": uuid7(),
-        "organization_id": organization.id,
-        "slug": slug,
-        "name": slug.replace("-", " ").title(),
-        "description": None,
-        "enabled": True,
-        "system_context": None,
-        "param_overrides": {},
-    }
-    values.update(overrides)
-    return Gateway(**values)
 
 
 def make_target_row(gateway_id: uuid.UUID, model_id: uuid.UUID) -> GatewayTarget:

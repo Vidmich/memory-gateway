@@ -28,6 +28,8 @@ FOREIGN_ORGANIZATION = "{organization_id}"
 FOREIGN_MEMBER = "{member_id}"
 FOREIGN_INVITATION = "{invitation_id}"
 FOREIGN_MODEL = "{model_id}"
+FOREIGN_GATEWAY = "{gateway_id}"
+FOREIGN_KEY = "{key_id}"
 
 #: A model owned by nobody. It is *visible* to every organization (SPEC §5.3, the
 #: global catalog), which is exactly why it needs rows of its own here: every write
@@ -71,6 +73,18 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ScopedEndpoint("PATCH", f"/api/v1/models/{FOREIGN_MODEL}", {"name": "owned"}),
     ScopedEndpoint("DELETE", f"/api/v1/models/{FOREIGN_MODEL}"),
     ScopedEndpoint("POST", f"/api/v1/models/{FOREIGN_MODEL}/test"),
+    ScopedEndpoint("GET", f"/api/v1/gateways/{FOREIGN_GATEWAY}"),
+    ScopedEndpoint("PATCH", f"/api/v1/gateways/{FOREIGN_GATEWAY}", {"name": "Owned"}),
+    ScopedEndpoint("DELETE", f"/api/v1/gateways/{FOREIGN_GATEWAY}"),
+    ScopedEndpoint("POST", f"/api/v1/gateways/{FOREIGN_GATEWAY}/test", {"message": "hi"}),
+    ScopedEndpoint("GET", f"/api/v1/gateways/{FOREIGN_GATEWAY}/keys"),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/gateways/{FOREIGN_GATEWAY}/keys",
+        {"name": "intruder"},
+        note="minting a key on someone else's endpoint is the worst case in this table",
+    ),
+    ScopedEndpoint("DELETE", f"/api/v1/keys/{FOREIGN_KEY}"),
 )
 
 #: The global catalog is readable by everyone, so a foreign-id test on ``GET`` would be
@@ -79,6 +93,19 @@ GLOBAL_MODEL_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ScopedEndpoint("PATCH", f"/api/v1/models/{GLOBAL_MODEL}", {"name": "owned"}),
     ScopedEndpoint("DELETE", f"/api/v1/models/{GLOBAL_MODEL}"),
     ScopedEndpoint("POST", f"/api/v1/models/{GLOBAL_MODEL}/test"),
+)
+
+
+#: Every placeholder the table can use. Named once so adding one to
+#: :data:`SCOPED_ENDPOINTS` without adding it here fails
+#: ``test_the_table_is_not_quietly_wrong`` rather than passing vacuously.
+PLACEHOLDERS = (
+    FOREIGN_ORGANIZATION,
+    FOREIGN_MEMBER,
+    FOREIGN_INVITATION,
+    FOREIGN_MODEL,
+    FOREIGN_GATEWAY,
+    FOREIGN_KEY,
 )
 
 
@@ -96,6 +123,8 @@ async def foreign_ids(harness: DirectoryHarness) -> dict[str, str]:
         FOREIGN_MEMBER: str(world.globex_admin.id),
         FOREIGN_INVITATION: str(issued.invitation.id),
         FOREIGN_MODEL: str(world.globex_model.id),
+        FOREIGN_GATEWAY: str(world.globex_gateway.id),
+        FOREIGN_KEY: str(world.globex_key.id),
     }
 
 
@@ -122,7 +151,7 @@ async def test_an_id_that_does_not_exist_answers_identically(
     """The whole point: "not yours" and "not there" have to be the same answer, or the
     difference between them is the leak."""
     path = endpoint.template
-    for placeholder in (FOREIGN_ORGANIZATION, FOREIGN_MEMBER, FOREIGN_INVITATION, FOREIGN_MODEL):
+    for placeholder in PLACEHOLDERS:
         path = path.replace(placeholder, str(uuid7()))
 
     response = await directory.as_user(
@@ -135,10 +164,7 @@ async def test_an_id_that_does_not_exist_answers_identically(
 @pytest.mark.parametrize("endpoint", SCOPED_ENDPOINTS, ids=str)
 async def test_the_table_is_not_quietly_wrong(endpoint: ScopedEndpoint) -> None:
     """A template with no placeholder would pass every test above by testing nothing."""
-    assert any(
-        placeholder in endpoint.template
-        for placeholder in (FOREIGN_ORGANIZATION, FOREIGN_MEMBER, FOREIGN_INVITATION, FOREIGN_MODEL)
-    )
+    assert any(placeholder in endpoint.template for placeholder in PLACEHOLDERS)
 
 
 async def test_the_net_covers_every_scoped_route(directory: DirectoryHarness) -> None:

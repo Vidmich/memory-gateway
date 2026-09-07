@@ -13,8 +13,9 @@ import pytest
 from app.core.errors import Conflict, Forbidden, NotFound, Validation
 from app.core.ids import uuid7
 from app.services.catalog import UNSET, ModelDraft, ModelPatch
-from tests.catalog_support import ACME_SECRET, PLATFORM_SECRET, make_gateway_row, make_target_row
+from tests.catalog_support import ACME_SECRET, PLATFORM_SECRET, make_target_row
 from tests.directory_support import World, build_world
+from tests.gateway_support import make_gateway_row
 
 
 @pytest.fixture

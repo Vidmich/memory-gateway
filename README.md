@@ -8,11 +8,11 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 05 complete** — the OpenAI-compatible proxy works end to end,
-there is a web UI you can sign into, it holds multiple isolated customer organizations
-with their own members and roles, and upstream models are configured from that UI with
-their credentials encrypted and a **Test connection** button that reports the real
-upstream error. Gateways still come from `make seed` until task 06.
+Current state: **task 06 complete** — and with it milestone M2: the system is a
+self-serve product. An organization goes from empty to a working OpenAI-compatible
+endpoint entirely in the browser, with no CLI, no seeds, and no engineer in the loop.
+Sign in, configure an upstream model, create a gateway, copy its URL, mint a key, and
+call it. Changing the system prompt or the model takes effect on the very next request.
 
 ## Quick start (Docker)
 
@@ -88,8 +88,7 @@ whether or not the button was rendered.
 ## Models
 
 **Models** is where completions actually go: a base URL, a dialect, the provider's own
-model id, and a credential. A gateway points at one of these (task 06 makes that
-editable; until then `make seed` wires it).
+model id, and a credential. A gateway points at one of these.
 
 Two tabs, over one endpoint — `?scope=` is a filter, so a model cannot show up in one
 view and be missing from the other:
@@ -123,11 +122,61 @@ is `ON DELETE RESTRICT`, so the database would refuse it regardless. Disabling i
 allowed and takes effect on the next request — the gateway then answers 503 saying which
 model is switched off.
 
+## Gateways and keys
+
+A **gateway** is the endpoint you publish: `https://…/g/{slug}/v1`. It has its own URL,
+its own API keys, its own system prompt and its own parameter policy. Create one under
+**Gateways → New**, pick a model, write a prompt, save — the screen shows the URL with a
+copy button, and **Create key** shows the secret exactly once.
+
+The editor is sectioned so later releases slot in without moving anything: *Identity*,
+*Routing*, *Memory* (task 10), *Prompt*, *Logging* (07), *Limits* (14), *Keys*. The three
+unbuilt sections render a real empty state naming what will fill them, rather than being
+hidden — a section that appears later moves everything below it.
+
+**The slug is immutable.** It is a path segment on a URL customers have already deployed,
+and nothing here can tell them it changed, so a rename from a settings form would break
+production traffic silently and instantly. `PATCH` refuses it with that reason, and the
+editor offers **Clone with a new slug** instead: a new gateway with the same
+configuration, leaving the old one serving until its callers have moved. Reserved slugs
+(`api`, `admin`, `health`, `metrics`, `g`, `www`) are refused.
+
+**Keys are shown once.** Only `sha256(secret)` is stored, so the plaintext genuinely
+cannot be recovered — the reveal dialog says so above the value, not under it. Revoking
+is a timestamp rather than a delete, so task 07's request logs keep a reference that
+resolves, and it takes effect on the **next request**: a gateway's configuration is
+cached in Redis, but a key never is, which is what makes that sentence true without an
+asterisk. Keys can carry an optional expiry, and `last_used_at` is written at most once a
+minute per key so a hot key does not turn every completion into a database write.
+
+**Test gateway** sends a real completion through the real proxy path — same resolver
+(cache included), same prompt assembly, same adapter — and returns the *assembled prompt*
+alongside the answer and a latency breakdown. Until task 07 has request logs, it is the
+only way to see what your system context actually became.
+
+**Parameter policy has two strengths.** `param_overrides` is the organization's house
+style and a client can beat it; `locked_params` is applied *after* the client's values
+and wins. When a lock actually replaced something the caller asked for, the response
+carries `X-Gateway-Locked-Params` naming it — ignoring a request silently is the failure
+mode that design has to answer for.
+
+Configuration changes take effect on the next request. The resolver caches a gateway in
+Redis under a per-slug version counter; every write that could change what a request does
+— including an edit to a *model* the gateway points at, in any organization — bumps that
+counter, so the stale entry is orphaned rather than deleted. A delete has a window where
+a slow reader can put stale config back afterwards; a version bump does not. A 60-second
+TTL is the backstop, and the whole cache fails open onto PostgreSQL. Provider credentials
+are cached still **encrypted**: Redis is a cache, not a vault.
+
+A disabled gateway answers **403**, not 503. A 503 means "try again", and an SDK will —
+indefinitely, against an endpoint somebody switched off on purpose.
+
 ## Try the proxy
 
-With `OPENAI_API_KEY` set, `make seed` also creates a demo organization, upstream model,
-gateway and API key. The provider key is encrypted with `ENCRYPTION_MASTER_KEY` before it
-is stored, and the gateway key's plaintext is printed once and never again.
+Create a gateway and a key in the UI, or let `make seed` wire a demo one up. With
+`OPENAI_API_KEY` set, seeding creates a demo organization, upstream model, gateway and
+API key. The provider key is encrypted with `ENCRYPTION_MASTER_KEY` before it is stored,
+and the gateway key's plaintext is printed once and never again.
 
 ```bash
 OPENAI_API_KEY=sk-... make seed
@@ -150,7 +199,7 @@ for chunk in client.chat.completions.create(
 
 `model` is the gateway's slug, not the provider's model name: that indirection is the
 point, so the endpoint can be repointed at a different provider without the client
-changing. `make seed --no-auth`-style local providers (Ollama, vLLM) work by setting
+changing — edit the model in the UI and the very next request goes somewhere else. `make seed --no-auth`-style local providers (Ollama, vLLM) work by setting
 `OPENAI_BASE_URL` and passing `--no-auth` to `python -m app.cli seed`.
 
 ## Quick start (local)
@@ -217,7 +266,8 @@ and fails if the committed copy has drifted; `make openapi` updates it.
 ```
 app/
   api/        routers — health, proxy/ (data plane), control/ (the UI's API:
-              auth, directory, models), spa.py (serves the built SPA in production)
+              auth, directory, models, gateways), spa.py (serves the built SPA
+              in production)
   adapters/   upstream dialects — openai now, anthropic in task 16
   core/       config, logging, errors, ids, metrics, middleware, clients,
               crypto (envelope encryption), keys (API key format), passwords
@@ -225,11 +275,12 @@ app/
   db/         engine, session, declarative base, models, scoping (ScopedRepository
               and the unscoped-query guard), repositories
   schemas/    the OpenAI wire format, control-plane request/response bodies
-  services/   gateway resolution, API-key auth, prompt assembly, forwarding, SSE,
-              control-plane auth (auth, auth_provider, auth_store, login_throttle),
-              tenancy (permissions, directory, directory_store, pagination),
-              the model catalog (catalog, catalog_store, model_probe, params,
-              rate_limit)
+  services/   gateway resolution and its Redis config cache (gateway_resolver),
+              API-key auth, prompt assembly, forwarding, SSE, control-plane auth
+              (auth, auth_provider, auth_store, login_throttle), tenancy
+              (permissions, directory, directory_store, pagination), the model
+              catalog (catalog, catalog_store, model_probe, params, rate_limit),
+              gateways and keys (gateways, gateway_store, gateway_probe)
   workers/    background jobs (task 09)
   cli.py      operator commands — `python -m app.cli seed | openapi`
 migrations/   alembic
@@ -240,7 +291,8 @@ web/          the React SPA
   src/components/  DataTable, Form, ConfirmDialog, EmptyState, StatusBadge, CopyButton
   src/layout/   the app shell — sidebar, user menu, support banner
   src/pages/    login, dashboard, organizations, members, org settings,
-                invitation acceptance, models (list and editor)
+                invitation acceptance, models (list and editor), gateways
+                (list, editor, keys)
   e2e/          Playwright
 ```
 
@@ -273,6 +325,11 @@ first request. See [.env.example](.env.example) for the full list.
 | `GET`/`PATCH`/`DELETE /api/v1/models/{id}` | Read, edit, delete. Delete is refused while a gateway points at it. |
 | `POST /api/v1/models/{id}/test` | Probe the stored configuration. One token, rate-limited per user. |
 | `POST /api/v1/models/test` | Probe an unsaved draft, before storing a credential. |
+| `GET`/`POST /api/v1/gateways` | List and create. The slug is globally unique and set once. |
+| `GET`/`PATCH`/`DELETE /api/v1/gateways/{id}` | Read, edit, delete. `PATCH` refuses `slug`, with the reason. |
+| `POST /api/v1/gateways/{id}/test` | A probe completion through the real proxy path; returns the assembled prompt. |
+| `GET`/`POST /api/v1/gateways/{id}/keys` | List keys (prefix only); mint one — the plaintext is returned once. |
+| `DELETE /api/v1/keys/{id}` | Revoke. Soft, and effective on the next request. |
 | `GET /healthz` | Liveness. Checks nothing else — a dependency outage must not get the pod restarted into the same outage. |
 | `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. |
 | `GET /metrics` | Prometheus. Request counts and latency labelled by route template. |
@@ -299,7 +356,7 @@ Suspending an organization takes effect immediately, not at the next token expir
 members are refused at login, at refresh, and on every control-plane request. A
 superadmin is unaffected, because somebody has to be able to un-suspend it.
 
-"Test connection" is rate-limited per user (20 a minute by default,
-`MODEL_TEST_MAX_ATTEMPTS`), because every press is an outbound call billed to whoever
-owns the model. Like the login throttle it fails open when Redis is unreachable; the
-exposure is bounded by what the action costs, which is one token.
+"Test connection" and "Test gateway" are rate-limited per user (20 a minute each by
+default, `MODEL_TEST_MAX_ATTEMPTS`), because every press is an outbound call billed to
+whoever owns the model. Like the login throttle they fail open when Redis is unreachable;
+the exposure is bounded by what the action costs, which is a handful of tokens.

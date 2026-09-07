@@ -23,10 +23,14 @@ from app.services.catalog import CatalogService
 from app.services.catalog_store import MemoryCatalogStore
 from app.services.directory import DirectoryService
 from app.services.directory_store import MemoryDirectoryStore
+from app.services.gateway_probe import GatewayProbe
+from app.services.gateway_store import MemoryGatewayStore
+from app.services.gateways import GatewayService
 from app.services.login_throttle import LoginThrottle, MemoryThrottleStore
 from app.services.memory_db import MemoryDatabase
 from app.services.model_probe import Probe
 from tests.catalog_support import FakeProbe
+from tests.gateway_support import FakeGatewayProbe, RecordingCache
 
 PASSWORD = "correct-horse-battery-staple"
 EMAIL = "ada@example.com"
@@ -71,8 +75,13 @@ class AuthFixture:
     service: AuthService
     directory: DirectoryService
     catalog: CatalogService
+    gateways: GatewayService
     secret_box: SecretBox
     probe: FakeProbe
+    gateway_probe: FakeGatewayProbe
+    #: Shared by the catalog and the gateway service, as the real ``GatewayCache`` is —
+    #: so a test can assert that editing a *model* invalidated a gateway's config.
+    cache: RecordingCache
     store: MemoryAuthStore
     database: MemoryDatabase
     throttle_store: MemoryThrottleStore
@@ -111,6 +120,7 @@ def build_auth(
     with_organization: bool = True,
     database: MemoryDatabase | None = None,
     probe: Probe | None = None,
+    gateway_probe: GatewayProbe | None = None,
 ) -> AuthFixture:
     settings = settings or get_settings()
     hasher = hasher or build_hasher(settings)
@@ -140,20 +150,32 @@ def build_auth(
     )
     secret_box = SecretBox.from_settings(settings)
     fake_probe = FakeProbe()
+    cache = RecordingCache()
     catalog = CatalogService(
         MemoryCatalogStore(database),
         secret_box=secret_box,
         probe=probe or fake_probe,
+        cache=cache,
         # No limiter: rate limiting is asserted directly in tests/test_rate_limit.py, and
         # a counter shared across a test module would make every other test order-dependent.
+        settings=settings,
+    )
+    fake_gateway_probe = FakeGatewayProbe()
+    gateways = GatewayService(
+        MemoryGatewayStore(database),
+        probe=gateway_probe or fake_gateway_probe,
+        cache=cache,
         settings=settings,
     )
     return AuthFixture(
         service=service,
         directory=directory,
         catalog=catalog,
+        gateways=gateways,
         secret_box=secret_box,
         probe=fake_probe,
+        gateway_probe=fake_gateway_probe,
+        cache=cache,
         store=memory_store,
         database=database,
         throttle_store=throttle_store,

@@ -98,6 +98,98 @@ async def test_parameters_are_merged_before_forwarding(proxy: ProxyHarness) -> N
     assert sent["max_tokens"] == 64
 
 
+# -- locked parameters -------------------------------------------------------
+#
+# The distinction task 06 introduces: an *override* is a default the client can beat, a
+# *lock* wins. Both matter — pinning `temperature` for every caller and suggesting one are
+# different policies — and the only thing separating them is where they sit in the merge.
+
+
+async def test_a_locked_parameter_beats_the_client(proxy: ProxyHarness) -> None:
+    proxy.resolver.gateway = dataclasses.replace(proxy.gateway, locked_params={"temperature": 0.2})
+    proxy.upstream.behaviour = Behaviour(body=completion())
+
+    await post(proxy, temperature=1.9)
+
+    assert proxy.upstream.last_request.body["temperature"] == 0.2
+
+
+async def test_an_override_still_loses_to_the_client(proxy: ProxyHarness) -> None:
+    """The other half. If this ever starts failing, locks have silently become the only
+    behaviour and every gateway with an override has changed meaning."""
+    proxy.resolver.gateway = dataclasses.replace(
+        proxy.gateway, param_overrides={"temperature": 0.2}
+    )
+    proxy.upstream.behaviour = Behaviour(body=completion())
+
+    await post(proxy, temperature=1.9)
+
+    assert proxy.upstream.last_request.body["temperature"] == 1.9
+
+
+async def test_an_override_that_was_applied_is_reported_in_a_header(
+    proxy: ProxyHarness,
+) -> None:
+    """Ignoring what a caller explicitly asked for is defensible; doing it silently is
+    not. The header is what makes "this endpoint ignores temperature" a documented policy
+    rather than a bug report."""
+    proxy.resolver.gateway = dataclasses.replace(proxy.gateway, locked_params={"temperature": 0.2})
+    proxy.upstream.behaviour = Behaviour(body=completion())
+
+    response = await post(proxy, temperature=1.9)
+
+    assert response.headers["x-gateway-locked-params"] == "temperature"
+
+
+async def test_a_lock_the_client_did_not_contradict_reports_nothing(
+    proxy: ProxyHarness,
+) -> None:
+    """A header on every response is noise, and noise is how a useful header stops being
+    read."""
+    proxy.resolver.gateway = dataclasses.replace(proxy.gateway, locked_params={"temperature": 0.2})
+    proxy.upstream.behaviour = Behaviour(body=completion())
+
+    response = await post(proxy)
+
+    assert "x-gateway-locked-params" not in response.headers
+
+
+async def test_a_lock_matching_what_the_client_asked_for_reports_nothing(
+    proxy: ProxyHarness,
+) -> None:
+    proxy.resolver.gateway = dataclasses.replace(proxy.gateway, locked_params={"temperature": 0.2})
+    proxy.upstream.behaviour = Behaviour(body=completion())
+
+    response = await post(proxy, temperature=0.2)
+
+    assert "x-gateway-locked-params" not in response.headers
+
+
+async def test_a_lock_beats_a_model_default_too(proxy: ProxyHarness) -> None:
+    proxy.retarget(default_params={"temperature": 0.9})
+    proxy.resolver.gateway = dataclasses.replace(proxy.gateway, locked_params={"temperature": 0.2})
+    proxy.upstream.behaviour = Behaviour(body=completion())
+
+    await post(proxy)
+
+    assert proxy.upstream.last_request.body["temperature"] == 0.2
+
+
+async def test_locked_parameters_are_reported_on_a_stream_too(proxy: ProxyHarness) -> None:
+    """The header goes out with the status line, which on a stream is before the first
+    token — so the merge has to happen before the body iterator is returned."""
+    from tests.support import chunk
+
+    proxy.resolver.gateway = dataclasses.replace(proxy.gateway, locked_params={"temperature": 0.2})
+    proxy.upstream.behaviour = Behaviour(chunks=[chunk("hi", finish_reason="stop")])
+
+    response = await proxy.client.post(
+        proxy.url(), json=payload(stream=True, temperature=1.9), headers=proxy.headers()
+    )
+
+    assert response.headers["x-gateway-locked-params"] == "temperature"
+
+
 # -- request validation ------------------------------------------------------
 
 
@@ -233,6 +325,23 @@ async def test_upstream_returning_a_non_completion_is_not_a_200(proxy: ProxyHarn
     response = await post(proxy)
 
     assert response.status_code == 503
+
+
+async def test_a_disabled_gateway_is_a_403_not_a_503(proxy: ProxyHarness) -> None:
+    """A 503 means "try again", and an SDK will — every few seconds, indefinitely, against
+    an endpoint somebody turned off on purpose. A 403 is final, so the retry loop stops and
+    the message gets read."""
+    from app.api.proxy.errors import GatewayDisabled
+
+    proxy.resolver.error = GatewayDisabled(
+        "Gateway 'demo' is disabled. Enable it under Gateways to start serving requests again."
+    )
+
+    response = await post(proxy)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "gateway_disabled"
+    assert "Enable it under Gateways" in response.json()["error"]["message"]
 
 
 async def test_gateway_with_no_enabled_target_is_unavailable(proxy: ProxyHarness) -> None:

@@ -17,9 +17,11 @@ from typing import Any
 
 from sqlalchemy import ColumnElement, Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.tenancy import TenantScope
 from app.db.models import (
+    ApiKey,
     Gateway,
     GatewayTarget,
     Invitation,
@@ -288,9 +290,64 @@ class UpstreamModelRepository(ScopedRepository[UpstreamModel]):
 
 
 class GatewayRepository(ScopedRepository[Gateway]):
-    """Only what task 05 needs: which gateways point at a model. Task 06 fills it in."""
+    """The organization's published endpoints."""
 
     model = Gateway
+
+    def page(self, *, after: uuid.UUID | None, limit: int) -> Select[tuple[Gateway]]:
+        statement = self.with_targets().order_by(Gateway.id.desc()).limit(limit + 1)
+        if after is not None:
+            statement = statement.where(Gateway.id < after)
+        return statement
+
+    async def fetch_unique(self, statement: Select[tuple[Gateway]]) -> Sequence[Gateway]:
+        """``unique()`` is not optional here: ``joinedload`` on a collection returns one
+        row per target, and SQLAlchemy refuses to guess which ones to collapse."""
+        return (await self._session.execute(statement)).unique().scalars().all()
+
+    def with_targets(self) -> Select[tuple[Gateway]]:
+        """The scoped read with the routing chain and its models already loaded.
+
+        ``selectinload`` rather than a lazy relationship: the list screen renders the
+        target model's name for every row, and a lazy load there is one query per gateway
+        against a session that may already be closed.
+        """
+        return self.select().options(
+            selectinload(Gateway.targets).joinedload(GatewayTarget.upstream_model)
+        )
+
+    async def get_with_targets(self, gateway_id: uuid.UUID) -> Gateway | None:
+        statement = self.with_targets().where(Gateway.id == gateway_id)
+        return (await self._session.execute(statement)).unique().scalars().first()
+
+    async def slug_taken(self, slug: str) -> bool:
+        """Across every organization, because the slug is a public URL segment.
+
+        Like the organization slug and the user email before it: this returns a boolean,
+        never a row, so it cannot be used to read another tenant's gateway.
+        """
+        statement = (
+            select(Gateway.id)
+            .where(Gateway.slug == slug.strip())
+            .execution_options(**unscoped("gateway slugs are globally unique; existence only"))
+        )
+        return (await self._session.execute(statement)).first() is not None
+
+    async def slugs_referencing(self, model_id: uuid.UUID) -> Sequence[str]:
+        """Every gateway slug pointing at a model, ignoring the scope.
+
+        For cache invalidation only, and unscoped because a *global* model is referenced
+        from organizations the writer cannot see — leaving their caches stale would be
+        the bug this exists to prevent. It selects one column that is already public in
+        the URL of an endpoint the reader is editing the target of.
+        """
+        statement = (
+            select(Gateway.slug)
+            .join(GatewayTarget, GatewayTarget.gateway_id == Gateway.id)
+            .where(GatewayTarget.upstream_model_id == model_id)
+            .execution_options(**unscoped("config-cache invalidation spans organizations"))
+        )
+        return list((await self._session.execute(statement)).scalars().all())
 
     async def referencing(self, model_id: uuid.UUID) -> Sequence[Gateway]:
         """Gateways in scope with a target on this model.
@@ -309,3 +366,60 @@ class GatewayRepository(ScopedRepository[Gateway]):
             .order_by(Gateway.slug)
         )
         return (await self._session.execute(statement)).scalars().unique().all()
+
+
+class ApiKeyRepository:
+    """Data-plane keys, scoped through the gateway that owns them.
+
+    ``api_keys`` has no ``organization_id``, which means two things worth stating. The
+    tenant key is one join away — a key belongs to a gateway, and the gateway belongs to
+    an organization — and, more importantly, **the scope guard cannot help here**:
+    :func:`app.db.scoping.is_tenant_keyed` derives its list from the presence of that
+    column, so a bare ``select(ApiKey)`` would sail past it. Every read in this class
+    therefore joins ``gateways`` and applies the scope clause by hand, and every write
+    goes through a gateway the caller has already resolved through a scoped read.
+
+    Denormalising ``organization_id`` onto the table would let the guard cover it, at the
+    cost of a column that can disagree with the join. The join is the truth; this class is
+    the single place that has to get it right.
+    """
+
+    def __init__(self, session: AsyncSession, scope: TenantScope) -> None:
+        self._session = session
+        self._scope = scope
+
+    def select(self) -> Select[tuple[ApiKey]]:
+        return (
+            select(ApiKey)
+            .join(Gateway, Gateway.id == ApiKey.gateway_id)
+            .where(self._scope.clause(Gateway))
+            .execution_options(**scoped())
+        )
+
+    async def get(self, key_id: uuid.UUID) -> ApiKey | None:
+        statement = self.select().where(ApiKey.id == key_id)
+        return (await self._session.execute(statement)).scalars().first()
+
+    async def for_gateway(self, gateway_id: uuid.UUID) -> Sequence[ApiKey]:
+        """Newest first. Revoked keys are included: they are history, and the screen says
+        so — hiding them would make "why is this key not working" unanswerable."""
+        statement = self.select().where(ApiKey.gateway_id == gateway_id).order_by(ApiKey.id.desc())
+        return (await self._session.execute(statement)).scalars().all()
+
+    async def counts(self, gateway_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """Active keys per gateway, for the list screen. One query, not one per row."""
+        if not gateway_ids:
+            return {}
+        statement = (
+            select(ApiKey.gateway_id, func.count())
+            .where(ApiKey.gateway_id.in_(gateway_ids), ApiKey.revoked_at.is_(None))
+            .group_by(ApiKey.gateway_id)
+            .execution_options(**unscoped("aggregate over gateway ids already resolved in scope"))
+        )
+        rows = (await self._session.execute(statement)).all()
+        return {row[0]: row[1] for row in rows}
+
+    async def add(self, key: ApiKey) -> ApiKey:
+        self._session.add(key)
+        await self._session.flush()
+        return key

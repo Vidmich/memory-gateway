@@ -36,13 +36,14 @@ from app.api.control.deps import (
     get_auth_service,
     get_catalog_service,
     get_directory_service,
+    get_gateway_service,
     get_settings_from_app,
 )
 from app.api.proxy.deps import get_authenticator, get_resolver
 from app.core.clients import Clients
 from app.core.config import Settings, get_settings
 from app.main import create_app
-from app.services.gateways import ResolvedGateway
+from app.services.gateway_resolver import ResolvedGateway
 from tests.auth_support import PASSWORD, AuthFixture, build_auth
 from tests.directory_support import World, build_world
 from tests.support import (
@@ -368,6 +369,7 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     application.dependency_overrides[get_auth_service] = lambda: auth.service
     application.dependency_overrides[get_directory_service] = lambda: auth.directory
     application.dependency_overrides[get_catalog_service] = lambda: auth.catalog
+    application.dependency_overrides[get_gateway_service] = lambda: auth.gateways
     if settings is not None:
         application.dependency_overrides[get_settings_from_app] = lambda: settings
     return application
@@ -385,6 +387,7 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
         application.state.auth_service = fixture.service
         application.state.directory_service = fixture.directory
         application.state.catalog_service = fixture.catalog
+        application.state.gateway_service = fixture.gateways
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield AuthHarness(app=application, client=http_client, auth=fixture)
@@ -443,6 +446,7 @@ async def directory() -> AsyncIterator[DirectoryHarness]:
         application.state.auth_service = world.auth.service
         application.state.directory_service = world.directory
         application.state.catalog_service = world.catalog
+        application.state.gateway_service = world.gateways
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield DirectoryHarness(app=application, client=http_client, world=world)

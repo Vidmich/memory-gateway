@@ -26,6 +26,9 @@ export const NAVIGATION: readonly NavEntry[] = [
   // No capability: every role may read the catalog, and the write controls inside
   // the screen are what `resources:write` gates.
   { to: '/models', label: 'Models' },
+  // Same reasoning: the list is readable by every role, and `resources:write` gates the
+  // controls inside the screen. Keys have their own gate, inside the editor.
+  { to: '/gateways', label: 'Gateways' },
   { to: '/settings', label: 'Organization', section: 'Settings' },
   { to: '/settings/members', label: 'Members' },
   {

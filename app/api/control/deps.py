@@ -19,6 +19,7 @@ from app.core.tenancy import Actor, TenantScope
 from app.services.auth import AuthenticationRequired, AuthService, Identity, RequestContext
 from app.services.catalog import CatalogService
 from app.services.directory import DirectoryService
+from app.services.gateways import GatewayService
 from app.services.permissions import Capability, allows
 
 #: Sent on every 401 from the control plane. The SPA keys its refresh-and-retry off the
@@ -47,6 +48,11 @@ def get_directory_service(request: Request) -> DirectoryService:
 
 def get_catalog_service(request: Request) -> CatalogService:
     service: CatalogService = request.app.state.catalog_service
+    return service
+
+
+def get_gateway_service(request: Request) -> GatewayService:
+    service: GatewayService = request.app.state.gateway_service
     return service
 
 

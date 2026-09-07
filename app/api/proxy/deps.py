@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from app.services.api_keys import KeyAuthenticator
-from app.services.gateways import GatewayResolver
+from app.services.gateway_resolver import GatewayResolver
 from app.services.proxy import ProxyService
 
 

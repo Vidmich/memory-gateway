@@ -118,7 +118,7 @@ def test_gateway_overrides_beat_model_defaults() -> None:
         client={},
     )
 
-    assert resolved == {"temperature": 0.7, "top_p": 0.9}
+    assert resolved.values == {"temperature": 0.7, "top_p": 0.9}
 
 
 def test_client_wins_over_both() -> None:
@@ -129,8 +129,8 @@ def test_client_wins_over_both() -> None:
         client={"temperature": 1.0},
     )
 
-    assert resolved["temperature"] == 1.0
+    assert resolved.values["temperature"] == 1.0
 
 
 def test_missing_layers_are_treated_as_empty() -> None:
-    assert resolve_params(model_defaults=None, gateway_overrides=None, client=None) == {}
+    assert resolve_params(model_defaults=None, gateway_overrides=None, client=None).values == {}

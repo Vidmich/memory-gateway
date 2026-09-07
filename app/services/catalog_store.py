@@ -65,6 +65,14 @@ class CatalogTransaction(Protocol):
 
     async def gateways_referencing(self, model_id: uuid.UUID) -> Sequence[Gateway]: ...
 
+    async def slugs_referencing(self, model_id: uuid.UUID) -> Sequence[str]:
+        """Every gateway slug pointing at this model, across organizations.
+
+        For config-cache invalidation only. A *global* model is referenced from tenants
+        the writer cannot see, and leaving their caches holding the old base URL for a
+        minute is the bug the version counter exists to prevent.
+        """
+
     async def commit(self) -> None: ...
 
 
@@ -125,6 +133,9 @@ class PostgresCatalogTransaction:
 
     async def gateways_referencing(self, model_id: uuid.UUID) -> Sequence[Gateway]:
         return await self._gateways.referencing(model_id)
+
+    async def slugs_referencing(self, model_id: uuid.UUID) -> Sequence[str]:
+        return await self._gateways.slugs_referencing(model_id)
 
     async def commit(self) -> None:
         await self._session.commit()
@@ -234,6 +245,16 @@ class MemoryCatalogTransaction:
             if gateway.id in gateway_ids and self._scope.permits(gateway.organization_id)
         ]
         return sorted(found, key=lambda gateway: gateway.slug)
+
+    async def slugs_referencing(self, model_id: uuid.UUID) -> Sequence[str]:
+        gateway_ids = {
+            target.gateway_id
+            for target in self._db.gateway_targets.values()
+            if target.upstream_model_id == model_id
+        }
+        return sorted(
+            gateway.slug for gateway in self._db.gateways.values() if gateway.id in gateway_ids
+        )
 
     async def commit(self) -> None:
         return None

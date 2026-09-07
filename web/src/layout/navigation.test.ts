@@ -28,6 +28,14 @@ describe('navigation', () => {
     expect(labels(viewer)).toContain('Models')
   })
 
+  it('shows Gateways to every role, including a viewer', () => {
+    // Same reasoning as Models: the list is `org:read`, and the write controls inside the
+    // screen — including key management, which has its own capability — are what gate it.
+    const viewer = makeUser({ role: 'org_viewer', capabilities: ['org:read'] })
+
+    expect(labels(viewer)).toContain('Gateways')
+  })
+
   it('shows nothing that needs a capability before the user is known', () => {
     expect(labels(null)).not.toContain('Organizations')
   })

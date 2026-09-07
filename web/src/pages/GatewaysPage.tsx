@@ -1,0 +1,168 @@
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
+
+import { useGateways } from '@/api/gateways'
+import type { GatewayResponse } from '@/api/types'
+import { useAuth } from '@/auth/AuthContext'
+import { can } from '@/auth/capabilities'
+import { CopyButton } from '@/components/CopyButton'
+import { DataTable, type Column } from '@/components/DataTable'
+import { StatusBadge } from '@/components/StatusBadge'
+
+/**
+ * Gateways (SPEC §13.1) — the published endpoints.
+ *
+ * The endpoint URL is a first-class column with a copy button, not a detail buried in the
+ * editor, because copying it is the single most common thing anyone does on this screen:
+ * it is what goes into a customer's `base_url`.
+ *
+ * The 24-hour request count is a placeholder until task 07 has request logs to count. It
+ * renders as an explicit "—" with a title rather than a plausible zero, because a zero
+ * that means "not measured yet" is the kind of number people make decisions on.
+ */
+export function GatewaysPage() {
+  const { user } = useAuth()
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [previous, setPrevious] = useState<(string | null)[]>([])
+
+  const writes = can(user, 'resources:write')
+  const { data, isLoading } = useGateways(cursor)
+  const rows = data?.items ?? []
+
+  const columns: Column<GatewayResponse>[] = [
+    {
+      key: 'name',
+      header: 'Name',
+      sortValue: (row) => row.name,
+      render: (row) => (
+        <div>
+          <Link to={`/gateways/${row.id}`} className="font-medium text-slate-900 hover:underline">
+            {row.name}
+          </Link>
+          <div className="font-mono text-xs text-slate-500">/{row.slug}</div>
+        </div>
+      ),
+    },
+    {
+      key: 'endpoint',
+      header: 'Endpoint',
+      render: (row) => (
+        <div className="flex items-center gap-2">
+          <code className="truncate text-xs text-slate-600">{row.endpoint_url}</code>
+          <CopyButton value={row.endpoint_url} label="Copy" />
+        </div>
+      ),
+    },
+    {
+      key: 'model',
+      header: 'Model',
+      sortValue: (row) => row.targets[0]?.name ?? '',
+      render: (row) => <TargetCell gateway={row} />,
+    },
+    {
+      key: 'mode',
+      header: 'Mode',
+      sortValue: (row) => row.routing_mode,
+      render: (row) => <span className="font-mono text-xs">{row.routing_mode}</span>,
+    },
+    {
+      key: 'keys',
+      header: 'Keys',
+      align: 'right',
+      sortValue: (row) => row.key_count,
+      render: (row) => <span className="text-sm text-slate-700">{row.key_count}</span>,
+    },
+    {
+      key: 'requests',
+      header: '24 h',
+      align: 'right',
+      render: () => (
+        <span className="text-sm text-slate-400" title="Request counts arrive with monitoring.">
+          —
+        </span>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      sortValue: (row) => String(row.enabled),
+      render: (row) => <StatusBadge status={row.enabled ? 'enabled' : 'disabled'} />,
+    },
+  ]
+
+  return (
+    <div>
+      <header className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold text-slate-900">Gateways</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Your published API endpoints. Each has its own URL, its own keys, and its own
+            prompt.
+          </p>
+        </div>
+        {writes ? (
+          <Link
+            to="/gateways/new"
+            className="shrink-0 rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800"
+          >
+            New gateway
+          </Link>
+        ) : null}
+      </header>
+
+      <DataTable
+        rows={rows}
+        columns={columns}
+        rowKey={(row) => row.id}
+        caption="Gateways"
+        loading={isLoading}
+        emptyTitle="No gateways yet"
+        emptyDescription="A gateway is the URL your application calls. Create one, point it at a model, add a key, and you have an OpenAI-compatible endpoint."
+        emptyAction={
+          writes ? (
+            <Link
+              to="/gateways/new"
+              className="inline-flex rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white"
+            >
+              New gateway
+            </Link>
+          ) : null
+        }
+        onNextPage={
+          data?.next_cursor
+            ? () => {
+                setPrevious((stack) => [...stack, cursor])
+                setCursor(data.next_cursor ?? null)
+              }
+            : null
+        }
+        onPreviousPage={
+          previous.length > 0
+            ? () => {
+                setCursor(previous.at(-1) ?? null)
+                setPrevious((stack) => stack.slice(0, -1))
+              }
+            : null
+        }
+      />
+    </div>
+  )
+}
+
+/**
+ * A gateway with no model cannot serve, and says so here rather than at the first 503.
+ * A gateway pointing at a *disabled* model is the same outage with a different fix, so
+ * the two are different messages.
+ */
+function TargetCell({ gateway }: { gateway: GatewayResponse }) {
+  const target = gateway.targets[0]
+  if (!target) {
+    return <span className="text-xs text-amber-700">No model — requests will fail</span>
+  }
+  return (
+    <div>
+      <div className="text-sm text-slate-700">{target.name}</div>
+      {target.enabled ? null : <div className="text-xs text-amber-700">Model is disabled</div>}
+    </div>
+  )
+}

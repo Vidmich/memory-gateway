@@ -113,6 +113,103 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/gateways": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Gateways */
+        get: operations["list_gateways_api_v1_gateways_get"];
+        put?: never;
+        /** Create Gateway */
+        post: operations["create_gateway_api_v1_gateways_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/gateways/{gateway_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Gateway */
+        get: operations["get_gateway_api_v1_gateways__gateway_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Gateway
+         * @description Takes its keys and targets with it. Every deployed client stops working, which is
+         *     why the UI asks for the slug to be typed.
+         */
+        delete: operations["delete_gateway_api_v1_gateways__gateway_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Gateway
+         * @description Partial. The three config sections are deep-merged, so a form that owns one
+         *     section can save without knowing what the others contain.
+         *
+         *     ``slug`` is refused rather than ignored — it is part of a URL clients have deployed.
+         */
+        patch: operations["update_gateway_api_v1_gateways__gateway_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/gateways/{gateway_id}/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Keys
+         * @description Not paginated: a gateway holds tens of keys, not thousands, and the screen shows
+         *     them all at once. The cap in the service is what keeps that true.
+         */
+        get: operations["list_keys_api_v1_gateways__gateway_id__keys_get"];
+        put?: never;
+        /**
+         * Create Key
+         * @description The only response in this API containing a usable secret, and the only time this
+         *     one exists. Only ``sha256(secret)`` is stored, so it cannot be shown again.
+         */
+        post: operations["create_key_api_v1_gateways__gateway_id__keys_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/gateways/{gateway_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Gateway
+         * @description Send a probe completion through the real proxy path.
+         *
+         *     Returns the assembled prompt as well as the answer, which is the part that makes this
+         *     a debugging tool rather than a health check: it is the only way to see what the system
+         *     context actually became before task 07's request log exists.
+         */
+        post: operations["test_gateway_api_v1_gateways__gateway_id__test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/invitations": {
         parameters: {
             query?: never;
@@ -198,6 +295,27 @@ export interface paths {
          */
         post: operations["resend_invitation_api_v1_invitations__invitation_id__resend_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/keys/{key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke Key
+         * @description Soft. The row survives so task 07's request logs keep a reference that resolves,
+         *     and the next request with this key is refused — key lookup is never cached.
+         */
+        delete: operations["revoke_key_api_v1_keys__key_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -456,6 +574,48 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ApiKeyCreateRequest */
+        ApiKeyCreateRequest: {
+            /** Expires At */
+            expires_at?: string | null;
+            /** Name */
+            name: string;
+        };
+        /**
+         * ApiKeyResponse
+         * @description Everything about a key except the one thing that matters, which is gone.
+         *
+         *     ``prefix`` is the durable display form: it carries no secret, and it is what a
+         *     customer compares against the key in their own config when working out which one to
+         *     revoke.
+         */
+        ApiKeyResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Expires At */
+            expires_at: string | null;
+            /**
+             * Gateway Id
+             * Format: uuid
+             */
+            gateway_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Last Used At */
+            last_used_at: string | null;
+            /** Name */
+            name: string;
+            /** Prefix */
+            prefix: string;
+            /** Revoked At */
+            revoked_at: string | null;
+        };
         /**
          * CredentialStatus
          * @description SPEC §5.4: what a response may say about a stored secret, and no more.
@@ -468,6 +628,174 @@ export interface components {
             configured: boolean;
             /** Hint */
             hint?: string | null;
+        };
+        /** GatewayCreateRequest */
+        GatewayCreateRequest: {
+            /** Description */
+            description?: string | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Limits */
+            limits?: {
+                [key: string]: unknown;
+            };
+            /** Locked Params */
+            locked_params?: {
+                [key: string]: unknown;
+            };
+            /** Logging Config */
+            logging_config?: {
+                [key: string]: unknown;
+            };
+            /** Memory Config */
+            memory_config?: {
+                [key: string]: unknown;
+            };
+            /** Model Id */
+            model_id?: string | null;
+            /** Name */
+            name: string;
+            /** Param Overrides */
+            param_overrides?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Routing Mode
+             * @default single
+             */
+            routing_mode: string;
+            /** Slug */
+            slug: string;
+            /** System Context */
+            system_context?: string | null;
+        };
+        /** GatewayResponse */
+        GatewayResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Description */
+            description: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Endpoint Url */
+            endpoint_url: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Key Count */
+            key_count: number;
+            limits: components["schemas"]["LimitsConfig"];
+            /** Locked Params */
+            locked_params: {
+                [key: string]: unknown;
+            };
+            logging_config: components["schemas"]["LoggingConfig"];
+            memory_config: components["schemas"]["MemoryConfig"];
+            /** Name */
+            name: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Param Overrides */
+            param_overrides: {
+                [key: string]: unknown;
+            };
+            /** Routing Mode */
+            routing_mode: string;
+            /** Slug */
+            slug: string;
+            /** System Context */
+            system_context: string | null;
+            /** Targets */
+            targets: components["schemas"]["TargetSummary"][];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** GatewayTestRequest */
+        GatewayTestRequest: {
+            /** Message */
+            message: string;
+        };
+        /**
+         * GatewayTestResponse
+         * @description What the probe saw: the prompt, the answer, and where the time went.
+         *
+         *     Not an error envelope. "The upstream said 401" is the successful answer to "does this
+         *     gateway work", and the UI renders it in red itself.
+         */
+        GatewayTestResponse: {
+            /** Assembled Prompt */
+            assembled_prompt: components["schemas"]["PromptMessageResponse"][];
+            /** Content */
+            content?: string | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Locked Overrides */
+            locked_overrides?: string[];
+            /** Model Name */
+            model_name?: string | null;
+            /** Ok */
+            ok: boolean;
+            /** Total Ms */
+            total_ms: number;
+            /** Upstream Ms */
+            upstream_ms: number;
+            /** Upstream Status */
+            upstream_status?: number | null;
+        };
+        /**
+         * GatewayUpdateRequest
+         * @description Partial. Only fields actually present in the body are applied.
+         *
+         *     ``model_id: null`` is meaningful and allowed: it detaches the gateway from its model,
+         *     which is how you park an endpoint without deleting it.
+         */
+        GatewayUpdateRequest: {
+            /** Description */
+            description?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Limits */
+            limits?: {
+                [key: string]: unknown;
+            } | null;
+            /** Locked Params */
+            locked_params?: {
+                [key: string]: unknown;
+            } | null;
+            /** Logging Config */
+            logging_config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Memory Config */
+            memory_config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Id */
+            model_id?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Param Overrides */
+            param_overrides?: {
+                [key: string]: unknown;
+            } | null;
+            /** Routing Mode */
+            routing_mode?: string | null;
+            /** System Context */
+            system_context?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -543,6 +871,19 @@ export interface components {
             status: string;
         };
         /**
+         * IssuedApiKeyResponse
+         * @description The one response in this API with a live secret in it.
+         *
+         *     Returned by ``POST /gateways/{id}/keys`` and nowhere else, because only the hash is
+         *     stored. The client is expected to show it once with a warning and then forget it —
+         *     reloading the page cannot bring it back, and that is the property being protected.
+         */
+        IssuedApiKeyResponse: {
+            key: components["schemas"]["ApiKeyResponse"];
+            /** Token */
+            token: string;
+        };
+        /**
          * IssuedInvitationResponse
          * @description The one response that carries the link.
          *
@@ -553,6 +894,76 @@ export interface components {
             /** Accept Url */
             accept_url: string;
             invitation: components["schemas"]["InvitationResponse"];
+        };
+        /**
+         * LimitsConfig
+         * @description SPEC §11. ``None`` means unlimited, which is the v1 default — task 14 enforces
+         *     these, and a limit that quietly existed before anyone set one would be a surprise
+         *     outage rather than a policy.
+         */
+        LimitsConfig: {
+            /** Concurrent Requests */
+            concurrent_requests?: number | null;
+            /** Requests Per Day */
+            requests_per_day?: number | null;
+            /** Requests Per Minute */
+            requests_per_minute?: number | null;
+            /** Tokens Per Minute */
+            tokens_per_minute?: number | null;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /**
+         * LoggingConfig
+         * @description SPEC §10.2. Full capture by default — bodies are what make distillation possible
+         *     — and every part switchable.
+         */
+        LoggingConfig: {
+            /**
+             * Enable Distillation
+             * @default true
+             */
+            enable_distillation: boolean;
+            /**
+             * Log Assembled Prompt
+             * @default true
+             */
+            log_assembled_prompt: boolean;
+            /**
+             * Log Metadata
+             * @default true
+             */
+            log_metadata: boolean;
+            /**
+             * Log Request Body
+             * @default true
+             */
+            log_request_body: boolean;
+            /**
+             * Log Response Body
+             * @default true
+             */
+            log_response_body: boolean;
+            /**
+             * Metadata Retention Days
+             * @default 365
+             */
+            metadata_retention_days: number;
+            /** Redaction Patterns */
+            redaction_patterns?: string[];
+            /**
+             * Retention Days
+             * @default 30
+             */
+            retention_days: number;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
         };
         /** LoginRequest */
         LoginRequest: {
@@ -598,6 +1009,65 @@ export interface components {
             role?: string | null;
             /** Status */
             status?: string | null;
+        };
+        /**
+         * MemoryConfig
+         * @description SPEC §6.3. Task 10 makes these do something; the shape is settled now.
+         *
+         *     ``connector_ids`` is empty by default, which means no document memory — a gateway
+         *     that silently started reading every connector in the organization would be a
+         *     disclosure bug, so the safe default is "nothing".
+         */
+        MemoryConfig: {
+            /** Connector Ids */
+            connector_ids?: string[];
+            /**
+             * Doc Max Tokens
+             * @default 2000
+             */
+            doc_max_tokens: number;
+            /**
+             * Doc Min Score
+             * @default 0.35
+             */
+            doc_min_score: number;
+            /**
+             * Doc Top K
+             * @default 6
+             */
+            doc_top_k: number;
+            /**
+             * Memory Enabled
+             * @default true
+             */
+            memory_enabled: boolean;
+            /**
+             * Memory Max Tokens
+             * @default 600
+             */
+            memory_max_tokens: number;
+            /**
+             * Memory Top K
+             * @default 8
+             */
+            memory_top_k: number;
+            /**
+             * On Retrieval Error
+             * @default fail_open
+             * @enum {string}
+             */
+            on_retrieval_error: "fail_open" | "fail_closed";
+            /**
+             * Query Strategy
+             * @default last_user_message
+             * @enum {string}
+             */
+            query_strategy: "last_user_message" | "last_n_turns";
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
         };
         /** ModelCard */
         ModelCard: {
@@ -881,6 +1351,13 @@ export interface components {
             /** Status */
             status?: string | null;
         };
+        /** Page[GatewayResponse] */
+        Page_GatewayResponse_: {
+            /** Items */
+            items: components["schemas"]["GatewayResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** Page[InvitationResponse] */
         Page_InvitationResponse_: {
             /** Items */
@@ -933,6 +1410,13 @@ export interface components {
             /** Upstream Status */
             upstream_status?: number | null;
         };
+        /** PromptMessageResponse */
+        PromptMessageResponse: {
+            /** Content */
+            content: string;
+            /** Role */
+            role: string;
+        };
         /**
          * SessionResponse
          * @description What login and refresh both return.
@@ -956,6 +1440,28 @@ export interface components {
              */
             token_type: string;
             user: components["schemas"]["UserSummary"];
+        };
+        /**
+         * TargetSummary
+         * @description The model a gateway routes to, as much of it as a gateway screen needs.
+         *
+         *     Deliberately not the full ``ModelResponse``: nothing here can carry a credential
+         *     status, so the gateway editor cannot become a second place a hint is rendered.
+         */
+        TargetSummary: {
+            /** Dialect */
+            dialect: string;
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Organization Id */
+            organization_id: string | null;
         };
         /** UserSummary */
         UserSummary: {
@@ -1122,6 +1628,267 @@ export interface operations {
             };
         };
     };
+    list_gateways_api_v1_gateways_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_GatewayResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_gateway_api_v1_gateways_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GatewayCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GatewayResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_gateway_api_v1_gateways__gateway_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GatewayResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_gateway_api_v1_gateways__gateway_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_gateway_api_v1_gateways__gateway_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GatewayUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GatewayResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_keys_api_v1_gateways__gateway_id__keys_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_key_api_v1_gateways__gateway_id__keys_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApiKeyCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuedApiKeyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_gateway_api_v1_gateways__gateway_id__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GatewayTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GatewayTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_invitations_api_v1_invitations_get: {
         parameters: {
             query?: {
@@ -1267,6 +2034,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IssuedInvitationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_key_api_v1_keys__key_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyResponse"];
                 };
             };
             /** @description Validation Error */

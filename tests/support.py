@@ -26,7 +26,7 @@ from app.api.proxy.errors import GatewayNotFound
 from app.core import keys
 from app.core.ids import uuid7
 from app.services.api_keys import AuthenticatedKey
-from app.services.gateways import ResolvedGateway
+from app.services.gateway_resolver import ResolvedGateway
 
 Scope = dict[str, Any]
 Receive = Callable[[], Awaitable[dict[str, Any]]]

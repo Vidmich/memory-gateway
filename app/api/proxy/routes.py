@@ -16,7 +16,12 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
-from app.api.proxy.deps import get_authenticator, get_proxy_service, get_resolver
+from app.api.proxy.deps import (
+    get_authenticator,
+    get_proxy_service,
+    get_request_logs,
+    get_resolver,
+)
 from app.api.proxy.errors import (
     InvalidRequest,
     ModelNotFound,
@@ -24,10 +29,12 @@ from app.api.proxy.errors import (
     UnsupportedField,
 )
 from app.core import keys
+from app.core.logging import get_request_id
 from app.schemas.openai import ChatRequest, ModelCard, ModelList
 from app.services.api_keys import AuthenticatedKey, KeyAuthenticator
 from app.services.gateway_resolver import GatewayResolver, ResolvedGateway
 from app.services.proxy import ProxyService
+from app.services.request_log import RequestLogService, StreamRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +49,7 @@ LOCKED_HEADER = "X-Gateway-Locked-Params"
 Resolver = Annotated[GatewayResolver, Depends(get_resolver)]
 Authenticator = Annotated[KeyAuthenticator, Depends(get_authenticator)]
 Proxy = Annotated[ProxyService, Depends(get_proxy_service)]
+Logs = Annotated[RequestLogService, Depends(get_request_logs)]
 
 
 @router.post("/chat/completions")
@@ -51,48 +59,78 @@ async def chat_completions(
     resolver: Resolver,
     authenticator: Authenticator,
     service: Proxy,
+    logs: Logs,
 ) -> Response:
     """Forward a chat completion, streaming or not."""
-    _, gateway = await _authorize(request, slug, resolver, authenticator)
+    key, gateway = await _authorize(request, slug, resolver, authenticator)
 
-    chat = _parse_body(await _read_body(request))
-    if unsupported := chat.unsupported_field():
-        raise UnsupportedField(unsupported)
+    # Recording starts here, once the tenant is known, and covers everything after it —
+    # including the 400s. Failures *before* this point are authentication failures, which
+    # belong to no organization: there is nobody whose monitoring screen they could
+    # honestly appear on, so they stay in the access log and in Prometheus.
+    recorder = logs.begin(
+        organization_id=gateway.organization_id,
+        gateway_id=gateway.id,
+        policy=gateway.log_policy,
+        api_key_id=key.id,
+        request_id=get_request_id(),
+    )
 
-    if chat.model != gateway.virtual_model:
-        raise ModelNotFound(
-            f"Model '{chat.model}' is not served by gateway '{gateway.slug}'. "
-            f"This gateway exposes '{gateway.virtual_model}'."
-        )
+    try:
+        chat = _parse_body(await _read_body(request))
+        recorder.client_request(chat)
+        if unsupported := chat.unsupported_field():
+            raise UnsupportedField(unsupported)
 
-    target = gateway.target()
-    prepared = service.prepare(chat, gateway, target)
-    headers = {MODEL_HEADER: target.name}
-    if prepared.params.overridden:
-        # The gateway ignored something the client explicitly asked for. Saying so is the
-        # difference between "this endpoint ignores temperature" as a bug report and as a
-        # documented policy the caller can read off the response.
-        headers[LOCKED_HEADER] = ",".join(prepared.params.overridden)
+        if chat.model != gateway.virtual_model:
+            raise ModelNotFound(
+                f"Model '{chat.model}' is not served by gateway '{gateway.slug}'. "
+                f"This gateway exposes '{gateway.virtual_model}'."
+            )
 
-    if chat.stream:
-        # Opening the stream sends the request and checks the status *before* any bytes
-        # go downstream, so an upstream failure is still an HTTP error rather than a
-        # truncated 200.
-        stream = await service.open_stream(prepared)
-        return StreamingResponse(
-            stream.frames(),
-            media_type="text/event-stream",
-            headers={
-                **headers,
-                "cache-control": "no-cache",
-                # Tells nginx not to buffer the response; without it an ingress can hold
-                # the whole stream and hand the client one lump at the end.
-                "x-accel-buffering": "no",
-            },
-        )
+        target = gateway.target()
+        prepared = service.prepare(chat, gateway, target)
+        recorder.prepared(prepared.request.messages, target)
 
-    completion = await service.complete(prepared)
-    return JSONResponse(content=completion.model_dump(exclude_none=True), headers=headers)
+        headers = {MODEL_HEADER: target.name}
+        if prepared.params.overridden:
+            # The gateway ignored something the client explicitly asked for. Saying so is
+            # the difference between "this endpoint ignores temperature" as a bug report
+            # and as a documented policy the caller can read off the response.
+            headers[LOCKED_HEADER] = ",".join(prepared.params.overridden)
+
+        recorder.upstream_call_started()
+        if chat.stream:
+            # Opening the stream sends the request and checks the status *before* any
+            # bytes go downstream, so an upstream failure is still an HTTP error rather
+            # than a truncated 200.
+            observer = StreamRecorder(recorder)
+            stream = await service.open_stream(prepared, observer=observer)
+            # Deliberately not submitted here: the observer owns the record from now on
+            # and submits it when the stream ends, however it ends.
+            return StreamingResponse(
+                stream.frames(),
+                media_type="text/event-stream",
+                headers={
+                    **headers,
+                    "cache-control": "no-cache",
+                    # Tells nginx not to buffer the response; without it an ingress can
+                    # hold the whole stream and hand the client one lump at the end.
+                    "x-accel-buffering": "no",
+                },
+            )
+
+        completion = await service.complete(prepared)
+        recorder.from_response(completion)
+        recorder.submit()
+        return JSONResponse(content=completion.model_dump(exclude_none=True), headers=headers)
+    except BaseException as error:
+        # Every failure after authorization is somebody's, and the row is the only place
+        # they will see it: the client gets an error body and this screen is where they
+        # come to ask why. `BaseException` so a cancelled request is recorded too.
+        recorder.failed(error)
+        recorder.submit()
+        raise
 
 
 @router.get("/models")

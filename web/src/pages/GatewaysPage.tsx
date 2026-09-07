@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { useGateways } from '@/api/gateways'
+import { resolveRange, useRequestCounts } from '@/api/monitoring'
 import type { GatewayResponse } from '@/api/types'
 import { useAuth } from '@/auth/AuthContext'
 import { can } from '@/auth/capabilities'
@@ -16,9 +17,10 @@ import { StatusBadge } from '@/components/StatusBadge'
  * editor, because copying it is the single most common thing anyone does on this screen:
  * it is what goes into a customer's `base_url`.
  *
- * The 24-hour request count is a placeholder until task 07 has request logs to count. It
- * renders as an explicit "—" with a title rather than a plausible zero, because a zero
- * that means "not measured yet" is the kind of number people make decisions on.
+ * The 24-hour request count comes from one grouped metrics query for the whole page, not
+ * one per row. A gateway with no traffic shows a real zero; a gateway whose count has not
+ * loaded yet shows an em dash, because "not measured" and "measured as none" are
+ * different answers and only one of them is a reason to worry.
  */
 export function GatewaysPage() {
   const { user } = useAuth()
@@ -28,6 +30,9 @@ export function GatewaysPage() {
   const writes = can(user, 'resources:write')
   const { data, isLoading } = useGateways(cursor)
   const rows = data?.items ?? []
+  const window = useMemo(() => resolveRange('24h'), [])
+  const counts = useRequestCounts(window)
+  const countsLoaded = Object.keys(counts).length > 0 || rows.length === 0
 
   const columns: Column<GatewayResponse>[] = [
     {
@@ -76,11 +81,18 @@ export function GatewaysPage() {
       key: 'requests',
       header: '24 h',
       align: 'right',
-      render: () => (
-        <span className="text-sm text-slate-400" title="Request counts arrive with monitoring.">
-          —
-        </span>
-      ),
+      sortValue: (row) => counts[row.id] ?? -1,
+      render: (row) =>
+        countsLoaded ? (
+          <Link
+            to={`/monitoring?gateway=${row.id}`}
+            className="text-sm text-slate-700 hover:underline"
+          >
+            {(counts[row.id] ?? 0).toLocaleString()}
+          </Link>
+        ) : (
+          <span className="text-sm text-slate-400">—</span>
+        ),
     },
     {
       key: 'status',

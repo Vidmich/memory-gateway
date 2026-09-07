@@ -1,7 +1,8 @@
 """Organizations — the tenant boundary.
 
-``settings`` holds org-level defaults that later tasks read: the distillation model
-(task 13), logging defaults (task 07), retention (task 17). It is a JSONB column rather
+``settings`` holds org-level defaults other parts of the system read: logging defaults
+under ``logging_defaults`` today, the distillation model (task 13) and retention
+(task 17) later. It is a JSONB column rather
 than a widening list of columns because each of those tasks would otherwise need a
 migration on a populated table to add one nullable default.
 

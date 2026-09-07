@@ -46,10 +46,14 @@ from app.services.gateway_resolver import (
 )
 from app.services.gateway_store import PostgresGatewayStore
 from app.services.gateways import GatewayService
+from app.services.log_store import PostgresLogWriter
 from app.services.login_throttle import LoginThrottle, RedisThrottleStore
+from app.services.metrics_store import PostgresMetricsRepository
 from app.services.model_probe import ModelProbe
+from app.services.monitoring import MonitoringService, RedisSummaryCache
 from app.services.proxy import ProxyService
 from app.services.rate_limit import FixedWindowLimiter
+from app.services.request_log import LogFlusher, LogQueue, RequestLogService
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +86,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         proxy_service = ProxyService(clients.http)
         app.state.proxy_service = proxy_service
+
+        # The request log's write half. The queue is created before the flusher because
+        # the flusher only reads from it, and started here rather than lazily so a
+        # process that has accepted a request has already proved it can drain one.
+        log_queue = LogQueue(metrics=metrics.logs)
+        request_logs = RequestLogService(
+            log_queue,
+            LogFlusher(log_queue, PostgresLogWriter(clients.session_factory), metrics=metrics.logs),
+        )
+        request_logs.start()
+        app.state.request_logs = request_logs
+        app.state.monitoring_service = MonitoringService(
+            PostgresMetricsRepository(clients.session_factory),
+            cache=RedisSummaryCache(clients.redis),
+        )
 
         hasher = build_hasher(settings)
         app.state.auth_service = AuthService(
@@ -134,6 +153,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            # Order matters: the flusher writes through the same pool `clients.aclose()`
+            # closes, so the last half-second of traffic has to reach the database before
+            # the connections it needs are taken away.
+            await request_logs.stop()
             # Fire-and-forget writes (`last_used_at`) get a moment to land before the
             # pools they need are closed underneath them.
             await background.drain()

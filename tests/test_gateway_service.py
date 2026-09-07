@@ -266,7 +266,7 @@ async def test_a_config_value_out_of_range_names_its_section(world: World) -> No
             GatewayPatch(limits={"requests_per_minute": 0}),
         )
 
-    assert raised.value.param == "limits"
+    assert raised.value.param == "limits.requests_per_minute"
 
 
 # ---------------------------------------------------------------------------

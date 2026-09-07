@@ -1,6 +1,7 @@
 """``POST /gateways/{id}/test`` — a probe completion through the real proxy path.
 
-Before task 07's monitoring exists, this is the only way to answer "what is this gateway
+Monitoring answers this for traffic that has already happened; this answers it for a
+change nobody has sent a request through yet — "what is this gateway
 actually sending?" without reading the code. So it is deliberately *not* a simplified
 re-implementation: it goes through the same resolver the data plane uses (cache included),
 the same prompt assembly, the same parameter merge and the same adapter. If the button is

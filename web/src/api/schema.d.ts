@@ -200,8 +200,8 @@ export interface paths {
          * @description Send a probe completion through the real proxy path.
          *
          *     Returns the assembled prompt as well as the answer, which is the part that makes this
-         *     a debugging tool rather than a health check: it is the only way to see what the system
-         *     context actually became before task 07's request log exists.
+         *     a debugging tool rather than a health check: it shows what the system context became
+         *     without waiting for real traffic to appear in the request log.
          */
         post: operations["test_gateway_api_v1_gateways__gateway_id__test_post"];
         delete?: never;
@@ -312,10 +312,58 @@ export interface paths {
         post?: never;
         /**
          * Revoke Key
-         * @description Soft. The row survives so task 07's request logs keep a reference that resolves,
-         *     and the next request with this key is refused — key lookup is never cached.
+         * @description Soft. The row survives so the request log keeps a reference that resolves, and the
+         *     next request with this key is refused — key lookup is never cached.
          */
         delete: operations["revoke_key_api_v1_keys__key_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Logs
+         * @description The request table: metadata only, newest first, cursor-paginated.
+         *
+         *     Cursor rather than offset because this list is being written to while it is read —
+         *     SPEC §12.2's reason, and the one screen where an offset page would visibly duplicate
+         *     and skip rows as traffic arrives.
+         */
+        get: operations["list_logs_api_v1_logs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs/{log_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Log
+         * @description One request in full, including whatever of the transcript was stored.
+         *
+         *     No time range: the id is a UUIDv7 and carries the millisecond it was minted, so the
+         *     server works out which day's partition to look in. A 404 covers "no such request" and
+         *     "another organization's request" alike.
+         */
+        get: operations["get_log_api_v1_logs__log_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -337,6 +385,53 @@ export interface paths {
         head?: never;
         /** Update Member */
         patch: operations["update_member_api_v1_members__member_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/metrics/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Summary
+         * @description Totals, percentiles, per-model traffic and the error taxonomy, in one read.
+         *
+         *     Cached for 30 seconds per organization and query. Everything on the dashboard and the
+         *     top of the monitoring screen comes from here, so it is the one query worth caching.
+         */
+        get: operations["metrics_summary_api_v1_metrics_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/metrics/timeseries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Timeseries
+         * @description Bucketed series. The bucket width is the server's decision, not the client's.
+         *
+         *     A metric is usually several lines — ``latency`` is p50/p95/p99 plus TTFT and
+         *     retrieval — so one call fills one chart rather than one line. ``interval`` is a
+         *     request, not an instruction: the response says what was used.
+         */
+        get: operations["metrics_timeseries_api_v1_metrics_timeseries_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/models": {
@@ -616,6 +711,18 @@ export interface components {
             /** Revoked At */
             revoked_at: string | null;
         };
+        /** BucketResponse */
+        BucketResponse: {
+            /** Series */
+            series: {
+                [key: string]: number;
+            };
+            /**
+             * Start
+             * Format: date-time
+             */
+            start: string;
+        };
         /**
          * CredentialStatus
          * @description SPEC §5.4: what a response may say about a stored secret, and no more.
@@ -628,6 +735,13 @@ export interface components {
             configured: boolean;
             /** Hint */
             hint?: string | null;
+        };
+        /** ErrorGroupResponse */
+        ErrorGroupResponse: {
+            /** Error Code */
+            error_code: string;
+            /** Requests */
+            requests: number;
         };
         /** GatewayCreateRequest */
         GatewayCreateRequest: {
@@ -1250,6 +1364,15 @@ export interface components {
             /** Upstream Model Id */
             upstream_model_id: string;
         };
+        /** ModelTrafficResponse */
+        ModelTrafficResponse: {
+            /** Model Name */
+            model_name?: string | null;
+            /** Requests */
+            requests: number;
+            /** Upstream Model Id */
+            upstream_model_id?: string | null;
+        };
         /**
          * ModelUpdateRequest
          * @description Partial. Only fields actually present in the body are applied.
@@ -1386,12 +1509,28 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** Page[RequestLogResponse] */
+        Page_RequestLogResponse_: {
+            /** Items */
+            items: components["schemas"]["RequestLogResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** PasswordChangeRequest */
         PasswordChangeRequest: {
             /** Current Password */
             current_password: string;
             /** New Password */
             new_password: string;
+        };
+        /** PercentilesResponse */
+        PercentilesResponse: {
+            /** P50 */
+            p50?: number | null;
+            /** P95 */
+            p95?: number | null;
+            /** P99 */
+            p99?: number | null;
         };
         /**
          * ProbeResponse
@@ -1418,6 +1557,90 @@ export interface components {
             role: string;
         };
         /**
+         * RequestDetailResponse
+         * @description One request, with everything the §10.3 drawer draws.
+         *
+         *     ``routing`` and the retrieval lists are here and empty until tasks 08 and 10 fill
+         *     them, for the same reason the gateway editor shows its unbuilt sections: a drawer
+         *     that grows two panels later moves everything the reader has learned the position of.
+         */
+        RequestDetailResponse: {
+            /** Failover Attempts */
+            failover_attempts: unknown[];
+            log: components["schemas"]["RequestLogResponse"];
+            /** Retrieved Chunk Ids */
+            retrieved_chunk_ids: unknown[];
+            /** Retrieved Fact Ids */
+            retrieved_fact_ids: unknown[];
+            transcript?: components["schemas"]["TranscriptResponse"] | null;
+        };
+        /**
+         * RequestLogResponse
+         * @description One row of the request table. No bodies — that is what the detail view is for.
+         */
+        RequestLogResponse: {
+            /** Api Key Id */
+            api_key_id: string | null;
+            /** Bodies Omitted */
+            bodies_omitted: string | null;
+            /** Completion Tokens */
+            completion_tokens: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** End User Id */
+            end_user_id: string | null;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Message */
+            error_message: string | null;
+            /**
+             * Gateway Id
+             * Format: uuid
+             */
+            gateway_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Latency Retrieval Ms */
+            latency_retrieval_ms: number | null;
+            /** Latency Total Ms */
+            latency_total_ms: number;
+            /** Latency Ttft Ms */
+            latency_ttft_ms: number | null;
+            /** Latency Upstream Ms */
+            latency_upstream_ms: number | null;
+            /** Memory Tokens */
+            memory_tokens: number | null;
+            /** Model Name */
+            model_name: string | null;
+            /** Prompt Tokens */
+            prompt_tokens: number | null;
+            /** Request Id */
+            request_id: string | null;
+            /** Response Truncated */
+            response_truncated: boolean;
+            /** Session Id */
+            session_id: string | null;
+            /** Status Code */
+            status_code: number;
+            /** Streamed */
+            streamed: boolean;
+            /** Upstream Model Id */
+            upstream_model_id: string | null;
+        };
+        /** SeriesResponse */
+        SeriesResponse: {
+            /** Buckets */
+            buckets: components["schemas"]["BucketResponse"][];
+            /** Interval Seconds */
+            interval_seconds: number;
+        };
+        /**
          * SessionResponse
          * @description What login and refresh both return.
          *
@@ -1442,6 +1665,35 @@ export interface components {
             user: components["schemas"]["UserSummary"];
         };
         /**
+         * SummaryResponse
+         * @description The cards, the latency numbers, and the two distribution charts.
+         */
+        SummaryResponse: {
+            /** Completion Tokens */
+            completion_tokens: number;
+            /** Error Groups */
+            error_groups: components["schemas"]["ErrorGroupResponse"][];
+            /** Error Rate */
+            error_rate: number;
+            /** Errors */
+            errors: number;
+            /** Memory Tokens */
+            memory_tokens: number;
+            /** Models */
+            models: components["schemas"]["ModelTrafficResponse"][];
+            /** Prompt Tokens */
+            prompt_tokens: number;
+            /** Requests */
+            requests: number;
+            retrieval: components["schemas"]["PercentilesResponse"];
+            /** Status Classes */
+            status_classes: {
+                [key: string]: number;
+            };
+            total: components["schemas"]["PercentilesResponse"];
+            ttft: components["schemas"]["PercentilesResponse"];
+        };
+        /**
          * TargetSummary
          * @description The model a gateway routes to, as much of it as a gateway screen needs.
          *
@@ -1462,6 +1714,24 @@ export interface components {
             name: string;
             /** Organization Id */
             organization_id: string | null;
+        };
+        /**
+         * TranscriptResponse
+         * @description The bodies, as far as they were stored.
+         */
+        TranscriptResponse: {
+            /** Assembled Prompt */
+            assembled_prompt?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Distilled At */
+            distilled_at?: string | null;
+            /** Request Body */
+            request_body?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Response Body */
+            response_body?: string | null;
         };
         /** UserSummary */
         UserSummary: {
@@ -2078,6 +2348,79 @@ export interface operations {
             };
         };
     };
+    list_logs_api_v1_logs_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+                gateway_id?: string | null;
+                upstream_model_id?: string | null;
+                status_class?: string | null;
+                end_user_id?: string | null;
+                session_id?: string | null;
+                streamed?: boolean | null;
+                min_latency_ms?: number | null;
+                search?: string | null;
+                cursor?: string | null;
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_RequestLogResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_log_api_v1_logs__log_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                log_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     remove_member_api_v1_members__member_id__delete: {
         parameters: {
             query?: never;
@@ -2129,6 +2472,81 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemberResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_summary_api_v1_metrics_summary_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+                gateway_id?: string | null;
+                upstream_model_id?: string | null;
+                status_class?: string | null;
+                end_user_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_timeseries_api_v1_metrics_timeseries_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+                metric?: string;
+                group_by?: string;
+                interval?: number | null;
+                gateway_id?: string | null;
+                upstream_model_id?: string | null;
+                status_class?: string | null;
+                end_user_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesResponse"];
                 };
             };
             /** @description Validation Error */

@@ -11,7 +11,7 @@ slug, which leaves the old one serving until its callers have moved.
 **A key's plaintext exists exactly once.** :meth:`GatewayService.create_key` is the only
 place the token is ever a value, and it is returned rather than stored — only
 ``sha256(secret)`` reaches the database. Revocation is a timestamp, never a delete, so
-task 07's request logs keep a reference that resolves.
+the request log keeps a reference that resolves.
 
 **Revoking a key takes effect on the next request, not on a cache expiry.** Nothing here
 caches keys, and :class:`~app.services.api_keys.KeyAuthenticator` reads the row on every
@@ -42,7 +42,13 @@ from app.core.ids import uuid7
 from app.core.tenancy import Actor
 from app.db.models import ApiKey, Gateway, UpstreamModel
 from app.db.models.gateway import MAX_SLUG_LENGTH, MIN_SLUG_LENGTH, ROUTING_MODES
-from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig, merge_config
+from app.schemas.gateway_config import (
+    LimitsConfig,
+    LoggingConfig,
+    MemoryConfig,
+    merge_config,
+    organization_logging_defaults,
+)
 from app.services.gateway_probe import GatewayProbe, GatewayProbeResult
 from app.services.gateway_resolver import ConfigCache
 from app.services.gateway_store import GatewayStore, GatewayTransaction
@@ -230,8 +236,16 @@ class GatewayService:
                 memory_config=merge_config(
                     MemoryConfig, {}, draft.memory_config, field="memory_config"
                 ),
+                # SPEC §10.2: an organization may set stricter defaults than the
+                # platform's, and a new gateway inherits them. Merged *under* the draft,
+                # so a form that sends its own value still wins — this is a starting
+                # point, not a ceiling. Whether it should also be a ceiling is a real
+                # question and a different feature; the work item asks for defaults.
                 logging_config=merge_config(
-                    LoggingConfig, {}, draft.logging_config, field="logging_config"
+                    LoggingConfig,
+                    organization_logging_defaults(await transaction.organization_settings()),
+                    draft.logging_config,
+                    field="logging_config",
                 ),
                 limits=merge_config(LimitsConfig, {}, draft.limits, field="limits"),
             )
@@ -380,7 +394,7 @@ class GatewayService:
         return IssuedKey(key=key, token=minted.token)
 
     async def revoke_key(self, actor: Actor, key_id: uuid.UUID) -> ApiKey:
-        """Soft. The row stays so task 07's logs can still say which key made a call.
+        """Soft. The row stays so the request log can still say which key made a call.
 
         No cache to clear: keys are never cached, precisely so this takes effect on the
         next request rather than at the end of some TTL.

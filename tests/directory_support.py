@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from app.core.config import Settings, get_settings
 from app.core.passwords import Hasher, build_hasher
 from app.core.tenancy import Actor, TenantScope
-from app.db.models import ApiKey, Gateway, Organization, UpstreamModel, User
+from app.db.models import ApiKey, Gateway, Organization, RequestLog, UpstreamModel, User
 from app.services.catalog import CatalogService
 from app.services.directory import DirectoryService
 from app.services.gateways import GatewayService
@@ -30,7 +30,13 @@ from tests.catalog_support import (
     make_model,
     make_target_row,
 )
-from tests.gateway_support import FakeGatewayProbe, RecordingCache, make_gateway_row, make_key_row
+from tests.gateway_support import (
+    FakeGatewayProbe,
+    RecordingCache,
+    make_gateway_row,
+    make_key_row,
+)
+from tests.monitoring_support import make_log_row
 
 
 @dataclass
@@ -69,6 +75,9 @@ class World:
     globex_gateway: Gateway
     acme_key: ApiKey
     globex_key: ApiKey
+    #: One request each, so the cross-tenant net can aim at a log row that exists.
+    acme_log: RequestLog
+    globex_log: RequestLog
 
     #: Every user, keyed by the short name the tests use.
     people: dict[str, User] = field(default_factory=dict)
@@ -157,6 +166,11 @@ def build_world(*, settings: Settings | None = None) -> World:
     globex_key, _ = make_key_row(globex_gateway.id, name="globex production")
     database.add_key(globex_key)
 
+    acme_log = make_log_row(acme, gateway_id=acme_gateway.id, api_key_id=acme_key.id)
+    globex_log = make_log_row(globex, gateway_id=globex_gateway.id, api_key_id=globex_key.id)
+    for row in (acme_log, globex_log):
+        database.request_logs[row.id] = row
+
     return World(
         settings=settings,
         hasher=hasher,
@@ -184,6 +198,8 @@ def build_world(*, settings: Settings | None = None) -> World:
         globex_gateway=globex_gateway,
         acme_key=acme_key,
         globex_key=globex_key,
+        acme_log=acme_log,
+        globex_log=globex_log,
         people=people,
     )
 

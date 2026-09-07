@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
@@ -26,7 +26,7 @@ from app.api.proxy.errors import (
     UpstreamTimeout,
     UpstreamUnavailable,
 )
-from app.schemas.openai import ChatRequest, ChatResponse
+from app.schemas.openai import ChatRequest, ChatResponse, StreamFrame
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.params import Resolved, resolve_params
 from app.services.prompt import PromptAssembler, PromptLayer
@@ -51,6 +51,23 @@ class Prepared:
     request: ChatRequest
     params: Resolved
     target: UpstreamTarget
+
+
+class StreamObserver(Protocol):
+    """Someone watching a stream go past, without being able to change it.
+
+    Two methods and no imports: this is how the request log tees a streamed response
+    without :class:`ProxyService` knowing that request logging exists. An
+    observer must not raise and must not block — it is called between reading a frame
+    from the provider and writing it to the client, which is the tightest loop in the
+    system.
+    """
+
+    def frame(self, frame: StreamFrame) -> None: ...
+
+    def done(self, error: BaseException | None) -> None:
+        """Called exactly once, whatever ended the stream — including a client hang-up,
+        which arrives as :class:`asyncio.CancelledError`."""
 
 
 class ProxyService:
@@ -127,7 +144,9 @@ class ProxyService:
 
     # -- streaming -----------------------------------------------------------
 
-    async def open_stream(self, prepared: Prepared) -> UpstreamStream:
+    async def open_stream(
+        self, prepared: Prepared, *, observer: StreamObserver | None = None
+    ) -> UpstreamStream:
         """Start the upstream call and validate its status. Nothing is yielded yet."""
         target = prepared.target
         adapter = _adapter_for(target)
@@ -147,7 +166,7 @@ class ProxyService:
             finally:
                 await response.aclose()
 
-        return UpstreamStream(response=response, adapter=adapter, target=target)
+        return UpstreamStream(response=response, adapter=adapter, target=target, observer=observer)
 
 
 class UpstreamStream:
@@ -159,20 +178,27 @@ class UpstreamStream:
         response: httpx.Response,
         adapter: UpstreamAdapter,
         target: UpstreamTarget,
+        observer: StreamObserver | None = None,
     ) -> None:
         self._response = response
         self._adapter = adapter
+        self._observer = observer
         self.target = target
 
     async def frames(self) -> AsyncIterator[str]:
+        outcome: BaseException | None = None
         try:
             async for frame in self._adapter.parse_stream(self._response):
+                # Observed before it is yielded, so a tee sees every frame the client
+                # sees and no frame the client does not.
+                self._notify(frame)
                 yield format_event(frame.data)
             yield format_event(DONE)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             # The client hung up. Closing the response below cancels the upstream call so
             # the provider stops generating — and stops charging for — tokens nobody will
             # read.
+            outcome = exc
             logger.info(
                 "client disconnected mid-stream; cancelling upstream",
                 extra={"model": self.target.name},
@@ -181,13 +207,34 @@ class UpstreamStream:
         except (httpx.TimeoutException, httpx.HTTPError) as exc:
             # The status line went out with the first frame, so this cannot become a 504.
             # SPEC §8.2: terminate the stream with an error event instead.
+            outcome = exc
             logger.warning(
                 "upstream stream failed after it had started",
                 extra={"model": self.target.name, "error": type(exc).__name__},
             )
             yield format_event(_stream_error(self.target, exc))
         finally:
+            # In `finally` rather than after the loop so a hang-up, a provider failure and
+            # a clean finish all produce exactly one log row. Without it, the requests
+            # most worth having a record of are the ones that would not have one.
+            self._finish(outcome)
             await self._response.aclose()
+
+    def _notify(self, frame: StreamFrame) -> None:
+        if self._observer is None:
+            return
+        try:
+            self._observer.frame(frame)
+        except Exception:  # pragma: no cover - an observer that raises is a bug
+            logger.warning("stream observer failed on a frame", exc_info=True)
+
+    def _finish(self, error: BaseException | None) -> None:
+        if self._observer is None:
+            return
+        try:
+            self._observer.done(error)
+        except Exception:  # pragma: no cover - never at the client's expense
+            logger.warning("stream observer failed at the end of a stream", exc_info=True)
 
 
 def _adapter_for(target: UpstreamTarget) -> UpstreamAdapter:

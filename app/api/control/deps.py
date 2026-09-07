@@ -20,6 +20,7 @@ from app.services.auth import AuthenticationRequired, AuthService, Identity, Req
 from app.services.catalog import CatalogService
 from app.services.directory import DirectoryService
 from app.services.gateways import GatewayService
+from app.services.monitoring import MonitoringService
 from app.services.permissions import Capability, allows
 
 #: Sent on every 401 from the control plane. The SPA keys its refresh-and-retry off the
@@ -53,6 +54,11 @@ def get_catalog_service(request: Request) -> CatalogService:
 
 def get_gateway_service(request: Request) -> GatewayService:
     service: GatewayService = request.app.state.gateway_service
+    return service
+
+
+def get_monitoring_service(request: Request) -> MonitoringService:
+    service: MonitoringService = request.app.state.monitoring_service
     return service
 
 

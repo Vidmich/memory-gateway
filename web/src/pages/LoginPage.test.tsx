@@ -8,7 +8,7 @@ import { ApiClient } from '@/api/client'
 import { AppRoutes, makeQueryClient } from '@/App'
 import { AuthProvider } from '@/auth/AuthContext'
 import { ToastProvider } from '@/components/Toast'
-import { makeUser } from '@/test/factories'
+import { makeSeries, makeSummary, makeUser } from '@/test/factories'
 import { jsonResponse as json, bodyOf, pathOf } from '@/test/http'
 
 const USER = makeUser()
@@ -62,6 +62,18 @@ function fakeServer({ password = 'correct-horse-battery-staple' } = {}) {
         signedIn ? json(USER) : json({ error: { code: 'not_authenticated' } }, 401),
       )
     }
+    // The dashboard reads its numbers from these two; without them the screen
+    // renders an error state instead of the cards this file asserts on.
+    if (path.startsWith('/api/v1/metrics/summary')) {
+      return Promise.resolve(json(makeSummary()))
+    }
+    if (path.startsWith('/api/v1/metrics/timeseries')) {
+      return Promise.resolve(json(makeSeries()))
+    }
+    if (path.startsWith('/api/v1/gateways')) {
+      return Promise.resolve(json({ items: [], next_cursor: null }))
+    }
+
     throw new Error(`unexpected request to ${path}`)
   })
 
@@ -111,13 +123,15 @@ describe('signing in', () => {
     expect(screen.getByRole('button', { name: /Ada Lovelace/ })).toBeInTheDocument()
   })
 
-  it('shows the placeholder cards task 07 will fill in', async () => {
+  it('lands on a dashboard showing the last 24 hours', async () => {
     const { client } = fakeServer()
     renderApp(client)
 
     await signIn()
 
     expect(await screen.findByText('Requests (24 h)')).toBeInTheDocument()
+    // The real number, not a placeholder: the whole point of the card.
+    expect(await screen.findByText('120')).toBeInTheDocument()
     expect(screen.getByText('Active gateways')).toBeInTheDocument()
   })
 

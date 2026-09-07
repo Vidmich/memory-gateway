@@ -136,6 +136,30 @@ async def an_unused_slug_is_free(fixture: Fixture) -> None:
 
 
 # ---------------------------------------------------------------------------
+# organization settings
+# ---------------------------------------------------------------------------
+
+
+async def organization_settings_come_from_the_scope(fixture: Fixture) -> None:
+    """A new gateway inherits its organization's logging defaults, so the store has to
+    hand back *this* organization's settings and not the other one's."""
+    fixture.acme.settings = {"logging_defaults": {"log_response_body": False}}
+    fixture.globex.settings = {"logging_defaults": {"log_response_body": True}}
+
+    async with fixture.store.begin(fixture.acme_scope) as transaction:
+        settings = await transaction.organization_settings()
+
+    assert settings == {"logging_defaults": {"log_response_body": False}}
+
+
+async def a_platform_scope_has_no_settings_to_inherit(fixture: Fixture) -> None:
+    """It has no organization, so there is nothing to inherit — and empty is the right
+    answer rather than a failure, because the create that follows will refuse anyway."""
+    async with fixture.store.begin(fixture.platform_scope) as transaction:
+        assert await transaction.organization_settings() == {}
+
+
+# ---------------------------------------------------------------------------
 # targets
 # ---------------------------------------------------------------------------
 
@@ -324,6 +348,8 @@ CHECKS: tuple[Check, ...] = (
     an_unknown_gateway_is_not_found,
     a_slug_is_taken_across_organizations,
     an_unused_slug_is_free,
+    organization_settings_come_from_the_scope,
+    a_platform_scope_has_no_settings_to_inherit,
     a_gateway_may_point_at_its_own_model,
     a_gateway_may_point_at_a_global_model,
     a_gateway_may_not_point_at_another_organizations_model,

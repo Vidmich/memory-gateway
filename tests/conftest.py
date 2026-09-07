@@ -37,15 +37,17 @@ from app.api.control.deps import (
     get_catalog_service,
     get_directory_service,
     get_gateway_service,
+    get_monitoring_service,
     get_settings_from_app,
 )
-from app.api.proxy.deps import get_authenticator, get_resolver
+from app.api.proxy.deps import get_authenticator, get_request_logs, get_resolver
 from app.core.clients import Clients
 from app.core.config import Settings, get_settings
 from app.main import create_app
 from app.services.gateway_resolver import ResolvedGateway
 from tests.auth_support import PASSWORD, AuthFixture, build_auth
 from tests.directory_support import World, build_world
+from tests.monitoring_support import LogFixture, build_logs
 from tests.support import (
     FakeAuthenticator,
     FakeResolver,
@@ -229,6 +231,10 @@ class ProxyHarness:
     resolver: FakeResolver
     authenticator: FakeAuthenticator
     token: str
+    #: The request log, backed by memory with its timer under the test's control. Every
+    #: data-plane test therefore also proves the proxy records what it did — and none of
+    #: them opens a database connection to do it.
+    logs: LogFixture
 
     @property
     def gateway(self) -> ResolvedGateway:
@@ -250,10 +256,16 @@ class ProxyHarness:
         self.resolver.gateway = replace(self.gateway, targets=(target,))
 
 
-def build_proxy_app(resolver: FakeResolver, authenticator: FakeAuthenticator) -> FastAPI:
+def build_proxy_app(
+    resolver: FakeResolver, authenticator: FakeAuthenticator, logs: LogFixture
+) -> FastAPI:
     application = create_app()
     application.dependency_overrides[get_resolver] = lambda: resolver
     application.dependency_overrides[get_authenticator] = lambda: authenticator
+    # Overridden rather than left as the real one: the app's own flusher writes to
+    # PostgreSQL, which is not running here, and a background task retrying a connection
+    # under every proxy test is noise that hides the failures worth reading.
+    application.dependency_overrides[get_request_logs] = lambda: logs.service
     return application
 
 
@@ -270,7 +282,8 @@ def build_harness_parts(
 @pytest.fixture
 async def proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
     resolver, authenticator, token = build_harness_parts(upstream)
-    application = build_proxy_app(resolver, authenticator)
+    logs = build_logs()
+    application = build_proxy_app(resolver, authenticator, logs)
 
     async with application.router.lifespan_context(application):
         transport = ASGITransport(app=application)
@@ -282,6 +295,7 @@ async def proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
                 resolver=resolver,
                 authenticator=authenticator,
                 token=token,
+                logs=logs,
             )
 
 
@@ -293,7 +307,8 @@ async def live_proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
     timing and client disconnects do not exist in an in-process transport.
     """
     resolver, authenticator, token = build_harness_parts(upstream)
-    application = build_proxy_app(resolver, authenticator)
+    logs = build_logs()
+    application = build_proxy_app(resolver, authenticator, logs)
 
     async with (
         serve(application, lifespan="on") as base_url,
@@ -306,6 +321,7 @@ async def live_proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
             resolver=resolver,
             authenticator=authenticator,
             token=token,
+            logs=logs,
         )
 
 
@@ -370,6 +386,7 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     application.dependency_overrides[get_directory_service] = lambda: auth.directory
     application.dependency_overrides[get_catalog_service] = lambda: auth.catalog
     application.dependency_overrides[get_gateway_service] = lambda: auth.gateways
+    application.dependency_overrides[get_monitoring_service] = lambda: auth.monitoring
     if settings is not None:
         application.dependency_overrides[get_settings_from_app] = lambda: settings
     return application
@@ -388,6 +405,7 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
         application.state.directory_service = fixture.directory
         application.state.catalog_service = fixture.catalog
         application.state.gateway_service = fixture.gateways
+        application.state.monitoring_service = fixture.monitoring
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield AuthHarness(app=application, client=http_client, auth=fixture)
@@ -447,6 +465,7 @@ async def directory() -> AsyncIterator[DirectoryHarness]:
         application.state.directory_service = world.directory
         application.state.catalog_service = world.catalog
         application.state.gateway_service = world.gateways
+        application.state.monitoring_service = world.auth.monitoring
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield DirectoryHarness(app=application, client=http_client, world=world)

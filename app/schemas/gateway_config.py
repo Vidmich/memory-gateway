@@ -22,7 +22,6 @@ answers with the full object, so the API always shows what will actually happen.
 
 from __future__ import annotations
 
-import re
 import uuid
 from collections.abc import Mapping
 from typing import Any, Literal, Self
@@ -30,6 +29,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.errors import Validation
+from app.core.patterns import UnsafePattern, check_pattern
 
 #: Bumped when a field changes meaning, not when one is added. Stored on the row so a
 #: future migration can tell "never written" from "written by version 1".
@@ -37,6 +37,11 @@ CONFIG_VERSION = 1
 
 MAX_REDACTION_PATTERNS = 20
 MAX_REDACTION_PATTERN_LENGTH = 200
+
+#: Where an organization's logging defaults live inside ``organizations.settings``
+#: (SPEC §10.2). A key inside the existing blob rather than a column, for the same reason
+#: the blob exists: tasks 13 and 17 put their own defaults beside it.
+ORG_LOGGING_DEFAULTS = "logging_defaults"
 
 
 class ConfigBlob(BaseModel):
@@ -97,10 +102,14 @@ class LoggingConfig(ConfigBlob):
                 raise ValueError(
                     f"a redaction pattern is at most {MAX_REDACTION_PATTERN_LENGTH} characters long"
                 )
+            # Compiles *and* refuses the shapes that backtrack catastrophically. The
+            # patterns run in the log flusher against whatever a customer's end users
+            # typed, and Python's `re` cannot be interrupted once it is matching — so
+            # the only place to stop `(a+)+$` is the form it is being typed into.
             try:
-                re.compile(pattern)
-            except re.error as exc:
-                raise ValueError(f"'{pattern}' is not a valid regular expression: {exc}") from exc
+                check_pattern(pattern)
+            except UnsafePattern as exc:
+                raise ValueError(str(exc)) from exc
 
         if self.enable_distillation and not self.log_request_body:
             # SPEC §10.2: distillation reads transcripts. Accepting the combination would
@@ -127,6 +136,24 @@ class LimitsConfig(ConfigBlob):
     requests_per_day: int | None = Field(default=None, ge=1)
 
 
+def organization_logging_defaults(settings: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The logging defaults a new gateway in this organization starts from.
+
+    Partial, and merged over the platform defaults rather than replacing them: an
+    organization that only wants ``log_response_body`` off should not also have to restate
+    the retention it never had an opinion about.
+
+    Anything that is not an object is ignored rather than refused. This value is read
+    while creating a gateway, and a settings blob that somebody hand-edited badly should
+    not make the Gateways screen stop working — it should make the defaults not apply,
+    which is the state the organization was in before they edited it.
+    """
+    if not isinstance(settings, Mapping):
+        return {}
+    defaults = settings.get(ORG_LOGGING_DEFAULTS)
+    return dict(defaults) if isinstance(defaults, Mapping) else {}
+
+
 def merge_config[BlobT: ConfigBlob](
     schema: type[BlobT],
     stored: Mapping[str, Any] | None,
@@ -149,7 +176,11 @@ def merge_config[BlobT: ConfigBlob](
     try:
         blob = schema.model_validate(merged)
     except Exception as exc:
-        raise Validation(_first_problem(exc), param=field) from exc
+        location, message = _first_problem(exc)
+        # Dotted: ``logging_config.redaction_patterns``. The section is what makes the
+        # message unambiguous when two blobs happen to share a field name; the leaf is
+        # what the form puts the message next to.
+        raise Validation(message, param=f"{field}.{location}" if location else field) from exc
     return blob.model_dump(mode="json")
 
 
@@ -183,22 +214,29 @@ def _reject_unknown(schema: type[ConfigBlob], merged: Mapping[str, Any], *, fiel
             )
 
 
-def _first_problem(exc: Exception) -> str:
-    """The first validation message, without Pydantic's envelope around it."""
+def _first_problem(exc: Exception) -> tuple[str, str]:
+    """``(location, message)`` for the first failure, without Pydantic's envelope.
+
+    The location is returned separately rather than folded into the text because it is
+    what names the form input. A message reading "redaction_patterns: ..." next to the
+    *redaction patterns* box says the same thing twice.
+    """
     errors = getattr(exc, "errors", None)
     if callable(errors):
         for error in errors():
             location = ".".join(str(part) for part in error.get("loc", ()))
             message = str(error.get("msg", "")).removeprefix("Value error, ")
-            return f"{location}: {message}" if location else message
-    return str(exc)
+            return location, f"{location}: {message}" if location else message
+    return "", str(exc)
 
 
 __all__ = [
     "CONFIG_VERSION",
+    "ORG_LOGGING_DEFAULTS",
     "ConfigBlob",
     "LimitsConfig",
     "LoggingConfig",
     "MemoryConfig",
     "merge_config",
+    "organization_logging_defaults",
 ]

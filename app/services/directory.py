@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -35,6 +36,11 @@ from app.core.passwords import Hasher, PasswordPolicy
 from app.core.tenancy import Actor, TenantScope
 from app.db.models import Gateway, Invitation, Organization, User
 from app.db.models.invitation import INVITABLE_ROLES
+from app.schemas.gateway_config import (
+    LoggingConfig,
+    merge_config,
+    organization_logging_defaults,
+)
 from app.services.directory_store import DirectoryStore, DirectoryTransaction
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
 
@@ -184,6 +190,7 @@ class DirectoryService:
             if status is not None:
                 organization.status = status
             if settings is not None:
+                _check_logging_defaults(settings)
                 organization.settings = settings
 
             await transaction.commit()
@@ -529,6 +536,21 @@ class DirectoryService:
 #: narrowed to the invitation's own organization the moment that row is read. Named
 #: rather than inlined so the one place this bypass exists is greppable.
 _ACCEPTANCE_SCOPE = TenantScope(role="superadmin", organization_id=None)
+
+
+def _check_logging_defaults(settings: Mapping[str, Any]) -> None:
+    """Validate the one key inside ``settings`` that other code reads.
+
+    The blob is otherwise free-form and stays that way — bounding its size is the only
+    rule the schema imposes. This key is different because
+    :meth:`app.services.gateways.GatewayService.create_gateway` reads it: a default of
+    ``{"retention_dayz": 7}`` would be accepted here, ignored there, and discovered when
+    somebody noticed their retention had never changed. Validating it on the form that
+    writes it turns that into a 422 with the misspelling in it.
+    """
+    defaults = organization_logging_defaults(settings)
+    if defaults:
+        merge_config(LoggingConfig, {}, defaults, field="settings.logging_defaults")
 
 
 __all__ = [

@@ -24,6 +24,8 @@ from app.db.models import (
     GatewayTarget,
     Invitation,
     Organization,
+    RequestLog,
+    Transcript,
     UpstreamModel,
     User,
     UserSession,
@@ -40,6 +42,11 @@ class MemoryDatabase:
     gateways: dict[uuid.UUID, Gateway] = field(default_factory=dict)
     gateway_targets: dict[uuid.UUID, GatewayTarget] = field(default_factory=dict)
     api_keys: dict[uuid.UUID, ApiKey] = field(default_factory=dict)
+    #: Keyed by request-log id, which is also the transcript's key — the two tables
+    #: are one row split in half, and keeping them in step here is what makes the
+    #: memory store a fair test of the read side.
+    request_logs: dict[uuid.UUID, RequestLog] = field(default_factory=dict)
+    transcripts: dict[uuid.UUID, Transcript] = field(default_factory=dict)
 
     def add_user(self, user: User) -> User:
         self.users[user.id] = _stamped(user)

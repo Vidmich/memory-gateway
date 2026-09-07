@@ -122,10 +122,15 @@ async def test_an_unknown_key_is_refused_on_write() -> None:
 
 
 async def test_a_value_out_of_range_is_refused() -> None:
+    """The param names the section *and* the field inside it.
+
+    The section keeps the message unambiguous when two blobs share a field name; the leaf
+    is what a form can put the message next to, because the section is not an input.
+    """
     with pytest.raises(Validation) as raised:
         merge_config(MemoryConfig, {}, {"doc_min_score": 2.0}, field="memory_config")
 
-    assert raised.value.param == "memory_config"
+    assert raised.value.param == "memory_config.doc_min_score"
 
 
 async def test_an_unknown_enum_value_is_refused() -> None:

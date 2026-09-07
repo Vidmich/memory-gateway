@@ -1,8 +1,10 @@
 """UUIDv7 generation (RFC 9562).
 
 Chosen over UUIDv4 for primary keys: the leading 48-bit millisecond timestamp gives
-index locality on insert and makes ids sort by creation time, which the partitioned log
-tables in task 07 rely on. Unlike a bigserial it does not leak row counts.
+index locality on insert and makes ids sort by creation time, which every cursor page
+in the system relies on. It also carries its own timestamp, which is how a request-log
+lookup by id knows which day's partition to read. Unlike a bigserial it does not leak
+row counts.
 
 Python 3.12 has no ``uuid.uuid7``; this is a small, dependency-free implementation with a
 monotonic counter so ids minted within the same millisecond still sort in creation order.

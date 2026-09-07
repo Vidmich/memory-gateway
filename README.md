@@ -8,11 +8,12 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 06 complete** — and with it milestone M2: the system is a
-self-serve product. An organization goes from empty to a working OpenAI-compatible
-endpoint entirely in the browser, with no CLI, no seeds, and no engineer in the loop.
-Sign in, configure an upstream model, create a gateway, copy its URL, mint a key, and
-call it. Changing the system prompt or the model takes effect on the very next request.
+Current state: **task 07 complete**. An organization goes from empty to a working
+OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream
+model, create a gateway, copy its URL, mint a key, call it — and every request through it
+is then recorded and inspectable. **Monitoring** charts the traffic; clicking a row shows
+the client's original messages, the exact prompt that went upstream, the response, and a
+timing waterfall.
 
 ## Quick start (Docker)
 
@@ -130,9 +131,9 @@ its own API keys, its own system prompt and its own parameter policy. Create one
 copy button, and **Create key** shows the secret exactly once.
 
 The editor is sectioned so later releases slot in without moving anything: *Identity*,
-*Routing*, *Memory* (task 10), *Prompt*, *Logging* (07), *Limits* (14), *Keys*. The three
-unbuilt sections render a real empty state naming what will fill them, rather than being
-hidden — a section that appears later moves everything below it.
+*Routing*, *Memory* (task 10), *Prompt*, *Logging*, *Limits* (14), *Keys*. The two unbuilt
+sections render a real empty state naming what will fill them, rather than being hidden —
+a section that appears later moves everything below it.
 
 **The slug is immutable.** It is a path segment on a URL customers have already deployed,
 and nothing here can tell them it changed, so a rename from a settings form would break
@@ -143,7 +144,7 @@ configuration, leaving the old one serving until its callers have moved. Reserve
 
 **Keys are shown once.** Only `sha256(secret)` is stored, so the plaintext genuinely
 cannot be recovered — the reveal dialog says so above the value, not under it. Revoking
-is a timestamp rather than a delete, so task 07's request logs keep a reference that
+is a timestamp rather than a delete, so the request log keeps a reference that
 resolves, and it takes effect on the **next request**: a gateway's configuration is
 cached in Redis, but a key never is, which is what makes that sentence true without an
 asterisk. Keys can carry an optional expiry, and `last_used_at` is written at most once a
@@ -151,8 +152,8 @@ minute per key so a hot key does not turn every completion into a database write
 
 **Test gateway** sends a real completion through the real proxy path — same resolver
 (cache included), same prompt assembly, same adapter — and returns the *assembled prompt*
-alongside the answer and a latency breakdown. Until task 07 has request logs, it is the
-only way to see what your system context actually became.
+alongside the answer and a latency breakdown. It is the fastest way to see what your
+system context became; the request log is the record of what every real call did.
 
 **Parameter policy has two strengths.** `param_overrides` is the organization's house
 style and a client can beat it; `locked_params` is applied *after* the client's values
@@ -170,6 +171,63 @@ are cached still **encrypted**: Redis is a cache, not a vault.
 
 A disabled gateway answers **403**, not 503. A 503 means "try again", and an SDK will —
 indefinitely, against an endpoint somebody switched off on purpose.
+
+## Request logging and monitoring
+
+Every request through a gateway becomes a row. **Monitoring** shows the request rate with
+its status breakdown, latency percentiles, token counts, traffic per model and the error
+taxonomy over a chosen window, plus a live-tailing request table. Clicking a row opens the
+detail drawer: the caller's own messages, the assembled prompt with the gateway's
+additions marked, the response, a timing waterfall and a *Copy as curl* that reproduces
+the call against the gateway.
+
+**Logging never waits.** The request path fills in a record in memory, copies at most a
+bounded number of bytes out of the response, and hands it to a queue; redaction, batching
+and the insert all happen in a background flusher. An `INSERT` before the response returns
+would be the obvious implementation and it is the wrong one: a database round trip is the
+same order of magnitude as the whole latency budget, so a database that is briefly slow
+would make the *proxy* briefly slow. Measured on this machine, logging on versus off is
+indistinguishable at p95 (−0.01 ms of a 5 ms budget), and the test that matters asserts
+the stronger thing — that the request path makes **no** synchronous call to the log store.
+
+**Under pressure it sheds in a defined order.** Above a watermark, incoming records keep
+their metadata and lose their bodies, which is where almost all the memory is; a full
+queue drops whole records. Every drop increments `logs_dropped_total{reason}`, so a gap in
+the log is a number somebody can alert on rather than an absence somebody notices. Nothing
+on this path can fail a request.
+
+**Bodies are configurable per gateway, and the form says what that means.** The §10.2
+toggles — the client's request, the assembled prompt, the response — plus retention,
+redaction patterns and the distillation switch live in the gateway's *Logging* section,
+which states plainly that body capture stores end-user content and shows the effective
+retention as a sentence. Metadata is always on: it is what the charts are made of.
+Switching a body off means nothing is copied at all, not that it is hidden afterwards. An
+organization can set its own defaults under `settings.logging_defaults`, and a new gateway
+starts from them.
+
+**Redaction runs before persistence, never after.** A redaction applied on read is a
+display filter, and the raw card number is still in the backup. The patterns are applied
+in the flusher, which is upstream of every write, and if they cannot finish within their
+budget the bodies are dropped rather than stored half-cleaned — the row says
+`bodies_omitted: redaction_budget` and the drawer explains it. Patterns are checked when
+you save them: `(a+)+` and its relatives are refused on the form, because Python's `re`
+cannot be interrupted once it is matching, so the only place to stop one is before it is
+stored.
+
+**Metadata and bodies are separate tables**, `request_logs` and `transcripts`, both
+partitioned by day. The monitoring queries never touch the large text columns, and
+retention (task 17) becomes a partition drop rather than a `DELETE` that rewrites a live
+table while the proxy writes to it. Aggregation happens in PostgreSQL — `percentile_disc`
+over the partition range — behind a `MetricsRepository`, which is the seam to move to
+ClickHouse if the volume ever demands it.
+
+Bucket widths are the server's decision, not the client's: a window maps onto a fixed
+ladder (an hour at one-minute buckets, thirty days at one hour) and a requested interval
+is widened until the answer fits. Summary queries are cached for 30 seconds per
+organization and query; the cache is read-through and fails open.
+
+The log detail endpoint takes no time range. Primary keys are UUIDv7 and carry the
+millisecond they were minted, so the id itself says which day's partition to look in.
 
 ## Try the proxy
 
@@ -271,7 +329,8 @@ app/
   adapters/   upstream dialects — openai now, anthropic in task 16
   core/       config, logging, errors, ids, metrics, middleware, clients,
               crypto (envelope encryption), keys (API key format), passwords
-              (Argon2id), tokens (JWT + refresh), tenancy (TenantScope), background
+              (Argon2id), patterns (regex safety), tokens (JWT + refresh),
+              tenancy (TenantScope), background
   db/         engine, session, declarative base, models, scoping (ScopedRepository
               and the unscoped-query guard), repositories
   schemas/    the OpenAI wire format, control-plane request/response bodies
@@ -280,7 +339,9 @@ app/
               (auth, auth_provider, auth_store, login_throttle), tenancy
               (permissions, directory, directory_store, pagination), the model
               catalog (catalog, catalog_store, model_probe, params, rate_limit),
-              gateways and keys (gateways, gateway_store, gateway_probe)
+              gateways and keys (gateways, gateway_store, gateway_probe), request
+              logging (request_log, log_store, redaction) and the monitoring reads
+              (monitoring, metrics_store)
   workers/    background jobs (task 09)
   cli.py      operator commands — `python -m app.cli seed | openapi`
 migrations/   alembic
@@ -288,11 +349,13 @@ deploy/       compose now, helm from task 18
 web/          the React SPA
   src/api/      the fetch client and the generated schema types
   src/auth/     auth context, reducer, protected routes
-  src/components/  DataTable, Form, ConfirmDialog, EmptyState, StatusBadge, CopyButton
+  src/components/  DataTable, Form, ConfirmDialog, EmptyState, StatusBadge, CopyButton,
+                   Charts (hand-drawn SVG — no charting library)
   src/layout/   the app shell — sidebar, user menu, support banner
   src/pages/    login, dashboard, organizations, members, org settings,
                 invitation acceptance, models (list and editor), gateways
-                (list, editor, keys)
+                (list, editor, keys), monitoring (charts, request table,
+                detail drawer)
   e2e/          Playwright
 ```
 
@@ -330,6 +393,10 @@ first request. See [.env.example](.env.example) for the full list.
 | `POST /api/v1/gateways/{id}/test` | A probe completion through the real proxy path; returns the assembled prompt. |
 | `GET`/`POST /api/v1/gateways/{id}/keys` | List keys (prefix only); mint one — the plaintext is returned once. |
 | `DELETE /api/v1/keys/{id}` | Revoke. Soft, and effective on the next request. |
+| `GET /api/v1/metrics/summary` | Totals, percentiles, per-model traffic and the error taxonomy for a window. Cached 30 s. |
+| `GET /api/v1/metrics/timeseries` | Bucketed series. `metric` is `requests`, `latency` or `tokens`; the server picks the bucket width. |
+| `GET /api/v1/logs` | The request table. Cursor-paginated, filterable by gateway, model, status class, end user, session, latency and error text. |
+| `GET /api/v1/logs/{id}` | One request in full, including whatever of the transcript was stored. No time range needed. |
 | `GET /healthz` | Liveness. Checks nothing else — a dependency outage must not get the pod restarted into the same outage. |
 | `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. |
 | `GET /metrics` | Prometheus. Request counts and latency labelled by route template. |

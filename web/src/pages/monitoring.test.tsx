@@ -1,0 +1,414 @@
+import { QueryClientProvider } from '@tanstack/react-query'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
+import { describe, expect, it, vi } from 'vitest'
+
+import { ApiClient } from '@/api/client'
+import { resolveRange } from '@/api/monitoring'
+import { AppRoutes, makeQueryClient } from '@/App'
+import { AuthProvider } from '@/auth/AuthContext'
+import {
+  latencySeries,
+  pointsOf,
+  seriesFrom,
+  statusSeries,
+  intervalLabel,
+  colorFor,
+} from '@/components/chartSeries'
+import { ToastProvider } from '@/components/Toast'
+import { asCurl, contentOf, countInjected } from '@/pages/requestDetail'
+import {
+  makeGateway,
+  makeRequestDetail,
+  makeRequestLog,
+  makeSeries,
+  makeSummary,
+  makeUser,
+} from '@/test/factories'
+import { jsonResponse as json, pathOf } from '@/test/http'
+
+type ServerOptions = {
+  user?: ReturnType<typeof makeUser>
+  summary?: ReturnType<typeof makeSummary>
+  logs?: ReturnType<typeof makeRequestLog>[]
+  detail?: ReturnType<typeof makeRequestDetail>
+  nextCursor?: string | null
+}
+
+/**
+ * A scripted server, so the assertions are about what the screen does with real
+ * responses. The query strings are recorded because half of what this page is *for* is
+ * turning a filter into the right request.
+ */
+function fakeServer(options: ServerOptions = {}) {
+  const user = options.user ?? makeUser()
+  const logs = options.logs ?? [makeRequestLog()]
+  const requests: { path: string; method: string }[] = []
+
+  const session = {
+    access_token: 'token-1',
+    token_type: 'bearer',
+    expires_at: new Date(Date.now() + 900_000).toISOString(),
+    expires_in: 900,
+    user,
+  }
+
+  const impl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const path = pathOf(input)
+    requests.push({ path, method: init?.method ?? 'GET' })
+
+    if (path === '/api/v1/auth/refresh') return Promise.resolve(json(session))
+    if (path === '/api/v1/auth/me') return Promise.resolve(json(user))
+    if (path.startsWith('/api/v1/metrics/summary')) {
+      return Promise.resolve(json(options.summary ?? makeSummary()))
+    }
+    if (path.startsWith('/api/v1/metrics/timeseries')) {
+      return Promise.resolve(json(makeSeries()))
+    }
+    if (path.startsWith('/api/v1/logs/')) {
+      return Promise.resolve(json(options.detail ?? makeRequestDetail()))
+    }
+    if (path.startsWith('/api/v1/logs')) {
+      return Promise.resolve(json({ items: logs, next_cursor: options.nextCursor ?? null }))
+    }
+    if (path.startsWith('/api/v1/gateways')) {
+      return Promise.resolve(json({ items: [makeGateway()], next_cursor: null }))
+    }
+
+    throw new Error(`unexpected ${path}`)
+  })
+
+  return { client: new ApiClient(impl), requests }
+}
+
+function renderAt(client: ApiClient, path = '/monitoring') {
+  return render(
+    <QueryClientProvider client={makeQueryClient()}>
+      <AuthProvider client={client}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={[path]}>
+            <AppRoutes />
+          </MemoryRouter>
+        </ToastProvider>
+      </AuthProvider>
+    </QueryClientProvider>,
+  )
+}
+
+const queries = (requests: { path: string }[], prefix: string) =>
+  requests.filter((request) => request.path.startsWith(prefix)).map((request) => request.path)
+
+// ---------------------------------------------------------------------------
+// the window
+// ---------------------------------------------------------------------------
+
+describe('the time range', () => {
+  it('is rounded to the minute so it can be a stable query key', () => {
+    // Without the rounding, every render is a new `from` and React Query refetches
+    // forever — which looks like a server problem and is not one.
+    const at = new Date('2026-09-07T12:34:56.789Z')
+
+    const window = resolveRange('1h', at)
+
+    expect(window.to).toBe('2026-09-07T12:34:00.000Z')
+    expect(window.from).toBe('2026-09-07T11:34:00.000Z')
+  })
+
+  it('is the same value when resolved twice in the same minute', () => {
+    const first = resolveRange('24h', new Date('2026-09-07T12:34:01Z'))
+    const second = resolveRange('24h', new Date('2026-09-07T12:34:59Z'))
+
+    expect(first).toEqual(second)
+  })
+
+  it('spans the range it names', () => {
+    const at = new Date('2026-09-07T12:00:00Z')
+
+    const window = resolveRange('30d', at)
+
+    const days = (Date.parse(window.to) - Date.parse(window.from)) / 86_400_000
+    expect(days).toBe(30)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// the screen
+// ---------------------------------------------------------------------------
+
+describe('the monitoring screen', () => {
+  it('shows the traffic summary', async () => {
+    const { client } = fakeServer()
+    renderAt(client)
+
+    expect(await screen.findByText('120')).toBeInTheDocument()
+    expect(screen.getByText('5.0%')).toBeInTheDocument()
+    expect(screen.getByText('220 ms')).toBeInTheDocument()
+  })
+
+  it('shows an em dash where nothing was measured, not a zero', async () => {
+    // A "0 ms" first-token time claims something that never happened. Every gateway in
+    // this fixture is non-streaming, so the honest answer is that there is no number.
+    const { client } = fakeServer()
+    renderAt(client)
+
+    await screen.findByText('120')
+    const card = screen.getByText('p95 first token').closest('div')!
+    expect(within(card).getByText('—')).toBeInTheDocument()
+  })
+
+  it('lists requests with their status and latency', async () => {
+    const { client } = fakeServer({
+      logs: [makeRequestLog({ status_code: 504, error_code: 'upstream_timeout' })],
+    })
+    renderAt(client)
+
+    expect(await screen.findByText('504')).toBeInTheDocument()
+    const table = screen.getByRole('table')
+    // Scoped to the table: `upstream_timeout` is also a bar in the error taxonomy above
+    // it, which is the chart working rather than a duplicate.
+    expect(within(table).getByText('upstream_timeout')).toBeInTheDocument()
+    expect(within(table).getByText('240 ms')).toBeInTheDocument()
+  })
+
+  it('sends the filters it is showing', async () => {
+    const person = userEvent.setup()
+    const { client, requests } = fakeServer()
+    renderAt(client)
+
+    await screen.findByText('120')
+    await person.selectOptions(screen.getByLabelText('Status'), '5xx')
+
+    await waitFor(() => {
+      expect(queries(requests, '/api/v1/logs').some((path) => path.includes('status_class=5xx')))
+        .toBe(true)
+    })
+  })
+
+  it('asks for a different window when the range changes', async () => {
+    const person = userEvent.setup()
+    const { client, requests } = fakeServer()
+    renderAt(client)
+
+    await screen.findByText('120')
+    const before = queries(requests, '/api/v1/metrics/summary').length
+    await person.click(screen.getByRole('button', { name: 'Last hour' }))
+
+    await waitFor(() => {
+      expect(queries(requests, '/api/v1/metrics/summary').length).toBeGreaterThan(before)
+    })
+  })
+
+  it('says which bucket width the server chose', async () => {
+    // The client asked for a range; the server decided the resolution. Labelling the
+    // chart from the request rather than the response would be a chart that lies.
+    const { client } = fakeServer()
+    renderAt(client)
+
+    expect(await screen.findByText('5-minute buckets')).toBeInTheDocument()
+  })
+
+  it('can turn live tail off', async () => {
+    const person = userEvent.setup()
+    const { client } = fakeServer()
+    renderAt(client)
+
+    await screen.findByText('120')
+    const toggle = screen.getByLabelText(/live tail/i)
+    expect(toggle).toBeChecked()
+
+    await person.click(toggle)
+
+    expect(toggle).not.toBeChecked()
+  })
+
+  it('offers a next page only when the server said there is one', async () => {
+    const { client } = fakeServer({ nextCursor: 'cursor-2' })
+    renderAt(client)
+
+    await screen.findByText('120')
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled()
+  })
+
+  it('explains an empty window rather than showing an empty box', async () => {
+    const { client } = fakeServer({ logs: [], summary: makeSummary({ requests: 0, errors: 0 }) })
+    renderAt(client)
+
+    expect(await screen.findByText('No requests in this window')).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// the drawer
+// ---------------------------------------------------------------------------
+
+describe('the request drawer', () => {
+  /** Click the row, not the model's bar in the traffic chart above it. */
+  const openRow = async (person: ReturnType<typeof userEvent.setup>) => {
+    const table = await screen.findByRole('table')
+    // `find`, not `get`: the table renders its header before the first page arrives.
+    await person.click(await within(table).findByText('acme-gpt'))
+    return screen.findByRole('dialog', { name: 'Request details' })
+  }
+
+  const openDrawer = async () => {
+    const person = userEvent.setup()
+    const { client } = fakeServer()
+    renderAt(client)
+    return { person, dialog: await openRow(person) }
+  }
+
+  it('opens on a row click and shows the transcript', async () => {
+    const { dialog } = await openDrawer()
+
+    expect(within(dialog).getByText('the answer')).toBeInTheDocument()
+    expect(within(dialog).getAllByText('what is the answer').length).toBeGreaterThan(0)
+  })
+
+  it('marks what the gateway added to the prompt', async () => {
+    // The single most common question this drawer answers: what did the provider see
+    // that the caller did not send?
+    const { dialog } = await openDrawer()
+
+    expect(within(dialog).getByText('added by the gateway')).toBeInTheDocument()
+    expect(within(dialog).getByText('Be concise.')).toBeInTheDocument()
+  })
+
+  it('shows a timing waterfall that adds up to the total', async () => {
+    const { dialog } = await openDrawer()
+
+    expect(within(dialog).getByText('Gateway overhead')).toBeInTheDocument()
+    expect(within(dialog).getAllByText('240 ms').length).toBeGreaterThan(0)
+  })
+
+  it('closes on Escape', async () => {
+    const { person, dialog } = await openDrawer()
+    expect(dialog).toBeInTheDocument()
+
+    await person.keyboard('{Escape}')
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Request details' })).not.toBeInTheDocument()
+    })
+  })
+
+  it('says why a body is missing when the queue dropped it', async () => {
+    const person = userEvent.setup()
+    const { client } = fakeServer({
+      detail: makeRequestDetail({
+        log: makeRequestLog({ bodies_omitted: 'queue_pressure' }),
+        transcript: null,
+      }),
+    })
+    renderAt(client)
+    const dialog = await openRow(person)
+
+    expect(within(dialog).getAllByText(/log queue was saturated/).length).toBeGreaterThan(0)
+  })
+
+  it('says the toggle is off when nothing dropped the body', async () => {
+    // "Not captured" and "the queue was full" need different fixes, so they read
+    // differently. An empty panel would say neither.
+    const person = userEvent.setup()
+    const { client } = fakeServer({
+      detail: makeRequestDetail({ transcript: null }),
+    })
+    renderAt(client)
+    const dialog = await openRow(person)
+
+    expect(within(dialog).getAllByText(/switched off for this gateway/).length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// the pure helpers
+// ---------------------------------------------------------------------------
+
+describe('the assembled-prompt diff', () => {
+  it('counts the messages the gateway prepended', () => {
+    const injected = countInjected(
+      [{ role: 'system' }, { role: 'user' }],
+      [{ role: 'user' }],
+    )
+
+    expect(injected).toBe(1)
+  })
+
+  it('claims nothing was injected when the original was not stored', () => {
+    // Without the original there is nothing to diff against, and guessing would mark a
+    // real user message as something the gateway added.
+    expect(countInjected([{ role: 'system' }, { role: 'user' }], null)).toBe(0)
+  })
+
+  it('renders a multi-part message rather than [object Object]', () => {
+    const text = contentOf({ content: [{ type: 'text', text: 'hello' }] })
+
+    expect(text).toContain('hello')
+  })
+})
+
+describe('copy as curl', () => {
+  it('reproduces the request against the gateway, with a placeholder key', () => {
+    const detail = makeRequestDetail()
+
+    const command = asCurl(detail.log, detail, 'https://gw.example.com/g/acme-support/v1')
+
+    expect(command).toContain('https://gw.example.com/g/acme-support/v1/chat/completions')
+    expect(command).toContain('$GATEWAY_API_KEY')
+    expect(command).toContain('what is the answer')
+  })
+
+  it('carries the stream flag when the request streamed', () => {
+    const detail = makeRequestDetail({ log: makeRequestLog({ streamed: true }) })
+
+    expect(asCurl(detail.log, detail, undefined)).toContain('"stream":true')
+  })
+})
+
+describe('chart series', () => {
+  it('breaks a line where a bucket has no value rather than dropping it to zero', () => {
+    const buckets = [
+      { start: '2026-09-06T11:00:00Z', series: { total_p95: 100, ttft_p95: 20 } },
+      { start: '2026-09-06T11:05:00Z', series: { total_p95: 120 } },
+    ]
+
+    const [, ttft] = latencySeries(buckets)
+
+    expect(ttft?.values).toEqual([20, null])
+  })
+
+  it('drops a series no bucket carries at all', () => {
+    const buckets = [{ start: '2026-09-06T11:00:00Z', series: { total_p95: 100 } }]
+
+    expect(latencySeries(buckets).map((line) => line.name)).toEqual(['total_p95'])
+  })
+
+  it('gives every status class its own colour, and keeps 5xx red', () => {
+    expect(colorFor('5xx.requests', 0)).toBe('#dc2626')
+    expect(colorFor('2xx.requests', 3)).toBe('#16a34a')
+    expect(colorFor('5xx.requests', 7)).toBe('#dc2626')
+  })
+
+  it('labels the status series without the metric suffix', () => {
+    const series = statusSeries([
+      { start: '2026-09-06T11:00:00Z', series: { '2xx.requests': 3, '5xx.requests': 1 } },
+    ])
+
+    expect(series.map((line) => line.label)).toEqual(['2xx', '5xx'])
+  })
+
+  it('names the interval in words', () => {
+    expect(intervalLabel(300)).toBe('5-minute buckets')
+    expect(intervalLabel(3600)).toBe('1-hour buckets')
+    expect(intervalLabel(undefined)).toBe('')
+  })
+
+  it('makes one point per bucket', () => {
+    expect(pointsOf(makeSeries().buckets)).toHaveLength(2)
+  })
+
+  it('handles a window with no buckets at all', () => {
+    expect(seriesFrom([], [{ name: 'requests', label: 'Requests' }])).toEqual([])
+  })
+})

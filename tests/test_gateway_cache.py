@@ -26,6 +26,7 @@ from app.core.crypto import SecretBox
 from app.core.ids import uuid7
 from app.services.gateway_resolver import (
     CACHE_TTL_SECONDS,
+    PAYLOAD_VERSION,
     CachedGatewayResolver,
     GatewayCache,
     ResolvedGateway,
@@ -125,7 +126,10 @@ class FakeSource:
 
 def payload_for(slug: str = "acme-chat", **overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
-        "payload_version": 1,
+        # The constant, not a literal: bumping it is how a build refuses payloads it
+        # cannot read, and a fixture pinned to 1 would quietly stop testing the cache
+        # at all — every read would be a miss and every assertion would still pass.
+        "payload_version": PAYLOAD_VERSION,
         "id": str(uuid7()),
         "organization_id": str(uuid7()),
         "slug": slug,
@@ -138,6 +142,12 @@ def payload_for(slug: str = "acme-chat", **overrides: Any) -> dict[str, Any]:
         "locked_params": {},
         "targets": [],
         "disabled": [],
+        "logging": {
+            "request_body": True,
+            "assembled_prompt": True,
+            "response_body": True,
+            "redaction_patterns": [],
+        },
     }
     body.update(overrides)
     return body
@@ -387,6 +397,7 @@ async def test_revoking_a_key_stops_the_next_request_even_with_a_warm_cache(
     from httpx import ASGITransport, AsyncClient
 
     from tests.conftest import build_proxy_app
+    from tests.monitoring_support import build_logs
     from tests.support import Behaviour, FakeAuthenticator, completion
 
     target: dict[str, Any] = {
@@ -409,7 +420,7 @@ async def test_revoking_a_key_stops_the_next_request_even_with_a_warm_cache(
     authenticator = FakeAuthenticator()
     token = authenticator.issue(uuid.UUID(body["id"]))
 
-    app = build_proxy_app(resolver, authenticator)  # type: ignore[arg-type]
+    app = build_proxy_app(resolver, authenticator, build_logs())  # type: ignore[arg-type]
     upstream.behaviour = Behaviour(body=completion())
 
     async with app.router.lifespan_context(app):

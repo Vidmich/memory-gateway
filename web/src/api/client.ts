@@ -55,11 +55,18 @@ export class ApiError extends Error {
     const errors = details?.errors
 
     if (!Array.isArray(errors)) {
-      // `default_params.temperature` belongs to the `default_params` input, so the
-      // first segment is the field — the opposite end from FastAPI's `loc`, which is
-      // rooted at "body".
-      const field = this.param?.split('.')[0]
-      return field ? { [field]: this.message } : {}
+      // Both ends of a dotted param, because forms name inputs at both. Sometimes the
+      // input is the whole object — `default_params.temperature` belongs to the
+      // `default_params` textarea — and sometimes it is the leaf, as in
+      // `logging_config.retention_days`, where the section is not an input at all.
+      // Neither end is wrong, only one of them exists on any given form, and an entry
+      // for a field that is not rendered costs nothing.
+      const parts = this.param?.split('.') ?? []
+      const named: Record<string, string> = {}
+      for (const field of [parts[0], parts.at(-1)]) {
+        if (field) named[field] = this.message
+      }
+      return named
     }
 
     const byField: Record<string, string> = {}

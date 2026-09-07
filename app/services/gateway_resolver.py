@@ -43,6 +43,8 @@ from app.api.proxy.errors import GatewayDisabled, GatewayNotFound, GatewayUnavai
 from app.core.crypto import DecryptionError, SecretBox
 from app.db.models import Gateway, GatewayTarget
 from app.db.scoping import unscoped
+from app.schemas.gateway_config import LoggingConfig
+from app.services.request_log import LogPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,10 @@ CACHE_TTL_SECONDS = 60
 #: magnitude, so a reset to zero can never resurrect one.
 VERSION_TTL_SECONDS = 7 * 24 * 3600
 
-PAYLOAD_VERSION = 1
+#: Bumped whenever the payload gains or loses a field. An older payload is treated as
+#: a miss rather than migrated, so a rolling deploy costs one database read per slug
+#: and needs no coordination. Task 07 raised it to 2 by adding the logging policy.
+PAYLOAD_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,10 @@ class ResolvedGateway:
     #: *which* model is disabled instead of "no usable target" — the difference between
     #: an operator fixing it in one click and going looking for the problem.
     disabled: tuple[str, ...] = ()
+    #: What of this request to record. Resolved from ``logging_config`` when the payload
+    #: is built rather than per request, so the data plane never parses a configuration
+    #: schema while a caller is waiting.
+    log_policy: LogPolicy = field(default_factory=LogPolicy)
 
     @property
     def virtual_model(self) -> str:
@@ -331,6 +340,10 @@ def _encode(gateway: Gateway) -> dict[str, Any]:
         "system_context": gateway.system_context,
         "param_overrides": dict(gateway.param_overrides or {}),
         "locked_params": dict(gateway.locked_params or {}),
+        # The four booleans and the pattern list, not the whole blob: this is everything
+        # the request path reads, and flattening it here is what keeps `_decode` free of
+        # schema validation.
+        "logging": _encode_policy(LoggingConfig.load(gateway.logging_config)),
         "targets": [_encode_target(target) for target in _usable(gateway)],
         "disabled": [
             target.upstream_model.name
@@ -384,6 +397,7 @@ def _decode(
         locked_params=dict(payload.get("locked_params") or {}),
         targets=tuple(_decode_target(item, decrypt) for item in payload.get("targets", ())),
         disabled=tuple(payload.get("disabled", ())),
+        log_policy=_decode_policy(payload.get("logging")),
     )
 
 
@@ -403,6 +417,32 @@ def _decode_target(item: Mapping[str, Any], decrypt: Any) -> UpstreamTarget:
         system_context=item.get("system_context"),
         default_params=dict(item.get("default_params") or {}),
         timeout_seconds=item["timeout_seconds"],
+    )
+
+
+def _encode_policy(config: LoggingConfig) -> dict[str, Any]:
+    return {
+        "request_body": config.log_request_body,
+        "assembled_prompt": config.log_assembled_prompt,
+        "response_body": config.log_response_body,
+        "redaction_patterns": list(config.redaction_patterns),
+    }
+
+
+def _decode_policy(payload: Any) -> LogPolicy:
+    """Default to full capture when the key is absent.
+
+    Absent means a payload from before this field existed, and the schema default is full
+    capture — so the fallback and the default agree, and a rolling deploy cannot produce a
+    minute of silently unlogged traffic.
+    """
+    if not isinstance(payload, Mapping):
+        return LogPolicy()
+    return LogPolicy(
+        request_body=bool(payload.get("request_body", True)),
+        assembled_prompt=bool(payload.get("assembled_prompt", True)),
+        response_body=bool(payload.get("response_body", True)),
+        redaction_patterns=tuple(payload.get("redaction_patterns") or ()),
     )
 
 

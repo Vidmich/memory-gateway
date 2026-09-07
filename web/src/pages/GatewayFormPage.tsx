@@ -42,6 +42,16 @@ type FormState = {
   systemContext: string
   paramOverrides: string
   lockedParams: string
+  logRequestBody: boolean
+  logAssembledPrompt: boolean
+  logResponseBody: boolean
+  retentionDays: string
+  metadataRetentionDays: string
+  //  One pattern per line. A JSON array would be the field's literal shape, and would
+  //  also mean every backslash in a regular expression has to be doubled — which is how
+  //  a card-number pattern silently stops matching.
+  redactionPatterns: string
+  enableDistillation: boolean
 }
 
 const BLANK: FormState = {
@@ -54,6 +64,13 @@ const BLANK: FormState = {
   systemContext: '',
   paramOverrides: '{}',
   lockedParams: '{}',
+  logRequestBody: true,
+  logAssembledPrompt: true,
+  logResponseBody: true,
+  retentionDays: '30',
+  metadataRetentionDays: '365',
+  redactionPatterns: '',
+  enableDistillation: true,
 }
 
 /**
@@ -149,6 +166,20 @@ export function GatewayFormPage() {
       system_context: state.systemContext || null,
       param_overrides: overrides,
       locked_params: locked,
+      // Sent as a partial object and deep-merged server-side, so this form owns its own
+      // section and cannot wipe the ones tasks 10 and 14 will add beside it.
+      logging_config: {
+        log_request_body: state.logRequestBody,
+        log_assembled_prompt: state.logAssembledPrompt,
+        log_response_body: state.logResponseBody,
+        retention_days: Number(state.retentionDays) || 1,
+        metadata_retention_days: Number(state.metadataRetentionDays) || 1,
+        redaction_patterns: state.redactionPatterns
+          .split(NEWLINE)
+          .map((line) => line.trim())
+          .filter(Boolean),
+        enable_distillation: state.enableDistillation,
+      },
     }
 
     try {
@@ -398,10 +429,7 @@ export function GatewayFormPage() {
           </Section>
 
           {/* 5. Logging -------------------------------------------------- */}
-          <Placeholder
-            title="Logging"
-            what="Which parts of a request are captured, how long they are kept, redaction patterns, and whether transcripts feed conversation memory."
-          />
+          <LoggingSection state={state} set={set} />
 
           {/* 6. Limits --------------------------------------------------- */}
           <Placeholder
@@ -487,6 +515,187 @@ export function GatewayFormPage() {
 }
 
 // ---------------------------------------------------------------------------
+
+/** Splitting the redaction textarea. Named so the escape is written once. */
+const NEWLINE = '\n'
+
+/**
+ * SPEC §10.2, and the one section of this editor that is about somebody else's data.
+ *
+ * It says so unprompted, in the first thing you read. Body capture stores what a
+ * customer's end users typed; the default is on because that is what makes conversation
+ * memory possible; and an organization that has not thought about it should be told here
+ * rather than discover it in a subject-access request. The effective retention is a
+ * sentence — "kept for 30 days" — rather than a number in a box, because the number is
+ * the setting and the sentence is the consequence.
+ */
+function LoggingSection({
+  state,
+  set,
+}: {
+  state: FormState
+  set: <K extends keyof FormState>(key: K, value: FormState[K]) => void
+}) {
+  const anyBody = state.logRequestBody || state.logAssembledPrompt || state.logResponseBody
+
+  return (
+    <Section
+      title="Logging"
+      subtitle="What is recorded about each request, how long it is kept, and what is stripped before it is stored."
+    >
+      <div
+        className={`mb-4 rounded-md border p-3 text-sm ${
+          anyBody
+            ? 'border-amber-200 bg-amber-50 text-amber-900'
+            : 'border-slate-200 bg-slate-50 text-slate-600'
+        }`}
+      >
+        {anyBody ? (
+          <>
+            <strong className="font-semibold">This stores end-user content.</strong> Prompts
+            and responses through this gateway are written to your request log and kept for{' '}
+            {state.retentionDays} day{state.retentionDays === '1' ? '' : 's'}. Use redaction
+            patterns below for anything that must never be stored, or switch the bodies off.
+          </>
+        ) : (
+          <>
+            Bodies are not stored. The request log still records timing, tokens, status and
+            errors — kept for {state.metadataRetentionDays} days — but the request detail
+            view will have nothing to show, and conversation memory cannot be built.
+          </>
+        )}
+      </div>
+
+      <fieldset className="mb-4 space-y-2">
+        <legend className="mb-1 text-sm font-medium text-slate-700">Capture</legend>
+        <Toggle
+          label="Metadata — timing, tokens, status, errors"
+          hint="Always on. It is what the monitoring charts are made of."
+          checked
+          disabled
+          onChange={() => {}}
+        />
+        <Toggle
+          label="The client's request"
+          checked={state.logRequestBody}
+          onChange={(value) => set('logRequestBody', value)}
+        />
+        <Toggle
+          label="The assembled prompt sent upstream"
+          hint="Including anything memory injected."
+          checked={state.logAssembledPrompt}
+          onChange={(value) => set('logAssembledPrompt', value)}
+        />
+        <Toggle
+          label="The response"
+          hint="Streamed responses are reassembled."
+          checked={state.logResponseBody}
+          onChange={(value) => set('logResponseBody', value)}
+        />
+      </fieldset>
+
+      <div className="mb-4 grid gap-4 sm:grid-cols-2">
+        <Field
+          name="retention_days"
+          label="Keep bodies for"
+          hint="Days. Prompts and responses are deleted after this."
+        >
+          {(props) => (
+            <TextInput
+              {...props}
+              type="number"
+              min={1}
+              max={3650}
+              value={state.retentionDays}
+              onChange={(event) => set('retentionDays', event.target.value)}
+            />
+          )}
+        </Field>
+        <Field
+          name="metadata_retention_days"
+          label="Keep metadata for"
+          hint="Days. Must be at least as long as the bodies it describes."
+        >
+          {(props) => (
+            <TextInput
+              {...props}
+              type="number"
+              min={1}
+              max={3650}
+              value={state.metadataRetentionDays}
+              onChange={(event) => set('metadataRetentionDays', event.target.value)}
+            />
+          )}
+        </Field>
+      </div>
+
+      <Field
+        name="redaction_patterns"
+        label="Redaction patterns"
+        hint="One regular expression per line, applied to bodies before they are written — never after. A pattern that can backtrack catastrophically is refused when you save."
+      >
+        {(props) => (
+          <TextArea
+            {...props}
+            rows={3}
+            value={state.redactionPatterns}
+            placeholder={REDACTION_PLACEHOLDER}
+            onChange={(event) => set('redactionPatterns', event.target.value)}
+          />
+        )}
+      </Field>
+
+      <Toggle
+        label="Feed transcripts to conversation memory"
+        hint="Requires request-body logging; the distillation worker reads what was stored."
+        checked={state.enableDistillation}
+        onChange={(value) => set('enableDistillation', value)}
+      />
+      {state.enableDistillation && !state.logRequestBody ? (
+        <p className="mt-2 text-sm text-amber-700">
+          Distillation reads logged request bodies. Turn body logging back on, or switch
+          distillation off — saving with both as they are will be refused.
+        </p>
+      ) : null}
+    </Section>
+  )
+}
+
+/** An email address and a card number: the two everybody wants first. */
+const REDACTION_PLACEHOLDER = [
+  String.raw`[\w.+-]+@[\w-]+\.[\w.]+`,
+  String.raw`\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}`,
+].join(NEWLINE)
+
+function Toggle({
+  label,
+  hint,
+  checked,
+  disabled = false,
+  onChange,
+}: {
+  label: string
+  hint?: string
+  checked: boolean
+  disabled?: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <label className="flex items-start gap-2 text-sm text-slate-700">
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        className="mt-0.5 rounded border-slate-300 disabled:opacity-50"
+      />
+      <span>
+        {label}
+        {hint ? <span className="block text-xs text-slate-500">{hint}</span> : null}
+      </span>
+    </label>
+  )
+}
 
 function Section({
   title,
@@ -583,9 +792,9 @@ function PromptPreview({
 /**
  * Type a message, see the assembled prompt, the answer, and where the time went.
  *
- * The most useful debugging affordance in the product until task 07 has request logs, and
- * it goes through the real proxy path — so a green result here means a customer's request
- * would take the same route with the same prompt.
+ * The fastest way to see what a change to the prompt did, without waiting for real
+ * traffic to show up under Monitoring. It goes through the real proxy path, so a green
+ * result here means a customer's request would take the same route with the same prompt.
  */
 function TestPanel({ gateway }: { gateway: GatewayResponse }) {
   const [message, setMessage] = useState('Hello! Reply with one short sentence.')
@@ -702,6 +911,13 @@ function stateOf(gateway: GatewayResponse): FormState {
     systemContext: gateway.system_context ?? '',
     paramOverrides: JSON.stringify(gateway.param_overrides, null, 2),
     lockedParams: JSON.stringify(gateway.locked_params, null, 2),
+    logRequestBody: gateway.logging_config.log_request_body,
+    logAssembledPrompt: gateway.logging_config.log_assembled_prompt,
+    logResponseBody: gateway.logging_config.log_response_body,
+    retentionDays: String(gateway.logging_config.retention_days),
+    metadataRetentionDays: String(gateway.logging_config.metadata_retention_days),
+    redactionPatterns: (gateway.logging_config.redaction_patterns ?? []).join(NEWLINE),
+    enableDistillation: gateway.logging_config.enable_distillation,
   }
 }
 

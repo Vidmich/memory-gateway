@@ -14,6 +14,7 @@ import {
   makeGatewayProbe,
   makeIssuedKey,
   makeModel,
+  makeSeries,
   makeUser,
 } from '@/test/factories'
 import { bodyOf, jsonResponse as json, pathOf } from '@/test/http'
@@ -24,6 +25,7 @@ type ServerOptions = {
   apiKeys?: ReturnType<typeof makeApiKey>[]
   issued?: ReturnType<typeof makeIssuedKey>
   probe?: ReturnType<typeof makeGatewayProbe>
+  counts?: ReturnType<typeof makeSeries>
   saveError?: { status: number; code: string; message: string; param?: string }
 }
 
@@ -91,6 +93,10 @@ function fakeServer(options: ServerOptions = {}) {
     if (path.startsWith('/api/v1/models')) {
       return Promise.resolve(json({ items: [makeModel()], next_cursor: null }))
     }
+    // The list's 24-hour column: one grouped series for the whole page.
+    if (path.startsWith('/api/v1/metrics/timeseries')) {
+      return Promise.resolve(json(options.counts ?? makeSeries([])))
+    }
 
     throw new Error(`unexpected ${method} ${path}`)
   })
@@ -127,6 +133,23 @@ describe('the gateways list', () => {
       await screen.findByText('https://localhost:8000/g/acme-support/v1'),
     ).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /copy/i }).length).toBeGreaterThan(0)
+  })
+
+  it('shows the last day\'s request count from one grouped query', async () => {
+    // One query for the page, not one per row — and a real zero for a gateway with no
+    // traffic, which is a different answer from "not measured".
+    const { client, requests } = fakeServer({
+      counts: makeSeries([
+        { start: '2026-09-06T00:00:00Z', series: { 'g1.requests': 41 } },
+        { start: '2026-09-07T00:00:00Z', series: { 'g1.requests': 9 } },
+      ]),
+    })
+    renderAt(client, '/gateways')
+
+    expect(await screen.findByText('50')).toBeInTheDocument()
+    expect(
+      requests.filter((request) => request.path.startsWith('/api/v1/metrics/timeseries')),
+    ).toHaveLength(1)
   })
 
   it('shows the target model and the key count', async () => {
@@ -249,7 +272,9 @@ describe('the editor', () => {
     for (const name of ['Routing', 'Memory', 'Prompt', 'Logging', 'Limits', 'Keys']) {
       expect(screen.getByRole('heading', { name })).toBeInTheDocument()
     }
-    expect(screen.getAllByText('Coming soon')).toHaveLength(3)
+    // Memory and Limits, now that Logging is built. The count is asserted rather than
+    // left implicit so filling one in has to come here and say so.
+    expect(screen.getAllByText('Coming soon')).toHaveLength(2)
   })
 
   it('makes the slug read-only and says why', async () => {
@@ -498,5 +523,118 @@ describe('testing a gateway', () => {
     await person.click(await screen.findByRole('button', { name: 'Send test message' }))
 
     expect(await screen.findByText(/Locked by this gateway: max_tokens/)).toBeInTheDocument()
+  })
+})
+
+describe('the logging section', () => {
+  it('says plainly that body capture stores end-user content', async () => {
+    // SPEC §10.2's data-handling note, on the form rather than in the documentation. An
+    // organization that has not thought about it should be told here, not in a
+    // subject-access request.
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+
+    expect(await screen.findByText(/stores end-user content/i)).toBeInTheDocument()
+  })
+
+  it('shows the effective retention as a sentence, not just a number', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+
+    expect(await screen.findByText(/kept for/i)).toBeInTheDocument()
+    expect(screen.getByText(/30 days/)).toBeInTheDocument()
+  })
+
+  it('changes what it says when every body toggle is off', async () => {
+    const person = userEvent.setup()
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+
+    await screen.findByRole('heading', { name: 'Logging' })
+    for (const label of [
+      /the client's request/i,
+      /assembled prompt sent upstream/i,
+      /^the response/i,
+    ]) {
+      await person.click(screen.getByLabelText(label))
+    }
+
+    expect(screen.getByText(/Bodies are not stored/)).toBeInTheDocument()
+  })
+
+  it('will not let metadata logging be switched off', async () => {
+    // It is what the monitoring charts are made of, and the schema forces it true.
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+
+    const metadata = await screen.findByLabelText(/Metadata/)
+    expect(metadata).toBeChecked()
+    expect(metadata).toBeDisabled()
+  })
+
+  it('sends the logging section as a partial object', async () => {
+    // Deep-merged server-side, so this form cannot wipe the Memory or Limits sections
+    // that later tasks add beside it.
+    const person = userEvent.setup()
+    const { client, requests } = fakeServer()
+    renderAt(client, '/gateways/g1')
+
+    await screen.findByRole('heading', { name: 'Logging' })
+    await person.click(screen.getByLabelText(/^the response/i))
+    await person.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => {
+      const body = lastBody(requests, 'PATCH')
+      expect(body.logging_config).toMatchObject({ log_response_body: false })
+    })
+  })
+
+  it('sends redaction patterns one per line', async () => {
+    // A textarea rather than JSON: every backslash in a regular expression would have to
+    // be doubled in a JSON string, which is how `\\d` silently becomes `d`.
+    const person = userEvent.setup()
+    const { client, requests } = fakeServer()
+    renderAt(client, '/gateways/g1')
+
+    const patterns = await screen.findByLabelText('Redaction patterns')
+    await person.clear(patterns)
+    await person.type(patterns, 'first{enter}   {enter}second')
+    await person.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => {
+      const body = lastBody(requests, 'PATCH') as { logging_config: { redaction_patterns: string[] } }
+      expect(body.logging_config.redaction_patterns).toEqual(['first', 'second'])
+    })
+  })
+
+  it('warns before saving a combination the server will refuse', async () => {
+    const person = userEvent.setup()
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+
+    await screen.findByRole('heading', { name: 'Logging' })
+    await person.click(screen.getByLabelText(/the client's request/i))
+
+    expect(screen.getByText(/Distillation reads logged request bodies/)).toBeInTheDocument()
+  })
+
+  it('shows a redaction error from the server on the field it belongs to', async () => {
+    const person = userEvent.setup()
+    const { client } = fakeServer({
+      saveError: {
+        status: 422,
+        code: 'validation_error',
+        message: "redaction_patterns: '(a+)+' repeats a group that itself repeats",
+        // Dotted, as the server sends it. The section makes the message unambiguous; the
+        // leaf is what this form has an input for.
+        param: 'logging_config.redaction_patterns',
+      },
+    })
+    renderAt(client, '/gateways/g1')
+
+    await screen.findByRole('heading', { name: 'Logging' })
+    await person.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    expect(await screen.findByText(/repeats a group that itself repeats/)).toBeInTheDocument()
   })
 })

@@ -22,9 +22,9 @@ gateway reference either. It is deliberately the same predicate the Models scree
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Protocol
+from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -34,6 +34,7 @@ from app.db.models import ApiKey, Gateway, GatewayTarget, UpstreamModel
 from app.db.repositories import (
     ApiKeyRepository,
     GatewayRepository,
+    OrganizationRepository,
     UpstreamModelRepository,
     model_is_visible,
 )
@@ -54,6 +55,14 @@ class GatewayTransaction(Protocol):
 
     async def slug_taken(self, slug: str) -> bool:
         """Across every organization: the slug is a public URL segment."""
+
+    async def organization_settings(self) -> Mapping[str, Any]:
+        """The scope's organization settings, for the defaults a new gateway inherits.
+
+        Empty for a platform scope, which has no organization to inherit from — and
+        cannot create a gateway anyway, since ``add_gateway`` stamps the scope's
+        organization onto the row.
+        """
 
     async def visible_model(self, model_id: uuid.UUID) -> UpstreamModel | None:
         """A model this scope may point a gateway at: its own, or the global catalog."""
@@ -100,6 +109,7 @@ class PostgresGatewayTransaction:
         self._gateways = GatewayRepository(session, scope)
         self._models = UpstreamModelRepository(session, scope)
         self._keys = ApiKeyRepository(session, scope)
+        self._organizations = OrganizationRepository(session, scope)
 
     @property
     def scope(self) -> TenantScope:
@@ -113,6 +123,13 @@ class PostgresGatewayTransaction:
 
     async def slug_taken(self, slug: str) -> bool:
         return await self._gateways.slug_taken(slug)
+
+    async def organization_settings(self) -> Mapping[str, Any]:
+        organization_id = self._scope.organization_id
+        if organization_id is None:
+            return {}
+        organization = await self._organizations.by_id(organization_id)
+        return dict(organization.settings or {}) if organization is not None else {}
 
     async def visible_model(self, model_id: uuid.UUID) -> UpstreamModel | None:
         return await self._models.get_visible(model_id)
@@ -205,6 +222,13 @@ class MemoryGatewayTransaction:
     async def slug_taken(self, slug: str) -> bool:
         wanted = slug.strip()
         return any(gateway.slug == wanted for gateway in self._db.gateways.values())
+
+    async def organization_settings(self) -> Mapping[str, Any]:
+        organization_id = self._scope.organization_id
+        if organization_id is None:
+            return {}
+        organization = self._db.organizations.get(organization_id)
+        return dict(organization.settings or {}) if organization is not None else {}
 
     async def visible_model(self, model_id: uuid.UUID) -> UpstreamModel | None:
         found = self._db.upstream_models.get(model_id)

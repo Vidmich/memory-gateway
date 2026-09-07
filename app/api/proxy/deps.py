@@ -13,6 +13,7 @@ from fastapi import Request
 from app.services.api_keys import KeyAuthenticator
 from app.services.gateway_resolver import GatewayResolver
 from app.services.proxy import ProxyService
+from app.services.request_log import RequestLogService
 
 
 def get_resolver(request: Request) -> GatewayResolver:
@@ -27,4 +28,15 @@ def get_authenticator(request: Request) -> KeyAuthenticator:
 
 def get_proxy_service(request: Request) -> ProxyService:
     service: ProxyService = request.app.state.proxy_service
+    return service
+
+
+def get_request_logs(request: Request) -> RequestLogService:
+    """The request log's write half.
+
+    A dependency rather than a module-level singleton for the same reason as the rest:
+    a test substitutes one whose sink is a list, and then asserts on what the proxy
+    recorded without a database, a queue or a background task in sight.
+    """
+    service: RequestLogService = request.app.state.request_logs
     return service

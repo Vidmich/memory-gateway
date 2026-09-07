@@ -14,6 +14,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { MembersPage } from '@/pages/MembersPage'
 import { ModelFormPage } from '@/pages/ModelFormPage'
 import { ModelsPage } from '@/pages/ModelsPage'
+import { MonitoringPage } from '@/pages/MonitoringPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { OrganizationSettingsPage } from '@/pages/OrganizationSettingsPage'
 import { OrganizationsPage } from '@/pages/OrganizationsPage'
@@ -59,6 +60,7 @@ export function AppRoutes() {
             immutable slug. */}
         <Route path="/gateways/new" element={<GatewayFormPage />} />
         <Route path="/gateways/:gatewayId" element={<GatewayFormPage />} />
+        <Route path="/monitoring" element={<MonitoringPage />} />
         <Route path="/settings" element={<OrganizationSettingsPage />} />
         <Route path="/settings/members" element={<MembersPage />} />
         {/* Rendering is gated by capability; the API is what actually refuses. */}

@@ -121,8 +121,8 @@ async def test_gateway(
     """Send a probe completion through the real proxy path.
 
     Returns the assembled prompt as well as the answer, which is the part that makes this
-    a debugging tool rather than a health check: it is the only way to see what the system
-    context actually became before task 07's request log exists.
+    a debugging tool rather than a health check: it shows what the system context became
+    without waiting for real traffic to appear in the request log.
     """
     return GatewayTestResponse.of(
         await service.test_gateway(actor, gateway_id, message=body.message)
@@ -169,8 +169,8 @@ async def revoke_key(
     actor: CurrentActor,
     service: _Service,
 ) -> ApiKeyResponse:
-    """Soft. The row survives so task 07's request logs keep a reference that resolves,
-    and the next request with this key is refused — key lookup is never cached."""
+    """Soft. The row survives so the request log keeps a reference that resolves, and the
+    next request with this key is refused — key lookup is never cached."""
     return ApiKeyResponse.of(await service.revoke_key(actor, key_id))
 
 

@@ -2,7 +2,8 @@
 
 SPEC §12.2 makes all of them cursor-paginated, and the reason is worth stating: an offset
 page over a table that is being written to shows some rows twice and skips others, which
-on the request-log screen (task 07) looks exactly like a bug in the gateway.
+on the request-log screen — read while traffic is arriving — looks exactly like a bug in
+the gateway.
 
 Primary keys are UUIDv7, so ``id`` already sorts by creation time. That makes the cursor
 just an id — "everything before this one" — served by the primary-key index with no

@@ -28,12 +28,31 @@ _LATENCY_BUCKETS = (
 
 
 @dataclass(frozen=True)
+class LogMetrics:
+    """The request-log write path, as three numbers.
+
+    Separate from :class:`Metrics` because the log service is handed exactly these and
+    nothing else: it has no business touching the HTTP histograms, and a narrow struct is
+    what makes that true rather than merely intended.
+    """
+
+    #: Records that never reached the database, by ``reason``: ``bodies`` (shed under
+    #: queue pressure), ``record`` (queue full), ``redaction`` (the pattern budget ran
+    #: out), ``write_failed`` (the insert did not land). A gap in the request log has to
+    #: be a number somebody can alert on.
+    dropped: Counter
+    written: Counter
+    queue_depth: Gauge
+
+
+@dataclass(frozen=True)
 class Metrics:
     registry: CollectorRegistry
     http_requests: Counter
     http_duration: Histogram
     http_in_progress: Gauge
     build_info: Gauge
+    logs: LogMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -73,4 +92,27 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         http_duration=http_duration,
         http_in_progress=http_in_progress,
         build_info=build_info,
+        logs=build_log_metrics(registry),
+    )
+
+
+def build_log_metrics(registry: CollectorRegistry) -> LogMetrics:
+    """Split out so a test can build the log counters without a whole application."""
+    return LogMetrics(
+        dropped=Counter(
+            "logs_dropped_total",
+            "Request-log records or bodies that never reached the database.",
+            labelnames=("reason",),
+            registry=registry,
+        ),
+        written=Counter(
+            "logs_written_total",
+            "Request-log records written.",
+            registry=registry,
+        ),
+        queue_depth=Gauge(
+            "logs_queue_depth",
+            "Records waiting to be flushed.",
+            registry=registry,
+        ),
     )

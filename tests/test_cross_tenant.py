@@ -30,6 +30,7 @@ FOREIGN_INVITATION = "{invitation_id}"
 FOREIGN_MODEL = "{model_id}"
 FOREIGN_GATEWAY = "{gateway_id}"
 FOREIGN_KEY = "{key_id}"
+FOREIGN_LOG = "{log_id}"
 
 #: A model owned by nobody. It is *visible* to every organization (SPEC §5.3, the
 #: global catalog), which is exactly why it needs rows of its own here: every write
@@ -85,6 +86,12 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
         note="minting a key on someone else's endpoint is the worst case in this table",
     ),
     ScopedEndpoint("DELETE", f"/api/v1/keys/{FOREIGN_KEY}"),
+    ScopedEndpoint(
+        "GET",
+        f"/api/v1/logs/{FOREIGN_LOG}",
+        note="a request log carries the end user's prompt, so this row is the one "
+        "with the most to disclose",
+    ),
 )
 
 #: The global catalog is readable by everyone, so a foreign-id test on ``GET`` would be
@@ -106,6 +113,7 @@ PLACEHOLDERS = (
     FOREIGN_MODEL,
     FOREIGN_GATEWAY,
     FOREIGN_KEY,
+    FOREIGN_LOG,
 )
 
 
@@ -125,6 +133,7 @@ async def foreign_ids(harness: DirectoryHarness) -> dict[str, str]:
         FOREIGN_MODEL: str(world.globex_model.id),
         FOREIGN_GATEWAY: str(world.globex_gateway.id),
         FOREIGN_KEY: str(world.globex_key.id),
+        FOREIGN_LOG: str(world.globex_log.id),
     }
 
 

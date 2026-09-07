@@ -29,8 +29,10 @@ from app.services.gateways import GatewayService
 from app.services.login_throttle import LoginThrottle, MemoryThrottleStore
 from app.services.memory_db import MemoryDatabase
 from app.services.model_probe import Probe
+from app.services.monitoring import MonitoringService
 from tests.catalog_support import FakeProbe
 from tests.gateway_support import FakeGatewayProbe, RecordingCache
+from tests.monitoring_support import LogFixture, build_logs, build_monitoring
 
 PASSWORD = "correct-horse-battery-staple"
 EMAIL = "ada@example.com"
@@ -76,6 +78,9 @@ class AuthFixture:
     directory: DirectoryService
     catalog: CatalogService
     gateways: GatewayService
+    #: The read half of task 07, over the same rows the write half fills in.
+    monitoring: MonitoringService
+    logs: LogFixture
     secret_box: SecretBox
     probe: FakeProbe
     gateway_probe: FakeGatewayProbe
@@ -160,6 +165,8 @@ def build_auth(
         # a counter shared across a test module would make every other test order-dependent.
         settings=settings,
     )
+    logs = build_logs(database=database)
+    monitoring = build_monitoring(database)
     fake_gateway_probe = FakeGatewayProbe()
     gateways = GatewayService(
         MemoryGatewayStore(database),
@@ -172,6 +179,8 @@ def build_auth(
         directory=directory,
         catalog=catalog,
         gateways=gateways,
+        monitoring=monitoring,
+        logs=logs,
         secret_box=secret_box,
         probe=fake_probe,
         gateway_probe=fake_gateway_probe,

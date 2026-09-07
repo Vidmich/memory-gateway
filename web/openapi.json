@@ -105,6 +105,29 @@
         "title": "ApiKeyResponse",
         "type": "object"
       },
+      "BucketResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "series": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Series",
+            "type": "object"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "series"
+        ],
+        "title": "BucketResponse",
+        "type": "object"
+      },
       "CredentialStatus": {
         "description": "SPEC \u00a75.4: what a response may say about a stored secret, and no more.\n\n``hint`` can be ``None`` while ``configured`` is ``True`` \u2014 for a row written before\nhints were stored, and for a global model being read by someone who does not own it.",
         "properties": {
@@ -128,6 +151,25 @@
           "configured"
         ],
         "title": "CredentialStatus",
+        "type": "object"
+      },
+      "ErrorGroupResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error_code": {
+            "title": "Error Code",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "error_code",
+          "requests"
+        ],
+        "title": "ErrorGroupResponse",
         "type": "object"
       },
       "GatewayCreateRequest": {
@@ -1450,6 +1492,43 @@
         "title": "ModelTestRequest",
         "type": "object"
       },
+      "ModelTrafficResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "upstream_model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Model Id"
+          }
+        },
+        "required": [
+          "requests"
+        ],
+        "title": "ModelTrafficResponse",
+        "type": "object"
+      },
       "ModelUpdateRequest": {
         "additionalProperties": false,
         "description": "Partial. Only fields actually present in the body are applied.",
@@ -1902,6 +1981,33 @@
         "title": "Page[OrganizationResponse]",
         "type": "object"
       },
+      "Page_RequestLogResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RequestLogResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[RequestLogResponse]",
+        "type": "object"
+      },
       "PasswordChangeRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1923,6 +2029,46 @@
           "new_password"
         ],
         "title": "PasswordChangeRequest",
+        "type": "object"
+      },
+      "PercentilesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "p50": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50"
+          },
+          "p95": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95"
+          },
+          "p99": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P99"
+          }
+        },
+        "title": "PercentilesResponse",
         "type": "object"
       },
       "ProbeResponse": {
@@ -1995,6 +2141,301 @@
         "title": "PromptMessageResponse",
         "type": "object"
       },
+      "RequestDetailResponse": {
+        "additionalProperties": false,
+        "description": "One request, with everything the \u00a710.3 drawer draws.\n\n``routing`` and the retrieval lists are here and empty until tasks 08 and 10 fill\nthem, for the same reason the gateway editor shows its unbuilt sections: a drawer\nthat grows two panels later moves everything the reader has learned the position of.",
+        "properties": {
+          "failover_attempts": {
+            "items": {},
+            "title": "Failover Attempts",
+            "type": "array"
+          },
+          "log": {
+            "$ref": "#/components/schemas/RequestLogResponse"
+          },
+          "retrieved_chunk_ids": {
+            "items": {},
+            "title": "Retrieved Chunk Ids",
+            "type": "array"
+          },
+          "retrieved_fact_ids": {
+            "items": {},
+            "title": "Retrieved Fact Ids",
+            "type": "array"
+          },
+          "transcript": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "log",
+          "retrieved_chunk_ids",
+          "retrieved_fact_ids",
+          "failover_attempts"
+        ],
+        "title": "RequestDetailResponse",
+        "type": "object"
+      },
+      "RequestLogResponse": {
+        "additionalProperties": false,
+        "description": "One row of the request table. No bodies \u2014 that is what the detail view is for.",
+        "properties": {
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "bodies_omitted": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bodies Omitted"
+          },
+          "completion_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Tokens"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "end_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End User Id"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "gateway_id": {
+            "format": "uuid",
+            "title": "Gateway Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "latency_retrieval_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Retrieval Ms"
+          },
+          "latency_total_ms": {
+            "title": "Latency Total Ms",
+            "type": "integer"
+          },
+          "latency_ttft_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ttft Ms"
+          },
+          "latency_upstream_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Upstream Ms"
+          },
+          "memory_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Tokens"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "prompt_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Tokens"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "response_truncated": {
+            "title": "Response Truncated",
+            "type": "boolean"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          },
+          "streamed": {
+            "title": "Streamed",
+            "type": "boolean"
+          },
+          "upstream_model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Model Id"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "gateway_id",
+          "api_key_id",
+          "end_user_id",
+          "session_id",
+          "upstream_model_id",
+          "model_name",
+          "status_code",
+          "error_code",
+          "error_message",
+          "streamed",
+          "latency_total_ms",
+          "latency_retrieval_ms",
+          "latency_ttft_ms",
+          "latency_upstream_ms",
+          "prompt_tokens",
+          "completion_tokens",
+          "memory_tokens",
+          "request_id",
+          "response_truncated",
+          "bodies_omitted"
+        ],
+        "title": "RequestLogResponse",
+        "type": "object"
+      },
+      "SeriesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/BucketResponse"
+            },
+            "title": "Buckets",
+            "type": "array"
+          },
+          "interval_seconds": {
+            "title": "Interval Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "interval_seconds",
+          "buckets"
+        ],
+        "title": "SeriesResponse",
+        "type": "object"
+      },
       "SessionResponse": {
         "description": "What login and refresh both return.\n\nThe refresh token is deliberately absent: it lives in an httpOnly cookie the\nJavaScript never sees, which is the whole point of splitting the two.",
         "properties": {
@@ -2027,6 +2468,82 @@
           "user"
         ],
         "title": "SessionResponse",
+        "type": "object"
+      },
+      "SummaryResponse": {
+        "additionalProperties": false,
+        "description": "The cards, the latency numbers, and the two distribution charts.",
+        "properties": {
+          "completion_tokens": {
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "error_groups": {
+            "items": {
+              "$ref": "#/components/schemas/ErrorGroupResponse"
+            },
+            "title": "Error Groups",
+            "type": "array"
+          },
+          "error_rate": {
+            "title": "Error Rate",
+            "type": "number"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "memory_tokens": {
+            "title": "Memory Tokens",
+            "type": "integer"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelTrafficResponse"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "prompt_tokens": {
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "retrieval": {
+            "$ref": "#/components/schemas/PercentilesResponse"
+          },
+          "status_classes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Status Classes",
+            "type": "object"
+          },
+          "total": {
+            "$ref": "#/components/schemas/PercentilesResponse"
+          },
+          "ttft": {
+            "$ref": "#/components/schemas/PercentilesResponse"
+          }
+        },
+        "required": [
+          "requests",
+          "errors",
+          "error_rate",
+          "status_classes",
+          "total",
+          "ttft",
+          "retrieval",
+          "prompt_tokens",
+          "completion_tokens",
+          "memory_tokens",
+          "models",
+          "error_groups"
+        ],
+        "title": "SummaryResponse",
         "type": "object"
       },
       "TargetSummary": {
@@ -2070,6 +2587,67 @@
           "organization_id"
         ],
         "title": "TargetSummary",
+        "type": "object"
+      },
+      "TranscriptResponse": {
+        "additionalProperties": false,
+        "description": "The bodies, as far as they were stored.",
+        "properties": {
+          "assembled_prompt": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assembled Prompt"
+          },
+          "distilled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distilled At"
+          },
+          "request_body": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Body"
+          },
+          "response_body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Body"
+          }
+        },
+        "title": "TranscriptResponse",
         "type": "object"
       },
       "UserSummary": {
@@ -2656,7 +3234,7 @@
     },
     "/api/v1/gateways/{gateway_id}/test": {
       "post": {
-        "description": "Send a probe completion through the real proxy path.\n\nReturns the assembled prompt as well as the answer, which is the part that makes this\na debugging tool rather than a health check: it is the only way to see what the system\ncontext actually became before task 07's request log exists.",
+        "description": "Send a probe completion through the real proxy path.\n\nReturns the assembled prompt as well as the answer, which is the part that makes this\na debugging tool rather than a health check: it shows what the system context became\nwithout waiting for real traffic to appear in the request log.",
         "operationId": "test_gateway_api_v1_gateways__gateway_id__test_post",
         "parameters": [
           {
@@ -2953,7 +3531,7 @@
     },
     "/api/v1/keys/{key_id}": {
       "delete": {
-        "description": "Soft. The row survives so task 07's request logs keep a reference that resolves,\nand the next request with this key is refused \u2014 key lookup is never cached.",
+        "description": "Soft. The row survives so the request log keeps a reference that resolves, and the\nnext request with this key is refused \u2014 key lookup is never cached.",
         "operationId": "revoke_key_api_v1_keys__key_id__delete",
         "parameters": [
           {
@@ -2992,6 +3570,288 @@
         "summary": "Revoke Key",
         "tags": [
           "gateways"
+        ]
+      }
+    },
+    "/api/v1/logs": {
+      "get": {
+        "description": "The request table: metadata only, newest first, cursor-paginated.\n\nCursor rather than offset because this list is being written to while it is read \u2014\nSPEC \u00a712.2's reason, and the one screen where an offset page would visibly duplicate\nand skip rows as traffic arrives.",
+        "operationId": "list_logs_api_v1_logs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "gateway_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Gateway Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "upstream_model_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Upstream Model Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 3,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End User Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "streamed",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Streamed"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_latency_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Latency Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RequestLogResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Logs",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
+    "/api/v1/logs/{log_id}": {
+      "get": {
+        "description": "One request in full, including whatever of the transcript was stored.\n\nNo time range: the id is a UUIDv7 and carries the millisecond it was minted, so the\nserver works out which day's partition to look in. A 404 covers \"no such request\" and\n\"another organization's request\" alike.",
+        "operationId": "get_log_api_v1_logs__log_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "log_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Log Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Log",
+        "tags": [
+          "monitoring"
         ]
       }
     },
@@ -3079,6 +3939,315 @@
         "summary": "Update Member",
         "tags": [
           "directory"
+        ]
+      }
+    },
+    "/api/v1/metrics/summary": {
+      "get": {
+        "description": "Totals, percentiles, per-model traffic and the error taxonomy, in one read.\n\nCached for 30 seconds per organization and query. Everything on the dashboard and the\ntop of the monitoring screen comes from here, so it is the one query worth caching.",
+        "operationId": "metrics_summary_api_v1_metrics_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "gateway_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Gateway Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "upstream_model_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Upstream Model Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 3,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Summary",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
+    "/api/v1/metrics/timeseries": {
+      "get": {
+        "description": "Bucketed series. The bucket width is the server's decision, not the client's.\n\nA metric is usually several lines \u2014 ``latency`` is p50/p95/p99 plus TTFT and\nretrieval \u2014 so one call fills one chart rather than one line. ``interval`` is a\nrequest, not an instruction: the response says what was used.",
+        "operationId": "metrics_timeseries_api_v1_metrics_timeseries_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "metric",
+            "required": false,
+            "schema": {
+              "default": "requests",
+              "title": "Metric",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "none",
+              "title": "Group By",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "interval",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Interval"
+            }
+          },
+          {
+            "in": "query",
+            "name": "gateway_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Gateway Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "upstream_model_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Upstream Model Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 3,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeriesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Timeseries",
+        "tags": [
+          "monitoring"
         ]
       }
     },

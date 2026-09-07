@@ -8,6 +8,7 @@
 
 import type {
   ApiKeyResponse,
+  BucketResponse,
   CurrentUser,
   GatewayResponse,
   GatewayTestResponse,
@@ -17,6 +18,10 @@ import type {
   ModelResponse,
   OrganizationResponse,
   ProbeResponse,
+  RequestDetailResponse,
+  RequestLogResponse,
+  SeriesResponse,
+  SummaryResponse,
 } from '@/api/types'
 
 const NOW = '2026-09-06T12:00:00Z'
@@ -242,6 +247,96 @@ export function makeGatewayProbe(
     upstream_status: null,
     error_message: null,
     locked_overrides: [],
+    ...overrides,
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// monitoring
+// ---------------------------------------------------------------------------
+
+export function makeSummary(overrides: Partial<SummaryResponse> = {}): SummaryResponse {
+  return {
+    requests: 120,
+    errors: 6,
+    error_rate: 0.05,
+    status_classes: { '2xx': 114, '5xx': 6 },
+    total: { p50: 220, p95: 900, p99: 1400 },
+    // Null rather than zero, because most gateways are not streaming — and a fixture that
+    // said zero would let a component render "0 ms first token" and still pass.
+    ttft: { p50: null, p95: null, p99: null },
+    retrieval: { p50: null, p95: null, p99: null },
+    prompt_tokens: 4200,
+    completion_tokens: 1800,
+    memory_tokens: 0,
+    models: [{ upstream_model_id: 'mo1', model_name: 'acme-gpt', requests: 120 }],
+    error_groups: [{ error_code: 'upstream_timeout', requests: 6 }],
+    ...overrides,
+  }
+}
+
+export function makeSeries(
+  buckets: BucketResponse[] = defaultBuckets(),
+  overrides: Partial<SeriesResponse> = {},
+): SeriesResponse {
+  return { interval_seconds: 300, buckets, ...overrides }
+}
+
+function defaultBuckets(): BucketResponse[] {
+  return [
+    { start: '2026-09-06T11:00:00Z', series: { '2xx.requests': 40, '5xx.requests': 2 } },
+    { start: '2026-09-06T11:05:00Z', series: { '2xx.requests': 74, '5xx.requests': 4 } },
+  ]
+}
+
+export function makeRequestLog(
+  overrides: Partial<RequestLogResponse> = {},
+): RequestLogResponse {
+  return {
+    id: 'l1',
+    created_at: NOW,
+    gateway_id: 'g1',
+    api_key_id: 'k1',
+    end_user_id: null,
+    session_id: null,
+    upstream_model_id: 'mo1',
+    model_name: 'acme-gpt',
+    status_code: 200,
+    error_code: null,
+    error_message: null,
+    streamed: false,
+    latency_total_ms: 240,
+    latency_retrieval_ms: null,
+    latency_ttft_ms: null,
+    latency_upstream_ms: 210,
+    prompt_tokens: 12,
+    completion_tokens: 8,
+    memory_tokens: null,
+    request_id: 'req-1',
+    response_truncated: false,
+    bodies_omitted: null,
+    ...overrides,
+  }
+}
+
+export function makeRequestDetail(
+  overrides: Partial<RequestDetailResponse> = {},
+): RequestDetailResponse {
+  return {
+    log: makeRequestLog(),
+    transcript: {
+      request_body: [{ role: 'user', content: 'what is the answer' }],
+      assembled_prompt: [
+        { role: 'system', content: 'Be concise.' },
+        { role: 'user', content: 'what is the answer' },
+      ],
+      response_body: 'the answer',
+      distilled_at: null,
+    },
+    retrieved_chunk_ids: [],
+    retrieved_fact_ids: [],
+    failover_attempts: [],
     ...overrides,
   }
 }

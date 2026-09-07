@@ -12,6 +12,7 @@ from app.db.models.api_key import ApiKey
 from app.db.models.gateway import Gateway, GatewayTarget
 from app.db.models.invitation import Invitation
 from app.db.models.organization import Organization
+from app.db.models.request_log import RequestLog, Transcript
 from app.db.models.session import UserSession
 from app.db.models.upstream_model import UpstreamModel
 from app.db.models.user import User
@@ -22,6 +23,8 @@ __all__ = [
     "GatewayTarget",
     "Invitation",
     "Organization",
+    "RequestLog",
+    "Transcript",
     "UpstreamModel",
     "User",
     "UserSession",

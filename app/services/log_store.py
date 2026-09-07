@@ -71,6 +71,7 @@ def metadata_row(record: RequestRecord) -> dict[str, Any]:
         "failover_attempts": list(record.failover_attempts),
         "request_id": record.request_id,
         "response_truncated": record.response_truncated,
+        "failed_after_stream_start": record.failed_after_stream_start,
         "bodies_omitted": record.bodies_omitted,
     }
 

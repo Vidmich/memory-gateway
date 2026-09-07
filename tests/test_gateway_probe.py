@@ -22,6 +22,7 @@ import pytest
 from app.services.gateway_probe import PROBE_MAX_TOKENS, ProxyGatewayProbe
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.proxy import ProxyService
+from app.services.routing import Router
 from tests.support import (
     Behaviour,
     FakeResolver,
@@ -29,6 +30,7 @@ from tests.support import (
     completion,
     make_gateway,
     make_target,
+    serve,
 )
 
 
@@ -55,7 +57,10 @@ async def harness(upstream: MockUpstream) -> AsyncIterator[Harness]:
     resolver = FakeResolver(gateway=make_gateway(make_target(f"{upstream.base_url}/v1")))
     async with httpx.AsyncClient(timeout=10.0) as http:
         yield Harness(
-            probe=ProxyGatewayProbe(resolver, ProxyService(http)),
+            # The real router, with backoff turned off: these tests are about what
+            # the probe reports, and a jittered pause between attempts would add
+            # nothing but wall clock.
+            probe=ProxyGatewayProbe(resolver, Router(ProxyService(http), backoff=lambda: 0.0)),
             resolver=resolver,
             upstream=upstream,
         )
@@ -269,3 +274,79 @@ async def test_a_long_message_is_truncated_rather_than_refused(harness: Harness)
 
     sent = harness.upstream.last_request.body["messages"][0]["content"]
     assert len(sent) == 2000
+
+
+# ---------------------------------------------------------------------------
+# routing (SPEC 8.1)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_probe_walks_the_whole_chain(harness: Harness) -> None:
+    """A probe that only tried the primary would report a broken primary as a broken
+    gateway, on an endpoint that in fact serves every request. So it does what a request
+    does — and then says what it found, which the plain result cannot."""
+    spare = MockUpstream()
+    async with serve(spare) as base_url:
+        spare.base_url = base_url
+        spare.behaviour = Behaviour(body=completion("from the spare"))
+        harness.upstream.behaviour = Behaviour(status=503, body={"error": {"message": "down"}})
+
+        first = harness.gateway.targets[0]
+        second = make_target(f"{base_url}/v1", name="spare")
+        harness.reconfigure(routing_mode="failover", targets=(first, second))
+
+        result = await harness.probe.run("demo", message="hello")
+
+    assert result.ok is True
+    assert result.model_name == "spare"
+    assert result.content == "from the spare"
+    assert [attempt.model_name for attempt in result.attempts] == ["demo-upstream", "spare"]
+
+
+async def test_a_green_result_on_a_broken_primary_says_so(harness: Harness) -> None:
+    """The whole reason the attempts are on the result: "OK" and "OK, on the second
+    target" are the same green box otherwise, and only one of them needs looking at."""
+    spare = MockUpstream()
+    async with serve(spare) as base_url:
+        spare.base_url = base_url
+        spare.behaviour = Behaviour(body=completion("ok"))
+        harness.upstream.behaviour = Behaviour(status=503, body={"error": {"message": "down"}})
+
+        harness.reconfigure(
+            routing_mode="failover",
+            targets=(harness.gateway.targets[0], make_target(f"{base_url}/v1", name="spare")),
+        )
+        result = await harness.probe.run("demo", message="hello")
+
+    assert result.attempts[0].status == 503
+    assert result.attempts[0].retryable is True
+
+
+async def test_a_single_target_probe_reports_no_attempts(harness: Harness) -> None:
+    """One clean attempt needs no timeline, and rendering one would make every gateway
+    look like a chain."""
+    harness.upstream.behaviour = Behaviour(body=completion("hello"))
+
+    result = await harness.probe.run("demo", message="hello")
+
+    assert result.attempts == ()
+
+
+async def test_a_whole_failed_chain_lists_every_attempt(harness: Harness) -> None:
+    """ "All three targets returned 503" is a different problem from "the one target
+    returned 503", and only the list says which."""
+    spare = MockUpstream()
+    async with serve(spare) as base_url:
+        spare.base_url = base_url
+        spare.behaviour = Behaviour(status=500, body={"error": {"message": "also down"}})
+        harness.upstream.behaviour = Behaviour(status=503, body={"error": {"message": "down"}})
+
+        harness.reconfigure(
+            routing_mode="failover",
+            targets=(harness.gateway.targets[0], make_target(f"{base_url}/v1", name="spare")),
+        )
+        result = await harness.probe.run("demo", message="hello")
+
+    assert result.ok is False
+    assert result.upstream_status == 500
+    assert [attempt.status for attempt in result.attempts] == [503, 500]

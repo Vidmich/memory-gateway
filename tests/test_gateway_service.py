@@ -8,6 +8,7 @@ contract is what keeps the two agreeing about state.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -18,9 +19,12 @@ from app.schemas.gateway_config import LoggingConfig, MemoryConfig
 from app.services.catalog import ModelPatch
 from app.services.gateways import (
     MAX_KEYS_PER_GATEWAY,
+    MAX_TARGETS,
     RESERVED_SLUGS,
     GatewayDraft,
     GatewayPatch,
+    GatewayView,
+    TargetSpec,
 )
 from tests.directory_support import World, build_world
 
@@ -32,8 +36,22 @@ def world() -> World:
 
 def draft(**overrides: object) -> GatewayDraft:
     values: dict[str, object] = {"name": "Support Bot", "slug": "acme-support"}
+    # `model_id=` is kept as a shorthand here for the same reason the API keeps it: most
+    # of these tests are about something other than routing, and one target is the
+    # uninteresting case they want.
+    model_id = overrides.pop("model_id", None)
+    if model_id is not None:
+        values["targets"] = (TargetSpec(model_id=model_id),)  # type: ignore[arg-type]
     values.update(overrides)
     return GatewayDraft(**values)  # type: ignore[arg-type]
+
+
+def chain(*pairs: tuple[uuid.UUID, int]) -> tuple[TargetSpec, ...]:
+    return tuple(TargetSpec(model_id=model_id, weight=weight) for model_id, weight in pairs)
+
+
+def names(view: GatewayView) -> list[str]:
+    return [target.model.name for target in view.targets]
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +127,7 @@ async def test_a_gateway_can_point_at_its_own_model(world: World) -> None:
         world.actor(world.acme_admin), draft(model_id=world.acme_model.id)
     )
 
-    assert [model.name for model in view.models] == ["acme-gpt"]
+    assert names(view) == ["acme-gpt"]
 
 
 async def test_a_gateway_can_point_at_a_global_model(world: World) -> None:
@@ -117,7 +135,7 @@ async def test_a_gateway_can_point_at_a_global_model(world: World) -> None:
         world.actor(world.acme_admin), draft(model_id=world.global_model.id)
     )
 
-    assert [model.name for model in view.models] == ["shared-gpt-4o"]
+    assert names(view) == ["shared-gpt-4o"]
 
 
 async def test_a_gateway_cannot_point_at_another_organizations_model(world: World) -> None:
@@ -128,24 +146,24 @@ async def test_a_gateway_cannot_point_at_another_organizations_model(world: Worl
             world.actor(world.acme_admin), draft(model_id=world.globex_model.id)
         )
 
-    assert raised.value.param == "model_id"
+    assert raised.value.param == "targets.0.model_id"
 
 
 async def test_a_gateway_can_be_created_before_any_model_exists(world: World) -> None:
     view = await world.gateways.create_gateway(world.actor(world.acme_admin), draft())
 
-    assert view.models == ()
+    assert view.targets == ()
 
 
-async def test_a_null_model_id_detaches_the_gateway(world: World) -> None:
+async def test_an_empty_chain_detaches_the_gateway(world: World) -> None:
     """Distinct from omitting it. Parking an endpoint without deleting it is a real
-    thing to want, and it is the one place ``null`` is meaningful on this patch."""
+    thing to want, and an empty list is how the patch says so."""
     actor = world.actor(world.acme_admin)
     view = await world.gateways.update_gateway(
-        actor, world.acme_gateway.id, GatewayPatch(model_id=None)
+        actor, world.acme_gateway.id, GatewayPatch(targets=())
     )
 
-    assert view.models == ()
+    assert view.targets == ()
 
 
 async def test_omitting_the_model_leaves_the_target_alone(world: World) -> None:
@@ -154,7 +172,7 @@ async def test_omitting_the_model_leaves_the_target_alone(world: World) -> None:
         actor, world.acme_gateway.id, GatewayPatch(name="Renamed")
     )
 
-    assert [model.name for model in view.models] == ["acme-gpt"]
+    assert names(view) == ["acme-gpt"]
 
 
 # ---------------------------------------------------------------------------
@@ -162,25 +180,141 @@ async def test_omitting_the_model_leaves_the_target_alone(world: World) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_the_only_supported_routing_mode_is_single(world: World) -> None:
-    with pytest.raises(Validation) as raised:
-        await world.gateways.create_gateway(
-            world.actor(world.acme_admin), draft(routing_mode="failover")
-        )
-
-    assert "not yet supported" in raised.value.message
-    assert raised.value.param == "routing_mode"
-
-
-async def test_an_unknown_routing_mode_is_refused_differently(world: World) -> None:
-    """ "Not a mode" and "a mode this build does not serve yet" are different sentences,
-    and only one of them stops being true in task 08."""
+async def test_an_unknown_routing_mode_is_refused(world: World) -> None:
     with pytest.raises(Validation) as raised:
         await world.gateways.create_gateway(
             world.actor(world.acme_admin), draft(routing_mode="round_robin")
         )
 
-    assert "not yet supported" not in raised.value.message
+    assert raised.value.param == "routing_mode"
+
+
+async def test_a_failover_chain_is_saved_in_priority_order(world: World) -> None:
+    view = await world.gateways.create_gateway(
+        world.actor(world.acme_admin),
+        draft(
+            routing_mode="failover",
+            targets=chain((world.acme_model.id, 100), (world.global_model.id, 100)),
+        ),
+    )
+
+    assert names(view) == ["acme-gpt", "shared-gpt-4o"]
+    assert [target.priority for target in view.targets] == [0, 1]
+
+
+async def test_a_failover_chain_needs_somewhere_to_fail_over_to(world: World) -> None:
+    """One target in failover mode is a gateway that claims a property it does not have.
+    Refusing at save time is the only place the message can name the fix."""
+    with pytest.raises(Validation) as raised:
+        await world.gateways.create_gateway(
+            world.actor(world.acme_admin),
+            draft(routing_mode="failover", targets=chain((world.acme_model.id, 100))),
+        )
+
+    assert raised.value.param == "targets"
+    assert "fail over to" in raised.value.message
+
+
+async def test_single_mode_takes_one_target(world: World) -> None:
+    with pytest.raises(Validation) as raised:
+        await world.gateways.create_gateway(
+            world.actor(world.acme_admin),
+            draft(targets=chain((world.acme_model.id, 100), (world.global_model.id, 100))),
+        )
+
+    assert raised.value.param == "targets"
+
+
+async def test_ab_weights_must_add_up_to_a_hundred(world: World) -> None:
+    with pytest.raises(Validation) as raised:
+        await world.gateways.create_gateway(
+            world.actor(world.acme_admin),
+            draft(
+                routing_mode="ab_split",
+                targets=chain((world.acme_model.id, 70), (world.global_model.id, 20)),
+            ),
+        )
+
+    assert raised.value.param == "targets"
+    assert "90" in raised.value.message
+
+
+async def test_ab_weights_are_never_normalised_on_the_callers_behalf(world: World) -> None:
+    """The weights are somebody's experiment. Rescaling 70/20 to 78/22 would change what
+    is being measured and tell nobody, so the save is refused instead."""
+    actor = world.actor(world.acme_admin)
+    with pytest.raises(Validation):
+        await world.gateways.create_gateway(
+            actor,
+            draft(
+                routing_mode="ab_split",
+                targets=chain((world.acme_model.id, 70), (world.global_model.id, 20)),
+            ),
+        )
+
+    view = await world.gateways.create_gateway(
+        actor,
+        draft(
+            routing_mode="ab_split",
+            targets=chain((world.acme_model.id, 70), (world.global_model.id, 30)),
+        ),
+    )
+
+    assert [target.weight for target in view.targets] == [70, 30]
+
+
+async def test_the_same_model_cannot_appear_twice(world: World) -> None:
+    """A duplicate in a failover chain retries the upstream that just failed."""
+    with pytest.raises(Validation) as raised:
+        await world.gateways.create_gateway(
+            world.actor(world.acme_admin),
+            draft(
+                routing_mode="failover",
+                targets=chain((world.acme_model.id, 100), (world.acme_model.id, 100)),
+            ),
+        )
+
+    assert raised.value.param == "targets"
+    assert "twice" in raised.value.message
+
+
+async def test_switching_mode_alone_is_validated_against_the_existing_chain(
+    world: World,
+) -> None:
+    """Otherwise "switch to A/B" saves happily on a one-target gateway and starts
+    splitting 100/0 while the screen says it is running an experiment."""
+    with pytest.raises(Validation) as raised:
+        await world.gateways.update_gateway(
+            world.actor(world.acme_admin),
+            world.acme_gateway.id,
+            GatewayPatch(routing_mode="ab_split"),
+        )
+
+    assert raised.value.param == "targets"
+
+
+async def test_a_gateway_with_no_targets_may_take_any_mode(world: World) -> None:
+    """A gateway can exist before its models do; the endpoint answers 503 and says so.
+    Refusing the mode as well would make the editor unusable in the order people use it."""
+    view = await world.gateways.create_gateway(
+        world.actor(world.acme_admin), draft(routing_mode="ab_split")
+    )
+
+    assert view.gateway.routing_mode == "ab_split"
+    assert view.targets == ()
+
+
+async def test_a_chain_is_capped(world: World) -> None:
+    with pytest.raises(Validation) as raised:
+        await world.gateways.create_gateway(
+            world.actor(world.acme_admin),
+            draft(
+                routing_mode="failover",
+                targets=tuple(TargetSpec(model_id=uuid7()) for _ in range(MAX_TARGETS + 1)),
+            ),
+        )
+
+    assert raised.value.param == "targets"
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ from typing import Any, Self
 from pydantic import BaseModel, ConfigDict
 
 from app.db.models import RequestLog, Transcript
+from app.schemas.routing import AttemptResponse
 from app.services.metrics_store import Bucket, LogDetail, Summary
 from app.services.monitoring import Series
 
@@ -146,6 +147,9 @@ class RequestLogResponse(BaseModel):
     memory_tokens: int | None
     request_id: str | None
     response_truncated: bool
+    #: SPEC §8.2: the upstream died after the first chunk was flushed, so failover could
+    #: not have helped. Distinct from ``error_code``, which says *what* went wrong.
+    failed_after_stream_start: bool
     bodies_omitted: str | None
 
     @classmethod
@@ -172,6 +176,7 @@ class RequestLogResponse(BaseModel):
             memory_tokens=row.memory_tokens,
             request_id=row.request_id,
             response_truncated=row.response_truncated,
+            failed_after_stream_start=bool(row.failed_after_stream_start),
             bodies_omitted=row.bodies_omitted,
         )
 
@@ -199,9 +204,13 @@ class TranscriptResponse(BaseModel):
 class RequestDetailResponse(BaseModel):
     """One request, with everything the §10.3 drawer draws.
 
-    ``routing`` and the retrieval lists are here and empty until tasks 08 and 10 fill
-    them, for the same reason the gateway editor shows its unbuilt sections: a drawer
-    that grows two panels later moves everything the reader has learned the position of.
+    The retrieval lists are here and empty until task 10 fills them, for the same reason
+    the gateway editor shows its unbuilt sections: a drawer that grows a panel later moves
+    everything the reader has learned the position of.
+
+    ``failover_attempts`` is empty for the overwhelming majority of requests, and that is
+    information rather than an omission: it means one target answered, which the ``log``
+    fields already describe completely. Non-empty means more than one was involved.
     """
 
     model_config = _CONFIG
@@ -210,7 +219,7 @@ class RequestDetailResponse(BaseModel):
     transcript: TranscriptResponse | None = None
     retrieved_chunk_ids: list[Any]
     retrieved_fact_ids: list[Any]
-    failover_attempts: list[Any]
+    failover_attempts: list[AttemptResponse]
 
     @classmethod
     def of(cls, detail: LogDetail) -> Self:
@@ -221,11 +230,15 @@ class RequestDetailResponse(BaseModel):
             ),
             retrieved_chunk_ids=list(detail.log.retrieved_chunk_ids or []),
             retrieved_fact_ids=list(detail.log.retrieved_fact_ids or []),
-            failover_attempts=list(detail.log.failover_attempts or []),
+            failover_attempts=[
+                AttemptResponse.model_validate(attempt)
+                for attempt in (detail.log.failover_attempts or [])
+            ],
         )
 
 
 __all__ = [
+    "AttemptResponse",
     "BucketResponse",
     "ErrorGroupResponse",
     "ModelTrafficResponse",

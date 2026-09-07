@@ -14,6 +14,13 @@ key to test a gateway would be a strange requirement — and it returns the **as
 prompt**, which a data-plane response never does, because seeing what the system context
 turned into is most of the value.
 
+It also walks the whole routing chain, which matters more than it sounds. A probe that
+only tried the primary would report a broken primary as a failure on a gateway that in
+fact serves every request perfectly; a probe that failed over silently would report a
+green tick on a gateway whose primary is dead. So it does what a request does and reports
+every attempt, and the editor renders "answered by the secondary, after the primary
+returned 503" — which is the sentence somebody actually needs.
+
 Like :class:`~app.services.model_probe.ModelProbe`, a failure is a *result*, not an
 exception: "the upstream said 401" is the successful answer to "does this work".
 """
@@ -29,7 +36,8 @@ from app.api.proxy.errors import ProxyError, UpstreamStatus
 from app.schemas.openai import ChatMessage, ChatRequest, ChatResponse
 from app.services.gateway_resolver import GatewayResolver
 from app.services.prompt import as_text
-from app.services.proxy import ProxyService
+from app.services.proxy import Prepared
+from app.services.routing import Attempt, Attempts, Router, plan
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +74,10 @@ class GatewayProbeResult:
     #: practice — the probe sends only ``max_tokens`` — but carried so the editor can
     #: show the same explanation the response header gives a customer.
     locked_overrides: tuple[str, ...] = ()
+    #: Every target this probe tried, in order. Empty for a gateway with one target, for
+    #: the same reason the log column is: one attempt is fully described by the fields
+    #: above it.
+    attempts: tuple[Attempt, ...] = ()
 
 
 class GatewayProbe(Protocol):
@@ -73,11 +85,11 @@ class GatewayProbe(Protocol):
 
 
 class ProxyGatewayProbe:
-    """The real thing: resolver plus proxy, exactly as the data plane wires them."""
+    """The real thing: resolver plus router, exactly as the data plane wires them."""
 
-    def __init__(self, resolver: GatewayResolver, proxy: ProxyService) -> None:
+    def __init__(self, resolver: GatewayResolver, router: Router) -> None:
         self._resolver = resolver
-        self._proxy = proxy
+        self._router = router
 
     async def run(self, slug: str, *, message: str) -> GatewayProbeResult:
         started = time.perf_counter()
@@ -88,10 +100,15 @@ class ProxyGatewayProbe:
             stream=False,
         )
 
+        # The last prompt actually assembled, captured as the chain walks. On a failure
+        # this is what shows the operator what went upstream — which is most of why they
+        # pressed the button.
+        seen: list[Prepared] = []
+        attempts = Attempts(on_prepared=seen.append)
+
         try:
             gateway = await self._resolver.resolve(slug)
-            target = gateway.target()
-            prepared = self._proxy.prepare(request, gateway, target)
+            routing = plan(gateway)
         except ProxyError as exc:
             # A disabled gateway, a switched-off model, a credential that will not
             # decrypt. All of them are answers, and all of them name the fix.
@@ -99,19 +116,29 @@ class ProxyGatewayProbe:
 
         upstream_started = time.perf_counter()
         try:
-            completion = await self._proxy.complete(prepared)
+            completed = await self._router.complete(request, gateway, routing, attempts)
         except ProxyError as exc:
-            return _failed(started, exc, prompt=_prompt_of(prepared.request), model=target.name)
+            last = seen[-1] if seen else None
+            return _failed(
+                started,
+                exc,
+                prompt=_prompt_of(last.request) if last else (),
+                model=last.target.name if last else None,
+                attempts=tuple(attempts.records),
+            )
 
         upstream_ms = _elapsed(upstream_started)
         return GatewayProbeResult(
             ok=True,
             total_ms=_elapsed(started),
             upstream_ms=upstream_ms,
-            assembled_prompt=_prompt_of(prepared.request),
-            model_name=target.name,
-            content=_first_choice(completion),
-            locked_overrides=prepared.params.overridden,
+            assembled_prompt=_prompt_of(completed.prepared.request),
+            model_name=completed.prepared.target.name,
+            content=_first_choice(completed.response),
+            locked_overrides=completed.prepared.params.overridden,
+            # Only when something was tried and rejected. One clean attempt needs no
+            # timeline, and rendering one would make every gateway look like a chain.
+            attempts=tuple(attempts.records) if len(attempts) > 1 else (),
         )
 
 
@@ -121,6 +148,7 @@ def _failed(
     *,
     prompt: tuple[PromptMessage, ...] = (),
     model: str | None = None,
+    attempts: tuple[Attempt, ...] = (),
 ) -> GatewayProbeResult:
     return GatewayProbeResult(
         ok=False,
@@ -132,6 +160,10 @@ def _failed(
         # from this gateway" are not the same red box.
         upstream_status=exc.status_code if isinstance(exc, UpstreamStatus) else None,
         error_message=exc.message,
+        # Every attempt, including on failure — "all three targets returned 503" is a
+        # different problem from "the one target returned 503", and only the list says
+        # which.
+        attempts=attempts,
     )
 
 

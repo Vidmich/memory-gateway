@@ -23,6 +23,14 @@ including a write to a *model* the gateway points at, which happens in
 **Locked parameters are a cap, not a default.** They are stored here and applied in
 :func:`app.services.params.resolve_params` *after* the client's own values, which is the
 only ordering that makes them mean anything.
+
+**Routing is validated where it is written, never where it is served.** A/B weights must
+sum to exactly 100, a failover chain needs somewhere to fail over *to*, and a ``single``
+gateway has one target. All three are checked here, at save time, because the request
+path must not be in the business of deciding what to do with a 70/20 split at three in
+the morning — :mod:`app.services.routing` divides by the real total precisely so that a
+chain written around this service degrades instead of breaking, but the readable error
+belongs to whoever typed the number.
 """
 
 from __future__ import annotations
@@ -30,7 +38,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -51,7 +59,7 @@ from app.schemas.gateway_config import (
 )
 from app.services.gateway_probe import GatewayProbe, GatewayProbeResult
 from app.services.gateway_resolver import ConfigCache
-from app.services.gateway_store import GatewayStore, GatewayTransaction
+from app.services.gateway_store import Chain, GatewayStore, GatewayTransaction
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
 from app.services.params import validate_params
 from app.services.rate_limit import FixedWindowLimiter
@@ -69,9 +77,15 @@ NO_SUCH_KEY = "No such API key."
 #: in a support ticket, and a slug cannot be renamed once anyone is using it.
 RESERVED_SLUGS = frozenset({"api", "admin", "health", "metrics", "g", "www"})
 
-#: Task 08 turns the other two on. Until then, accepting ``failover`` would produce a
-#: gateway that quietly serves one target and calls itself something else.
-SUPPORTED_ROUTING_MODES = frozenset({"single"})
+#: A chain long enough for a primary, a fallback and a fallback's fallback, and short
+#: enough that a pathological configuration cannot spend a client's whole deadline
+#: walking it. The routing deadline bounds the wall clock; this bounds the surprise.
+MAX_TARGETS = 8
+
+#: SPEC §8.1: percentages. Not a fraction, not "roughly", and not normalised silently —
+#: 70/20 saved as 78/22 is a change nobody asked for to an experiment somebody is
+#: measuring.
+TOTAL_WEIGHT = 100
 
 MAX_KEY_NAME = 100
 MAX_KEYS_PER_GATEWAY = 50
@@ -93,8 +107,21 @@ type Maybe[T] = T | _Unset
 
 
 @dataclass(frozen=True, slots=True)
+class TargetSpec:
+    """One link of a routing chain as the caller asked for it: a model and its weight.
+
+    Position in the list is priority. The weight is stored whatever the mode, so that
+    switching a gateway to ``single`` to debug something and back to ``ab_split``
+    afterwards does not quietly lose the split.
+    """
+
+    model_id: uuid.UUID
+    weight: int = TOTAL_WEIGHT
+
+
+@dataclass(frozen=True, slots=True)
 class GatewayDraft:
-    """A new endpoint. ``model_id`` is optional so a gateway can be created and pointed
+    """A new endpoint. ``targets`` may be empty so a gateway can be created and pointed
     at a model afterwards — which is what the editor does when the organization has no
     models yet."""
 
@@ -103,7 +130,7 @@ class GatewayDraft:
     description: str | None = None
     enabled: bool = True
     routing_mode: str = "single"
-    model_id: uuid.UUID | None = None
+    targets: tuple[TargetSpec, ...] = ()
     system_context: str | None = None
     param_overrides: Mapping[str, Any] = field(default_factory=dict)
     locked_params: Mapping[str, Any] = field(default_factory=dict)
@@ -125,7 +152,9 @@ class GatewayPatch:
     description: Maybe[str | None] = UNSET
     enabled: Maybe[bool] = UNSET
     routing_mode: Maybe[str] = UNSET
-    model_id: Maybe[uuid.UUID | None] = UNSET
+    #: An empty tuple detaches the gateway from every model, which is how you park an
+    #: endpoint without deleting it. ``UNSET`` leaves the chain alone.
+    targets: Maybe[tuple[TargetSpec, ...]] = UNSET
     system_context: Maybe[str | None] = UNSET
     param_overrides: Maybe[Mapping[str, Any]] = UNSET
     locked_params: Maybe[Mapping[str, Any]] = UNSET
@@ -135,12 +164,21 @@ class GatewayPatch:
 
 
 @dataclass(frozen=True, slots=True)
+class TargetView:
+    """A resolved link of the chain, with the two numbers that decide what it is for."""
+
+    model: UpstreamModel
+    priority: int
+    weight: int
+
+
+@dataclass(frozen=True, slots=True)
 class GatewayView:
     """A gateway plus the things a screen needs and the row does not carry."""
 
     gateway: Gateway
-    #: The models it routes to, resolved. One entry until task 08.
-    models: tuple[UpstreamModel, ...]
+    #: The chain it routes over, in priority order.
+    targets: tuple[TargetView, ...]
     #: Active keys. Shown on the list so "why is nobody calling this" has an answer.
     key_count: int
     endpoint_url: str
@@ -223,6 +261,11 @@ class GatewayService:
                     param="slug",
                 )
 
+            # Resolved and checked before anything is written, so a chain the caller
+            # got wrong leaves no half-created gateway behind.
+            chain = await self._resolve_chain(transaction, draft.targets)
+            _check_chain(draft.routing_mode, chain)
+
             gateway = Gateway(
                 id=uuid7(),
                 slug=slug,
@@ -250,10 +293,7 @@ class GatewayService:
                 limits=merge_config(LimitsConfig, {}, draft.limits, field="limits"),
             )
             await transaction.add_gateway(gateway)
-
-            await transaction.set_targets(
-                gateway, await self._resolve_targets(transaction, draft.model_id)
-            )
+            await transaction.set_targets(gateway, chain)
             await transaction.commit()
 
             view = self._view(gateway, key_count=0)
@@ -298,10 +338,18 @@ class GatewayService:
                     LimitsConfig, gateway.limits, patch.limits, field="limits"
                 )
 
-            if not isinstance(patch.model_id, _Unset):
-                await transaction.set_targets(
-                    gateway, await self._resolve_targets(transaction, patch.model_id)
-                )
+            # Validated against the *effective* pair, whichever half was sent. Changing
+            # only the mode has to be refused when the existing chain cannot serve it —
+            # otherwise "switch to A/B" saves happily and starts splitting 100/0.
+            if isinstance(patch.targets, _Unset):
+                chain: list[Chain] = [
+                    (target.upstream_model, target.weight) for target in gateway.targets
+                ]
+                _check_chain(gateway.routing_mode, chain)
+            else:
+                chain = await self._resolve_chain(transaction, patch.targets)
+                _check_chain(gateway.routing_mode, chain)
+                await transaction.set_targets(gateway, chain)
 
             await transaction.commit()
             counts = await transaction.key_counts([gateway.id])
@@ -453,12 +501,14 @@ class GatewayService:
     # -- internals --------------------------------------------------------
 
     def _view(self, gateway: Gateway, *, key_count: int) -> GatewayView:
-        models = tuple(
-            target.upstream_model for target in gateway.targets if target.upstream_model is not None
+        targets = tuple(
+            TargetView(model=target.upstream_model, priority=target.priority, weight=target.weight)
+            for target in gateway.targets
+            if target.upstream_model is not None
         )
         return GatewayView(
             gateway=gateway,
-            models=models,
+            targets=targets,
             key_count=key_count,
             endpoint_url=self.endpoint_url(gateway.slug),
         )
@@ -478,26 +528,33 @@ class GatewayService:
             raise NotFound(NO_SUCH_GATEWAY)
         return gateway
 
-    async def _resolve_targets(
-        self, transaction: GatewayTransaction, model_id: uuid.UUID | None
-    ) -> list[UpstreamModel]:
-        """Check the model is one this caller may point at, and return the chain.
+    async def _resolve_chain(
+        self, transaction: GatewayTransaction, specs: Sequence[TargetSpec]
+    ) -> list[Chain]:
+        """Check every model is one this caller may point at, and return the chain.
 
-        A 422 rather than a 404: the id came from a form field, and naming the field is
-        what lets the UI put the message on the model picker. It is checked against the
+        A 422 rather than a 404: the ids came from a form, and naming the field is what
+        lets the UI put the message on the right row. Each is checked against the
         *visible* catalog — own models plus global ones — which is the same set the
         picker was populated from (SPEC §5.3).
         """
-        if model_id is None:
-            return []
-        model = await transaction.visible_model(model_id)
-        if model is None:
-            raise Validation(
-                "That model is not available to this organization. Pick one from the "
-                "Models screen, or add it there first.",
-                param="model_id",
-            )
-        return [model]
+        if len(specs) > MAX_TARGETS:
+            # Before the lookups rather than after: a chain this long is refused whatever
+            # the models turn out to be, and resolving nine of them first is nine queries
+            # spent on a save that cannot succeed.
+            raise Validation(f"A gateway routes to at most {MAX_TARGETS} models.", param="targets")
+
+        chain: list[Chain] = []
+        for index, spec in enumerate(specs):
+            model = await transaction.visible_model(spec.model_id)
+            if model is None:
+                raise Validation(
+                    "That model is not available to this organization. Pick one from the "
+                    "Models screen, or add it there first.",
+                    param=f"targets.{index}.model_id",
+                )
+            chain.append((model, spec.weight))
+        return chain
 
     async def _invalidate(self, slug: str) -> None:
         if self._cache is not None:
@@ -561,15 +618,57 @@ def _check_routing_mode(mode: str) -> None:
         raise Validation(
             f"Routing mode must be one of {', '.join(ROUTING_MODES)}.", param="routing_mode"
         )
-    if mode not in SUPPORTED_ROUTING_MODES:
-        # The column accepts it and the UI names it, so that "can this gateway fail
-        # over?" is answerable from the screen. Task 08 makes it work, and this check is
-        # the only thing that has to change.
+
+
+def _check_chain(mode: str, chain: Sequence[Chain]) -> None:
+    """What each mode needs from its chain, refused here rather than discovered at 3 a.m.
+
+    An empty chain is legal in every mode: a gateway can exist before its model does, and
+    the endpoint answers 503 with a message naming the fix. What is refused is a chain
+    that *contradicts* the mode, because that is the shape that serves traffic while
+    quietly doing something other than what the screen says.
+    """
+    ids = [model.id for model, _ in chain]
+    if len(set(ids)) != len(ids):
         raise Validation(
-            f"The '{mode}' routing mode is not yet supported by this build. "
-            f"Available: {', '.join(sorted(SUPPORTED_ROUTING_MODES))}.",
-            param="routing_mode",
+            "The same model appears twice. Each target must be a different model — "
+            "a duplicate in a failover chain retries the upstream that just failed.",
+            param="targets",
         )
+
+    if not chain:
+        return
+
+    if mode == "single" and len(chain) > 1:
+        raise Validation(
+            "Single-model routing takes one target. Switch the mode to failover or "
+            "A/B split, or remove the others.",
+            param="targets",
+        )
+
+    if mode == "failover" and len(chain) < 2:
+        raise Validation(
+            "A failover chain needs something to fail over to. Add a second model, or "
+            "switch the mode back to a single model.",
+            param="targets",
+        )
+
+    if mode == "ab_split":
+        if len(chain) < 2:
+            raise Validation(
+                "An A/B split needs at least two models to split between.",
+                param="targets",
+            )
+        total = sum(weight for _, weight in chain)
+        if total != TOTAL_WEIGHT:
+            # Not normalised on the caller's behalf. The weights are the experiment's
+            # design; silently rescaling 70/20 to 78/22 would change the result of
+            # whatever is being measured and tell nobody.
+            raise Validation(
+                f"A/B weights are percentages and must add up to {TOTAL_WEIGHT}. "
+                f"These add up to {total}.",
+                param="targets",
+            )
 
 
 def _stripped(value: Maybe[str]) -> Maybe[str]:
@@ -582,7 +681,9 @@ def _apply(gateway: Gateway, attribute: str, value: Maybe[Any]) -> None:
 
 
 __all__ = [
+    "MAX_TARGETS",
     "RESERVED_SLUGS",
+    "TOTAL_WEIGHT",
     "UNSET",
     "GatewayDraft",
     "GatewayPatch",
@@ -590,4 +691,6 @@ __all__ = [
     "GatewayView",
     "IssuedKey",
     "Maybe",
+    "TargetSpec",
+    "TargetView",
 ]

@@ -141,6 +141,7 @@ def payload_for(slug: str = "acme-chat", **overrides: Any) -> dict[str, Any]:
         "param_overrides": {},
         "locked_params": {},
         "targets": [],
+        "weights": {},
         "disabled": [],
         "logging": {
             "request_body": True,
@@ -328,6 +329,43 @@ async def test_a_failed_invalidation_does_not_raise(cache: GatewayCache, redis: 
     redis.fail = True
 
     await cache.invalidate(["acme-chat"])
+
+
+async def test_the_routing_weights_survive_the_round_trip(cache: GatewayCache) -> None:
+    """The failure this guards against is silent and expensive: a payload that loses its
+    weights sends an A/B split to whichever target the fallback picks, and every number on
+    the comparison screen is then about the wrong thing."""
+    model_id = uuid7()
+    source = FakeSource(
+        payload_for(
+            routing_mode="ab_split",
+            targets=[
+                {
+                    "id": str(model_id),
+                    "name": "acme-gpt",
+                    "base_url": "https://api.example.com/v1",
+                    "dialect": "openai",
+                    "upstream_model_id": "gpt-4o-mini",
+                    "auth_type": "bearer",
+                    "credential_ciphertext": None,
+                    "extra_headers": {},
+                    "system_context": None,
+                    "default_params": {},
+                    "timeout_seconds": 60,
+                }
+            ],
+            weights={str(model_id): 70},
+        )
+    )
+    resolver = CachedGatewayResolver(source, cache)  # type: ignore[arg-type]
+
+    first = await resolver.resolve("acme-chat")
+    second = await resolver.resolve("acme-chat")
+
+    assert first.weights == {model_id: 70}
+    # The second read comes out of Redis, through JSON, where the key was a string.
+    assert second.weights == {model_id: 70}
+    assert source.loads == 1
 
 
 async def test_a_payload_from_another_build_is_treated_as_a_miss(

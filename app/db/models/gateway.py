@@ -33,8 +33,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.db.models.upstream_model import UpstreamModel
 
-#: SPEC §8.1. Only ``single`` is served until task 08; the column accepts the other two
-#: now so enabling them is code, not a migration on a live table.
+#: SPEC §8.1. All three are served; :mod:`app.services.routing` turns a mode and the
+#: ordered ``gateway_targets`` rows into an attempt list, and
+#: :mod:`app.services.gateways` refuses a chain that contradicts the mode.
 ROUTING_MODES = ("single", "failover", "ab_split")
 
 MIN_SLUG_LENGTH = 3
@@ -119,7 +120,14 @@ class GatewayTarget(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ForeignKey("upstream_models.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    #: Position in a ``failover`` chain, and which single target ``single`` uses. Zero
+    #: is tried first.
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: A percentage, read only by ``ab_split``. Stored whatever the mode, so switching a
+    #: gateway to ``single`` to debug something and back again does not lose the split.
+    #: The service refuses a saved A/B chain whose weights do not total 100; the router
+    #: still divides by the real total, so a chain written around the service — or one a
+    #: disabled model dropped out of — splits in proportion rather than losing traffic.
     weight: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
 
     gateway: Mapped[Gateway] = relationship(back_populates="targets")

@@ -60,8 +60,9 @@ VERSION_TTL_SECONDS = 7 * 24 * 3600
 
 #: Bumped whenever the payload gains or loses a field. An older payload is treated as
 #: a miss rather than migrated, so a rolling deploy costs one database read per slug
-#: and needs no coordination. Task 07 raised it to 2 by adding the logging policy.
-PAYLOAD_VERSION = 2
+#: and needs no coordination. Task 07 raised it to 2 by adding the logging policy; task
+#: 08 raised it to 3 by adding the per-target weights that A/B selection needs.
+PAYLOAD_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,12 @@ class ResolvedGateway:
     #: whole difference between a default and a cap — see ``app.services.params``.
     locked_params: Mapping[str, Any] = field(default_factory=dict)
     targets: tuple[UpstreamTarget, ...] = ()
+    #: Selection weight per target, keyed by upstream model id rather than by position.
+    #: A parallel tuple would be one refactor away from an off-by-one that silently sends
+    #: 70% of traffic to the wrong variant, and ``uq_gateway_targets_pair`` guarantees a
+    #: model appears at most once in a gateway, so the key is unique by construction.
+    #: Only ``ab_split`` reads it.
+    weights: Mapping[uuid.UUID, int] = field(default_factory=dict)
     #: Models this gateway points at that are switched off. Carried so the 503 can say
     #: *which* model is disabled instead of "no usable target" — the difference between
     #: an operator fixing it in one click and going looking for the problem.
@@ -99,17 +106,18 @@ class ResolvedGateway:
         """
         return self.slug
 
-    def target(self) -> UpstreamTarget:
-        """The upstream to call.
+    def require_targets(self) -> tuple[UpstreamTarget, ...]:
+        """The usable chain, in priority order, or a 503 that names the fix.
 
-        Task 08 replaces this with the routing modes; until then a gateway has exactly
-        one target and picking it is not a decision.
+        Which of these actually gets called is :mod:`app.services.routing`'s decision, not
+        this object's. All that is settled here is that there is at least one, because a
+        gateway with nothing to route to fails the same way in all three modes.
         """
         if not self.targets:
-            raise GatewayUnavailable(self._misconfiguration())
-        return self.targets[0]
+            raise GatewayUnavailable(self.misconfiguration())
+        return self.targets
 
-    def _misconfiguration(self) -> str:
+    def misconfiguration(self) -> str:
         """Why this gateway cannot serve, in terms the operator can act on.
 
         A generic "no usable target" is technically true and practically useless: the two
@@ -345,6 +353,9 @@ def _encode(gateway: Gateway) -> dict[str, Any]:
         # schema validation.
         "logging": _encode_policy(LoggingConfig.load(gateway.logging_config)),
         "targets": [_encode_target(target) for target in _usable(gateway)],
+        # Keyed by model id so the map survives a target dropping out of `targets` for
+        # being disabled — which is exactly when the weights stop summing to 100.
+        "weights": {str(target.upstream_model_id): target.weight for target in _usable(gateway)},
         "disabled": [
             target.upstream_model.name
             for target in gateway.targets
@@ -396,6 +407,10 @@ def _decode(
         param_overrides=dict(payload.get("param_overrides") or {}),
         locked_params=dict(payload.get("locked_params") or {}),
         targets=tuple(_decode_target(item, decrypt) for item in payload.get("targets", ())),
+        weights={
+            uuid.UUID(model_id): int(weight)
+            for model_id, weight in (payload.get("weights") or {}).items()
+        },
         disabled=tuple(payload.get("disabled", ())),
         log_policy=_decode_policy(payload.get("logging")),
     )

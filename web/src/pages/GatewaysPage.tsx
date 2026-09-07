@@ -165,16 +165,36 @@ export function GatewaysPage() {
  * A gateway with no model cannot serve, and says so here rather than at the first 503.
  * A gateway pointing at a *disabled* model is the same outage with a different fix, so
  * the two are different messages.
+ *
+ * A chain names its first target and counts the rest. Listing all of them would make the
+ * column the widest thing on the screen for a detail the editor is one click away from;
+ * naming only the first would make a two-model gateway look like a one-model gateway,
+ * which is the reading that matters — a disabled *secondary* is a failover that will not
+ * work, and it is only visible if the count says there is one.
  */
 function TargetCell({ gateway }: { gateway: GatewayResponse }) {
   const target = gateway.targets[0]
   if (!target) {
     return <span className="text-xs text-amber-700">No model — requests will fail</span>
   }
+  const off = gateway.targets.filter((entry) => !entry.enabled)
+  const rest = gateway.targets.length - 1
+
   return (
     <div>
-      <div className="text-sm text-slate-700">{target.name}</div>
-      {target.enabled ? null : <div className="text-xs text-amber-700">Model is disabled</div>}
+      <div className="text-sm text-slate-700">
+        {target.name}
+        {rest > 0 ? <span className="text-slate-400"> +{rest}</span> : null}
+      </div>
+      {off.length > 0 ? (
+        <div className="text-xs text-amber-700">
+          {off.length === gateway.targets.length
+            ? off.length === 1
+              ? 'Model is disabled'
+              : 'Every model is disabled'
+            : `${off.length} of ${gateway.targets.length} models disabled`}
+        </div>
+      ) : null}
     </div>
   )
 }

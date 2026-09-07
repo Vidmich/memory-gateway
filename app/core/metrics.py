@@ -46,6 +46,23 @@ class LogMetrics:
 
 
 @dataclass(frozen=True)
+class RoutingMetrics:
+    """Upstream routing, as three numbers (SPEC §8.1).
+
+    Together they answer the three questions an operator has about a multi-target
+    gateway. ``attempts`` labelled ``outcome="served"`` is the per-target traffic share,
+    which is what an A/B split is checked against; ``failovers`` says which upstream keeps
+    forcing the chain onward, which names a model to go and fix; ``chain_length`` is
+    attempts per request, and its rise is the first sign of a provider degrading before
+    any request has actually failed.
+    """
+
+    attempts: Counter
+    failovers: Counter
+    chain_length: Histogram
+
+
+@dataclass(frozen=True)
 class Metrics:
     registry: CollectorRegistry
     http_requests: Counter
@@ -53,6 +70,7 @@ class Metrics:
     http_in_progress: Gauge
     build_info: Gauge
     logs: LogMetrics
+    routing: RoutingMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -93,6 +111,32 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         http_in_progress=http_in_progress,
         build_info=build_info,
         logs=build_log_metrics(registry),
+        routing=build_routing_metrics(registry),
+    )
+
+
+def build_routing_metrics(registry: CollectorRegistry) -> RoutingMetrics:
+    """Split out for the same reason as the log counters: a router can be built in a test
+    without a whole application around it."""
+    return RoutingMetrics(
+        attempts=Counter(
+            "routing_attempts_total",
+            "Upstream attempts by routing mode, target model and outcome.",
+            labelnames=("mode", "model", "outcome"),
+            registry=registry,
+        ),
+        failovers=Counter(
+            "routing_failovers_total",
+            "Failovers away from a target, by the target that failed and why.",
+            labelnames=("model", "error_code"),
+            registry=registry,
+        ),
+        chain_length=Histogram(
+            "routing_chain_attempts",
+            "Upstream attempts made per request.",
+            buckets=(1, 2, 3, 4, 5, 8),
+            registry=registry,
+        ),
     )
 
 

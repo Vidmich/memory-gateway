@@ -10,6 +10,7 @@ import { AppRoutes, makeQueryClient } from '@/App'
 import { AuthProvider } from '@/auth/AuthContext'
 import {
   latencySeries,
+  modelSlices,
   pointsOf,
   seriesFrom,
   statusSeries,
@@ -324,6 +325,116 @@ describe('the request drawer', () => {
 // ---------------------------------------------------------------------------
 // the pure helpers
 // ---------------------------------------------------------------------------
+
+describe('the routing timeline', () => {
+  const withAttempts = () =>
+    makeRequestDetail({
+      log: makeRequestLog({ model_name: 'acme-spare' }),
+      failover_attempts: [
+        {
+          target_id: 'mo1',
+          model_name: 'acme-gpt',
+          status: 503,
+          error_code: 'upstream_error',
+          latency_ms: 412,
+          retryable: true,
+        },
+        {
+          target_id: 'mo2',
+          model_name: 'acme-spare',
+          status: 200,
+          error_code: null,
+          latency_ms: 640,
+          retryable: false,
+        },
+      ],
+    })
+
+  const open = async (detail: ReturnType<typeof makeRequestDetail>) => {
+    const person = userEvent.setup()
+    const { client } = fakeServer({ detail })
+    renderAt(client)
+    const table = await screen.findByRole('table')
+    await person.click(await within(table).findByText('acme-gpt'))
+    return screen.findByRole('dialog', { name: 'Request details' })
+  }
+
+  it('draws every attempt when more than one target was involved', async () => {
+    const dialog = await open(withAttempts())
+
+    expect(within(dialog).getByText('503')).toBeInTheDocument()
+    expect(within(dialog).getByText('upstream_error')).toBeInTheDocument()
+    expect(within(dialog).getByText('412 ms')).toBeInTheDocument()
+    expect(within(dialog).getByText('640 ms')).toBeInTheDocument()
+  })
+
+  it('says so plainly when one target answered', async () => {
+    // An empty list is information, not a gap: it means nothing had to be retried.
+    const dialog = await open(makeRequestDetail())
+
+    expect(within(dialog).getByText(/served on the first attempt/)).toBeInTheDocument()
+  })
+
+  it('explains a stream that could not be failed over', async () => {
+    const dialog = await open(
+      makeRequestDetail({
+        log: makeRequestLog({
+          status_code: 200,
+          error_code: 'stream_failed',
+          failed_after_stream_start: true,
+        }),
+      }),
+    )
+
+    expect(
+      within(dialog).getByText(/failed after the first chunk had reached the client/),
+    ).toBeInTheDocument()
+  })
+})
+
+describe('the A/B overlay', () => {
+  it('marks the configured weight against the traffic each model actually took', () => {
+    const gateway = makeGateway({
+      routing_mode: 'ab_split',
+      targets: [
+        { id: 'mo1', name: 'a', dialect: 'openai', enabled: true, organization_id: 'o1', priority: 0, weight: 70 },
+        { id: 'mo2', name: 'b', dialect: 'openai', enabled: true, organization_id: 'o1', priority: 1, weight: 30 },
+      ],
+    })
+    const summary = makeSummary({
+      models: [
+        { upstream_model_id: 'mo1', model_name: 'a', requests: 68 },
+        { upstream_model_id: 'mo2', model_name: 'b', requests: 32 },
+      ],
+    })
+
+    expect(modelSlices(summary, gateway)).toEqual([
+      { label: 'a', value: 68, expected: 70 },
+      { label: 'b', value: 32, expected: 30 },
+    ])
+  })
+
+  it('leaves a failover chain unmarked', () => {
+    // A healthy chain sends everything to its primary, so a mark at its weight would
+    // read as drift when nothing is wrong.
+    const gateway = makeGateway({
+      routing_mode: 'failover',
+      targets: [
+        { id: 'mo1', name: 'a', dialect: 'openai', enabled: true, organization_id: 'o1', priority: 0, weight: 100 },
+      ],
+    })
+
+    expect(modelSlices(makeSummary(), gateway)).toEqual([
+      { label: 'acme-gpt', value: 120 },
+    ])
+  })
+
+  it('leaves the all-gateways view unmarked', () => {
+    expect(modelSlices(makeSummary(), undefined)).toEqual([
+      { label: 'acme-gpt', value: 120 },
+    ])
+  })
+})
 
 describe('the assembled-prompt diff', () => {
   it('counts the messages the gateway prepended', () => {

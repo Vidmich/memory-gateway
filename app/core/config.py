@@ -101,6 +101,11 @@ class Settings(BaseSettings):
     # -- upstream calls ----------------------------------------------------
     upstream_max_connections: int = Field(default=200, ge=1)
     upstream_max_keepalive_connections: int = Field(default=50, ge=0)
+    #: Ceiling on a whole routing chain (SPEC §8.1). Each attempt already carries its
+    #: model's own ``timeout_seconds``; this is what stops three targets at 60 s each
+    #: from becoming a three-minute request. Larger than the 60 s default model timeout,
+    #: so a single-target gateway is unaffected by its existence.
+    routing_deadline_seconds: float = Field(default=120.0, gt=0)
 
     # -- probes ------------------------------------------------------------
     readiness_timeout_seconds: float = Field(default=2.0, gt=0)

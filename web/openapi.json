@@ -105,6 +105,52 @@
         "title": "ApiKeyResponse",
         "type": "object"
       },
+      "AttemptResponse": {
+        "description": "One upstream attempt. SPEC \u00a710.2's ``failover_attempts`` entry, as JSON.",
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "model_name": {
+            "title": "Model Name",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          },
+          "target_id": {
+            "format": "uuid",
+            "title": "Target Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_id",
+          "model_name",
+          "status",
+          "latency_ms",
+          "retryable"
+        ],
+        "title": "AttemptResponse",
+        "type": "object"
+      },
       "BucketResponse": {
         "additionalProperties": false,
         "properties": {
@@ -258,6 +304,21 @@
               }
             ],
             "title": "System Context"
+          },
+          "targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/GatewayTargetRequest"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targets"
           }
         },
         "required": [
@@ -385,6 +446,29 @@
         "title": "GatewayResponse",
         "type": "object"
       },
+      "GatewayTargetRequest": {
+        "additionalProperties": false,
+        "description": "One link of a routing chain. List position is priority: index 0 is tried first.",
+        "properties": {
+          "model_id": {
+            "format": "uuid",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "weight": {
+            "default": 100,
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Weight",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model_id"
+        ],
+        "title": "GatewayTargetRequest",
+        "type": "object"
+      },
       "GatewayTestRequest": {
         "additionalProperties": false,
         "properties": {
@@ -409,6 +493,13 @@
               "$ref": "#/components/schemas/PromptMessageResponse"
             },
             "title": "Assembled Prompt",
+            "type": "array"
+          },
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptResponse"
+            },
+            "title": "Attempts",
             "type": "array"
           },
           "content": {
@@ -618,6 +709,21 @@
               }
             ],
             "title": "System Context"
+          },
+          "targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/GatewayTargetRequest"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targets"
           }
         },
         "title": "GatewayUpdateRequest",
@@ -2143,10 +2249,12 @@
       },
       "RequestDetailResponse": {
         "additionalProperties": false,
-        "description": "One request, with everything the \u00a710.3 drawer draws.\n\n``routing`` and the retrieval lists are here and empty until tasks 08 and 10 fill\nthem, for the same reason the gateway editor shows its unbuilt sections: a drawer\nthat grows two panels later moves everything the reader has learned the position of.",
+        "description": "One request, with everything the \u00a710.3 drawer draws.\n\nThe retrieval lists are here and empty until task 10 fills them, for the same reason\nthe gateway editor shows its unbuilt sections: a drawer that grows a panel later moves\neverything the reader has learned the position of.\n\n``failover_attempts`` is empty for the overwhelming majority of requests, and that is\ninformation rather than an omission: it means one target answered, which the ``log``\nfields already describe completely. Non-empty means more than one was involved.",
         "properties": {
           "failover_attempts": {
-            "items": {},
+            "items": {
+              "$ref": "#/components/schemas/AttemptResponse"
+            },
             "title": "Failover Attempts",
             "type": "array"
           },
@@ -2259,6 +2367,10 @@
               }
             ],
             "title": "Error Message"
+          },
+          "failed_after_stream_start": {
+            "title": "Failed After Stream Start",
+            "type": "boolean"
           },
           "gateway_id": {
             "format": "uuid",
@@ -2409,6 +2521,7 @@
           "memory_tokens",
           "request_id",
           "response_truncated",
+          "failed_after_stream_start",
           "bodies_omitted"
         ],
         "title": "RequestLogResponse",
@@ -2577,6 +2690,16 @@
               }
             ],
             "title": "Organization Id"
+          },
+          "priority": {
+            "default": 0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "weight": {
+            "default": 100,
+            "title": "Weight",
+            "type": "integer"
           }
         },
         "required": [

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -18,9 +19,9 @@ from pydantic import ValidationError
 
 from app.api.proxy.deps import (
     get_authenticator,
-    get_proxy_service,
     get_request_logs,
     get_resolver,
+    get_router,
 )
 from app.api.proxy.errors import (
     InvalidRequest,
@@ -32,9 +33,11 @@ from app.core import keys
 from app.core.logging import get_request_id
 from app.schemas.openai import ChatRequest, ModelCard, ModelList
 from app.services.api_keys import AuthenticatedKey, KeyAuthenticator
+from app.services.end_user import end_user_key
 from app.services.gateway_resolver import GatewayResolver, ResolvedGateway
-from app.services.proxy import ProxyService
-from app.services.request_log import RequestLogService, StreamRecorder
+from app.services.proxy import Prepared
+from app.services.request_log import RequestLogService, RequestRecorder, StreamRecorder
+from app.services.routing import Attempts, Router, plan
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +51,7 @@ LOCKED_HEADER = "X-Gateway-Locked-Params"
 
 Resolver = Annotated[GatewayResolver, Depends(get_resolver)]
 Authenticator = Annotated[KeyAuthenticator, Depends(get_authenticator)]
-Proxy = Annotated[ProxyService, Depends(get_proxy_service)]
+Routing = Annotated[Router, Depends(get_router)]
 Logs = Annotated[RequestLogService, Depends(get_request_logs)]
 
 
@@ -58,7 +61,7 @@ async def chat_completions(
     request: Request,
     resolver: Resolver,
     authenticator: Authenticator,
-    service: Proxy,
+    router_: Routing,
     logs: Logs,
 ) -> Response:
     """Forward a chat completion, streaming or not."""
@@ -76,6 +79,7 @@ async def chat_completions(
         request_id=get_request_id(),
     )
 
+    attempts = Attempts(on_prepared=_record_prompt(recorder))
     try:
         chat = _parse_body(await _read_body(request))
         recorder.client_request(chat)
@@ -88,31 +92,28 @@ async def chat_completions(
                 f"This gateway exposes '{gateway.virtual_model}'."
             )
 
-        target = gateway.target()
-        prepared = service.prepare(chat, gateway, target)
-        recorder.prepared(prepared.request.messages, target)
-
-        headers = {MODEL_HEADER: target.name}
-        if prepared.params.overridden:
-            # The gateway ignored something the client explicitly asked for. Saying so is
-            # the difference between "this endpoint ignores temperature" as a bug report
-            # and as a documented policy the caller can read off the response.
-            headers[LOCKED_HEADER] = ",".join(prepared.params.overridden)
+        # Which upstream, and what happens when it does not answer (SPEC §8.1). Resolved
+        # before any time is spent so that a misconfigured gateway fails identically in
+        # all three modes, and so the attempt list is fixed before the first call.
+        routing = plan(gateway, end_user_key=end_user_key(chat, request.headers))
 
         recorder.upstream_call_started()
         if chat.stream:
             # Opening the stream sends the request and checks the status *before* any
             # bytes go downstream, so an upstream failure is still an HTTP error rather
-            # than a truncated 200.
-            observer = StreamRecorder(recorder)
-            stream = await service.open_stream(prepared, observer=observer)
+            # than a truncated 200 — and, until this returns, it is still a failure the
+            # next target can absorb (SPEC §8.2).
+            opened = await router_.open_stream(
+                chat, gateway, routing, attempts, observer=StreamRecorder(recorder)
+            )
+            recorder.attempts(attempts.as_json())
             # Deliberately not submitted here: the observer owns the record from now on
             # and submits it when the stream ends, however it ends.
             return StreamingResponse(
-                stream.frames(),
+                opened.stream.frames(),
                 media_type="text/event-stream",
                 headers={
-                    **headers,
+                    **_headers(opened.prepared),
                     "cache-control": "no-cache",
                     # Tells nginx not to buffer the response; without it an ingress can
                     # hold the whole stream and hand the client one lump at the end.
@@ -120,14 +121,21 @@ async def chat_completions(
                 },
             )
 
-        completion = await service.complete(prepared)
-        recorder.from_response(completion)
+        completed = await router_.complete(chat, gateway, routing, attempts)
+        recorder.attempts(attempts.as_json())
+        recorder.from_response(completed.response)
         recorder.submit()
-        return JSONResponse(content=completion.model_dump(exclude_none=True), headers=headers)
+        return JSONResponse(
+            content=completed.response.model_dump(exclude_none=True),
+            headers=_headers(completed.prepared),
+        )
     except BaseException as error:
         # Every failure after authorization is somebody's, and the row is the only place
         # they will see it: the client gets an error body and this screen is where they
-        # come to ask why. `BaseException` so a cancelled request is recorded too.
+        # come to ask why. `BaseException` so a cancelled request is recorded too. The
+        # attempts go on first: a chain that exhausted itself is the whole explanation,
+        # and it lives in the object the raise passed straight through.
+        recorder.attempts(attempts.as_json())
         recorder.failed(error)
         recorder.submit()
         raise
@@ -151,6 +159,32 @@ async def list_models(
             )
         ]
     )
+
+
+def _headers(prepared: Prepared) -> dict[str, str]:
+    """Which model answered, and what this gateway refused to let the client change."""
+    headers = {MODEL_HEADER: prepared.target.name}
+    if prepared.params.overridden:
+        # The gateway ignored something the client explicitly asked for. Saying so is the
+        # difference between "this endpoint ignores temperature" as a bug report and as a
+        # documented policy the caller can read off the response.
+        headers[LOCKED_HEADER] = ",".join(prepared.params.overridden)
+    return headers
+
+
+def _record_prompt(recorder: RequestRecorder) -> Callable[[Prepared], None]:
+    """Tell the log what each attempt actually sent.
+
+    A closure rather than handing the recorder to the router: routing has no business
+    importing the request log, and this is the only thing it would want from it. It also
+    means the transcript follows the chain — two targets can carry different system
+    contexts, and the prompt worth storing is the one the target that answered received.
+    """
+
+    def record(prepared: Prepared) -> None:
+        recorder.prepared(prepared.request.messages, prepared.target)
+
+    return record
 
 
 async def _authorize(

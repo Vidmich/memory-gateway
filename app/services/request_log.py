@@ -157,6 +157,9 @@ class RequestRecord:
 
     request_id: str | None = None
     response_truncated: bool = False
+    #: SPEC §8.2. The upstream died after the response had already begun, so failover was
+    #: no longer possible and the client received a partial answer under a 200.
+    failed_after_stream_start: bool = False
     #: ``queue_pressure`` or ``redaction_budget``. Null means nothing dropped them.
     bodies_omitted: str | None = None
 
@@ -222,6 +225,11 @@ class RequestRecorder:
     def prepared(self, messages: Sequence[ChatMessage], target: UpstreamTarget) -> None:
         """What is about to go upstream, after assembly and the parameter merge.
 
+        Called once per routing attempt, not once per request: two targets can carry
+        different system contexts, so the stored prompt has to be the one the target that
+        answered actually received. The last call wins, and the last call is the attempt
+        that served — or, when the whole chain failed, the last one tried.
+
         The model's *name* is copied as well as its id, because the row has to survive
         that model being deleted — see the note on foreign keys in
         :mod:`app.db.models.request_log`.
@@ -230,6 +238,15 @@ class RequestRecorder:
             self._record.assembled_prompt = _messages(messages)
         self._record.upstream_model_id = target.id
         self._record.model_name = target.name
+
+    def attempts(self, records: Sequence[Mapping[str, Any]]) -> None:
+        """The routing chain, already in its JSON form.
+
+        Plain dictionaries rather than a routing type, so :mod:`app.services.routing` can
+        import the proxy without this module and the resolver importing routing back. The
+        shape is a jsonb column's shape anyway.
+        """
+        self._record.failover_attempts = [dict(record) for record in records]
 
     def upstream_call_started(self) -> None:
         self._upstream_started = time.perf_counter()
@@ -275,11 +292,18 @@ class RequestRecorder:
         self._close_upstream()
 
     def stream_ended_early(self, error: BaseException) -> None:
-        """A stream that started successfully and did not finish."""
-        self._record.error_code = (
-            "client_disconnected" if isinstance(error, asyncio.CancelledError) else "stream_failed"
-        )
+        """A stream that started successfully and did not finish.
+
+        ``failed_after_stream_start`` is set for an upstream failure and *not* for a
+        client hang-up, which is the distinction SPEC §8.2's flag is for: it means "this
+        could not be failed over because the response had already begun", and a caller
+        walking away is not something failover would have rescued. Both still leave a row
+        with a 200, because the status line went out long before either happened.
+        """
+        cancelled = isinstance(error, asyncio.CancelledError)
+        self._record.error_code = "client_disconnected" if cancelled else "stream_failed"
         self._record.error_message = type(error).__name__
+        self._record.failed_after_stream_start = not cancelled
 
     def submit(self) -> None:
         """Hand the record over. Safe to call twice; the second call does nothing."""

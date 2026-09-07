@@ -1,7 +1,12 @@
 import { useEffect, useMemo, type ReactNode } from 'react'
 
 import { useRequestDetail } from '@/api/monitoring'
-import type { GatewayResponse, RequestDetailResponse, RequestLogResponse } from '@/api/types'
+import type {
+  AttemptResponse,
+  GatewayResponse,
+  RequestDetailResponse,
+  RequestLogResponse,
+} from '@/api/types'
 import { Waterfall } from '@/components/Charts'
 import { CopyButton } from '@/components/CopyButton'
 import { StatusBadge } from '@/components/StatusBadge'
@@ -201,16 +206,14 @@ function Detail({
           title="Routing"
           subtitle="Which upstream served this request, and what was tried first."
         >
-          <p className="text-sm text-slate-700">
-            {log.model_name ?? 'Unknown model'}
-            {detail.failover_attempts.length === 0
-              ? ' — served on the first attempt.'
-              : ` — after ${detail.failover_attempts.length} earlier attempt(s).`}
-          </p>
-          <p className="mt-1 text-xs text-slate-400">
-            Failover and A/B routing arrive with the routing modes; until then a gateway
-            has one target.
-          </p>
+          <Attempts attempts={detail.failover_attempts} served={log.model_name} />
+          {log.failed_after_stream_start ? (
+            <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              The upstream failed after the first chunk had reached the client. The status
+              line was already sent, so this could not be failed over and the stream ended
+              with an error event.
+            </p>
+          ) : null}
         </Panel>
 
         <Panel title="Memory" subtitle="Documents and facts injected into this request.">
@@ -225,6 +228,69 @@ function Detail({
         </Panel>
       </div>
     </>
+  )
+}
+
+/**
+ * The chain, when there was one.
+ *
+ * An empty list is not a gap: it means one target answered, which the header and the
+ * facts above already say. Drawing a one-row timeline for every request would make every
+ * gateway look like a failover chain, which is the opposite of the point — the timeline
+ * exists so that the rare request that *did* move between upstreams is unmistakable.
+ */
+function Attempts({
+  attempts,
+  served,
+}: {
+  attempts: readonly AttemptResponse[]
+  served: string | null
+}) {
+  if (attempts.length === 0) {
+    return (
+      <p className="text-sm text-slate-700">
+        {served ?? 'Unknown model'} — served on the first attempt.
+      </p>
+    )
+  }
+
+  return (
+    <ol className="space-y-2">
+      {attempts.map((attempt, index) => {
+        const ok = attempt.status < 400
+        return (
+          <li
+            key={`${attempt.target_id}-${index}`}
+            className={`flex items-center gap-3 rounded-md border p-2 text-xs ${
+              ok ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'
+            }`}
+          >
+            <span className="w-4 shrink-0 text-center font-medium text-slate-400">
+              {index + 1}
+            </span>
+            <span className="min-w-0 flex-1 truncate font-medium text-slate-800">
+              {attempt.model_name}
+            </span>
+            <span className={`tabular-nums ${ok ? 'text-emerald-700' : 'text-red-700'}`}>
+              {attempt.status}
+            </span>
+            {attempt.error_code ? (
+              <code className="text-red-700">{attempt.error_code}</code>
+            ) : null}
+            <span className="w-16 shrink-0 text-right tabular-nums text-slate-500">
+              {attempt.latency_ms} ms
+            </span>
+          </li>
+        )
+      })}
+      {attempts.every((attempt) => attempt.status >= 400) ? (
+        <li className="text-xs text-slate-500">
+          Every target failed, so the caller received the last error. A{' '}
+          <span className="font-medium">retryable</span> failure on the last attempt means
+          the chain was too short, not that the error was final.
+        </li>
+      ) : null}
+    </ol>
   )
 }
 

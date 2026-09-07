@@ -186,7 +186,7 @@ async def setting_targets_replaces_the_previous_chain(fixture: Fixture) -> None:
         assert gateway is not None
         model = await transaction.visible_model(fixture.global_model.id)
         assert model is not None
-        await transaction.set_targets(gateway, [model])
+        await transaction.set_targets(gateway, [(model, 100)])
         await transaction.commit()
 
     async with fixture.store.begin(fixture.acme_scope) as transaction:
@@ -217,9 +217,30 @@ async def a_new_target_carries_its_model(fixture: Fixture) -> None:
         assert gateway is not None
         model = await transaction.visible_model(fixture.global_model.id)
         assert model is not None
-        await transaction.set_targets(gateway, [model])
+        await transaction.set_targets(gateway, [(model, 100)])
 
         assert [target.upstream_model.name for target in gateway.targets] == ["shared-gpt-4o"]
+
+
+async def a_chain_keeps_its_order_and_its_weights(fixture: Fixture) -> None:
+    """Position is priority and the weight is the A/B percentage, so a store that
+    dropped either would produce a gateway that fails over in the wrong order or splits
+    50/50 whatever the screen says."""
+    async with fixture.store.begin(fixture.acme_scope) as transaction:
+        gateway = await transaction.gateway(fixture.acme_gateway.id)
+        assert gateway is not None
+        first = await transaction.visible_model(fixture.global_model.id)
+        second = await transaction.visible_model(fixture.acme_model.id)
+        assert first is not None and second is not None
+        await transaction.set_targets(gateway, [(first, 70), (second, 30)])
+        await transaction.commit()
+
+    async with fixture.store.begin(fixture.acme_scope) as transaction:
+        reloaded = await transaction.gateway(fixture.acme_gateway.id)
+
+    assert reloaded is not None
+    assert [(target.priority, target.weight) for target in reloaded.targets] == [(0, 70), (1, 30)]
+    assert [target.upstream_model_id for target in reloaded.targets] == [first.id, second.id]
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +377,7 @@ CHECKS: tuple[Check, ...] = (
     setting_targets_replaces_the_previous_chain,
     setting_no_targets_detaches_the_gateway,
     a_new_target_carries_its_model,
+    a_chain_keeps_its_order_and_its_weights,
     keys_are_listed_for_their_gateway,
     another_organizations_keys_are_not_listed,
     a_key_is_read_through_its_gateways_scope,

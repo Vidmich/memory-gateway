@@ -16,6 +16,7 @@ import { BarList, ChartFrame, LineChart, StackedBars } from '@/components/Charts
 import {
   intervalLabel,
   latencySeries,
+  modelSlices,
   pointsOf,
   statusSeries,
   tokenSeries,
@@ -58,6 +59,10 @@ export function MonitoringPage() {
   const atTop = useAtTop()
 
   const { data: gateways } = useGateways()
+  // Only when the view is narrowed to one gateway: "traffic by model" across a whole
+  // organization has no single set of weights to compare against, and overlaying one
+  // gateway's would be a number that means nothing.
+  const focused = (gateways?.items ?? []).find((gateway) => gateway.id === filters.gateway_id)
   const summary = useSummary(window, filters)
   const requests = useSeries(window, filters, 'requests', 'status_class')
   const latency = useSeries(window, filters, 'latency')
@@ -198,13 +203,15 @@ export function MonitoringPage() {
           />
         </ChartFrame>
 
-        <ChartFrame title="Traffic by model" subtitle="Which upstream served the requests.">
-          <BarList
-            slices={(summary.data?.models ?? []).map((model) => ({
-              label: model.model_name ?? '(deleted model)',
-              value: model.requests,
-            }))}
-          />
+        <ChartFrame
+          title="Traffic by model"
+          subtitle={
+            focused?.routing_mode === 'ab_split'
+              ? 'The mark on each bar is the weight this gateway is configured for.'
+              : 'Which upstream served the requests.'
+          }
+        >
+          <BarList slices={modelSlices(summary.data, focused)} />
         </ChartFrame>
 
         <ChartFrame title="Errors" subtitle="Grouped by what actually went wrong.">

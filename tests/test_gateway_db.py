@@ -114,8 +114,8 @@ async def test_an_unknown_routing_mode_is_refused(
 async def test_the_three_accepted_routing_modes_all_store(
     db_session: AsyncSession, fixture: Fixture
 ) -> None:
-    """The column accepts what task 08 will implement, so turning failover on is code
-    rather than a migration on a live table."""
+    """The CHECK is the backstop under the service's own validation: it is what stops a
+    migration or a script from writing a mode the router has never heard of."""
     for index, mode in enumerate(("single", "failover", "ab_split")):
         db_session.add(make_gateway_row(fixture.acme, slug=f"mode-{index}", routing_mode=mode))
     await db_session.flush()

@@ -277,7 +277,14 @@ export function StackedBars({
   )
 }
 
-export type Slice = { label: string; value: number }
+export type Slice = {
+  label: string
+  value: number
+  /** The share this slice was *configured* to get, as a percentage. Drawn as a mark on
+   *  the bar, so an A/B split that has drifted from its weights is visible without
+   *  anybody doing the division. */
+  expected?: number
+}
 
 /**
  * A ranked horizontal bar list — traffic per model, and the error taxonomy.
@@ -285,6 +292,11 @@ export type Slice = { label: string; value: number }
  * A bar list rather than a pie: the questions are "which is biggest" and "how much
  * bigger", and both are read off lengths far more reliably than off angles. It also
  * carries the number as text, which a pie cannot.
+ *
+ * When a slice carries an `expected` share, a mark is drawn where the bar *would* end if
+ * the traffic matched the configuration. That is the whole A/B screen in one gesture: the
+ * bar is what happened, the mark is what was asked for, and the gap between them is the
+ * thing worth looking at.
  */
 export function BarList({ slices, tone = '#2563eb' }: { slices: readonly Slice[]; tone?: string }) {
   const labelId = useId()
@@ -307,13 +319,24 @@ export function BarList({ slices, tone = '#2563eb' }: { slices: readonly Slice[]
             <span className="tabular-nums text-slate-500">
               {slice.value.toLocaleString()}
               {total > 0 ? ` · ${Math.round((slice.value / total) * 100)}%` : ''}
+              {slice.expected !== undefined ? (
+                <span className="text-slate-400"> (set to {Math.round(slice.expected)}%)</span>
+              ) : null}
             </span>
           </div>
-          <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100">
+          <div className="relative mt-1 h-2 rounded-full bg-slate-100">
             <div
               className="h-full rounded-full"
               style={{ width: `${(slice.value / max) * 100}%`, backgroundColor: tone }}
             />
+            {slice.expected !== undefined && total > 0 ? (
+              <span
+                aria-hidden="true"
+                title={`Configured for ${Math.round(slice.expected)}%`}
+                className="absolute top-[-2px] h-3 w-0.5 bg-slate-700"
+                style={{ left: `${((total * slice.expected) / 100 / max) * 100}%` }}
+              />
+            ) : null}
           </div>
         </li>
       ))}

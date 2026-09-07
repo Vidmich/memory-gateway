@@ -114,16 +114,20 @@ export function TextInput({
 export function SubmitButton({
   children,
   busy = false,
+  disabled = false,
   className = '',
 }: {
   children: ReactNode
   busy?: boolean
+  /** For a form the client can already tell will be refused, so the round trip that
+   *  would say so is not the only feedback. The server stays the authority. */
+  disabled?: boolean
   className?: string
 }) {
   return (
     <button
       type="submit"
-      disabled={busy}
+      disabled={busy || disabled}
       className={`inline-flex w-full items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400 ${className}`}
     >
       {busy ? 'Working…' : children}

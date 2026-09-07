@@ -8,12 +8,14 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 07 complete**. An organization goes from empty to a working
+Current state: **task 08 complete**. An organization goes from empty to a working
 OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream
 model, create a gateway, copy its URL, mint a key, call it — and every request through it
 is then recorded and inspectable. **Monitoring** charts the traffic; clicking a row shows
 the client's original messages, the exact prompt that went upstream, the response, and a
-timing waterfall.
+timing waterfall. A gateway can now route over several models: a failover chain that
+survives an upstream outage, or a weighted A/B split whose result you read off the same
+charts.
 
 ## Quick start (Docker)
 
@@ -172,6 +174,71 @@ are cached still **encrypted**: Redis is a cache, not a vault.
 A disabled gateway answers **403**, not 503. A 503 means "try again", and an SDK will —
 indefinitely, against an endpoint somebody switched off on purpose.
 
+## Routing
+
+A gateway routes over an ordered list of targets in one of three modes, chosen in the
+editor's *Routing* section. Each is described there by what happens when it **fails**,
+because that is the only thing that separates them.
+
+| Mode | On failure |
+|---|---|
+| **Single model** | One target. The caller gets the error. |
+| **Failover chain** | Targets are tried in priority order until one answers. |
+| **A/B split** | One target per request, chosen by weight. No retry. |
+
+**Retry classification is a table, not a judgement call.** A connect failure, a DNS
+failure, a read timeout, 408, 429, 500, 502, 503 and 504 move to the next target; 400,
+401, 403, 404 and 422 are returned immediately, because the next target would reject them
+identically and trying it turns one bad request into two. Anything unrecognised is treated
+as final — an unclassified failure is not evidence that retrying will help. Transport
+errors never reach the classifier as exceptions: the proxy has already turned a refused
+connection into a 502 and a read timeout into a 504, so the table is complete by
+construction.
+
+**Each attempt carries its model's own `timeout_seconds`, and the chain carries a
+deadline.** Three targets at sixty seconds each is three minutes and no client waits that
+long, so every attempt runs inside the remaining budget (`ROUTING_DEADLINE_SECONDS`,
+default 120 s) — a chain cannot outlive it even when one target is slower than the whole
+allowance. Between attempts there is a 50–150 ms jittered pause. That does nothing for one
+caller; it exists so a fleet that all meets a provider's 503 in the same instant does not
+all retry in the same instant.
+
+**Streaming responses cannot fail over once output has begun.** Up to the first token a
+failed target is replaced silently — `open_stream` sends the request and checks the status
+*before* yielding anything, so a provider 503 on a streamed request is still an ordinary
+HTTP error. After it, the 200 is on the wire and cannot be taken back: the stream ends with
+an SSE error event and the row records `failed_after_stream_start`. Nothing is buffered to
+widen that window, because buffering to make failover more likely would trade away the
+point of streaming. The editor says all of this next to the mode selector.
+
+**A/B assignment is sticky when it can be.** With an end-user id — `X-Gateway-User`, or
+`user` on the request body — the target is `crc32(f"{user}:{gateway_id}")` against the
+cumulative weight bands, so one person sees one variant and the comparison is between
+models rather than between coin flips. The gateway id is in the hash so that somebody
+unlucky enough to land in the bottom band is not in the bottom band of every experiment in
+the account. Without an id, selection is uniform. Changing the weights re-buckets everyone:
+that is documented and accepted, and a stable-assignment table is deliberately not here.
+
+**Weights are percentages that must total exactly 100, checked when you save.** They are
+never normalised on your behalf — 70/20 quietly stored as 78/22 would change the result of
+whatever is being measured and tell nobody. The editor shows a running total and the split
+it would actually produce, and blocks the save until they agree.
+
+**There is no retry in A/B mode**, and that is a data-integrity rule rather than a
+performance trade: a retried request would land on the other arm and bias the experiment
+the mode exists to run. It is enforced by the plan having length one, not by a flag.
+
+Circuit breaking and health checks are deliberately not here (SPEC §16.9). Plain failover
+delivers most of the availability benefit; a breaker adds shared state and flapping
+behaviour that needs this task's metrics to tune.
+
+When more than one target was involved, the row records every attempt —
+`{target_id, model_name, status, error_code, latency_ms, retryable}` — and the detail
+drawer draws it as a timeline. One clean attempt records nothing, because the row's own
+model, status and latency columns already say it. `routing_attempts_total{mode, model,
+outcome}`, `routing_failovers_total{model, error_code}` and `routing_chain_attempts`
+carry the same picture to Prometheus.
+
 ## Request logging and monitoring
 
 Every request through a gateway becomes a row. **Monitoring** shows the request rate with
@@ -213,6 +280,10 @@ budget the bodies are dropped rather than stored half-cleaned — the row says
 you save them: `(a+)+` and its relatives are refused on the form, because Python's `re`
 cannot be interrupted once it is matching, so the only place to stop one is before it is
 stored.
+
+When a gateway is filtered to on **Monitoring** and it is running an A/B split, the
+traffic-by-model chart marks each bar with the weight it was configured for, so drift
+between an intended 70/30 and an actual 68/32 is a glance rather than a division.
 
 **Metadata and bodies are separate tables**, `request_logs` and `transcripts`, both
 partitioned by day. The monitoring queries never touch the large text columns, and
@@ -339,9 +410,9 @@ app/
               (auth, auth_provider, auth_store, login_throttle), tenancy
               (permissions, directory, directory_store, pagination), the model
               catalog (catalog, catalog_store, model_probe, params, rate_limit),
-              gateways and keys (gateways, gateway_store, gateway_probe), request
-              logging (request_log, log_store, redaction) and the monitoring reads
-              (monitoring, metrics_store)
+              gateways and keys (gateways, gateway_store, gateway_probe), upstream
+              routing (routing, end_user), request logging (request_log, log_store,
+              redaction) and the monitoring reads (monitoring, metrics_store)
   workers/    background jobs (task 09)
   cli.py      operator commands — `python -m app.cli seed | openapi`
 migrations/   alembic
@@ -354,8 +425,8 @@ web/          the React SPA
   src/layout/   the app shell — sidebar, user menu, support banner
   src/pages/    login, dashboard, organizations, members, org settings,
                 invitation acceptance, models (list and editor), gateways
-                (list, editor, keys), monitoring (charts, request table,
-                detail drawer)
+                (list, editor, routing section, keys), monitoring (charts,
+                request table, detail drawer with the attempts timeline)
   e2e/          Playwright
 ```
 
@@ -388,7 +459,7 @@ first request. See [.env.example](.env.example) for the full list.
 | `GET`/`PATCH`/`DELETE /api/v1/models/{id}` | Read, edit, delete. Delete is refused while a gateway points at it. |
 | `POST /api/v1/models/{id}/test` | Probe the stored configuration. One token, rate-limited per user. |
 | `POST /api/v1/models/test` | Probe an unsaved draft, before storing a credential. |
-| `GET`/`POST /api/v1/gateways` | List and create. The slug is globally unique and set once. |
+| `GET`/`POST /api/v1/gateways` | List and create. The slug is globally unique and set once. `targets` is the routing chain; `model_id` is the one-target shorthand. |
 | `GET`/`PATCH`/`DELETE /api/v1/gateways/{id}` | Read, edit, delete. `PATCH` refuses `slug`, with the reason. |
 | `POST /api/v1/gateways/{id}/test` | A probe completion through the real proxy path; returns the assembled prompt. |
 | `GET`/`POST /api/v1/gateways/{id}/keys` | List keys (prefix only); mint one — the plaintext is returned once. |

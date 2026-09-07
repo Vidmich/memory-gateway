@@ -54,6 +54,7 @@ from app.services.monitoring import MonitoringService, RedisSummaryCache
 from app.services.proxy import ProxyService
 from app.services.rate_limit import FixedWindowLimiter
 from app.services.request_log import LogFlusher, LogQueue, RequestLogService
+from app.services.routing import Router
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         proxy_service = ProxyService(clients.http)
         app.state.proxy_service = proxy_service
+        upstream_router = Router(
+            proxy_service,
+            deadline_seconds=settings.routing_deadline_seconds,
+            metrics=metrics.routing,
+        )
+        app.state.upstream_router = upstream_router
 
         # The request log's write half. The queue is created before the flusher because
         # the flusher only reads from it, and started here rather than lazily so a
@@ -138,7 +145,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             PostgresGatewayStore(clients.session_factory),
             # Through the *cached* resolver on purpose: "Test gateway" has to exercise
             # what a customer's request exercises, cache included.
-            probe=ProxyGatewayProbe(resolver, proxy_service),
+            probe=ProxyGatewayProbe(resolver, upstream_router),
             cache=gateway_cache,
             test_limiter=FixedWindowLimiter(
                 store=RedisThrottleStore(clients.redis),

@@ -711,6 +711,27 @@ export interface components {
             /** Revoked At */
             revoked_at: string | null;
         };
+        /**
+         * AttemptResponse
+         * @description One upstream attempt. SPEC §10.2's ``failover_attempts`` entry, as JSON.
+         */
+        AttemptResponse: {
+            /** Error Code */
+            error_code?: string | null;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Model Name */
+            model_name: string;
+            /** Retryable */
+            retryable: boolean;
+            /** Status */
+            status: number;
+            /**
+             * Target Id
+             * Format: uuid
+             */
+            target_id: string;
+        };
         /** BucketResponse */
         BucketResponse: {
             /** Series */
@@ -785,6 +806,8 @@ export interface components {
             slug: string;
             /** System Context */
             system_context?: string | null;
+            /** Targets */
+            targets?: components["schemas"]["GatewayTargetRequest"][] | null;
         };
         /** GatewayResponse */
         GatewayResponse: {
@@ -838,6 +861,22 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * GatewayTargetRequest
+         * @description One link of a routing chain. List position is priority: index 0 is tried first.
+         */
+        GatewayTargetRequest: {
+            /**
+             * Model Id
+             * Format: uuid
+             */
+            model_id: string;
+            /**
+             * Weight
+             * @default 100
+             */
+            weight: number;
+        };
         /** GatewayTestRequest */
         GatewayTestRequest: {
             /** Message */
@@ -853,6 +892,8 @@ export interface components {
         GatewayTestResponse: {
             /** Assembled Prompt */
             assembled_prompt: components["schemas"]["PromptMessageResponse"][];
+            /** Attempts */
+            attempts?: components["schemas"]["AttemptResponse"][];
             /** Content */
             content?: string | null;
             /** Error Message */
@@ -910,6 +951,8 @@ export interface components {
             routing_mode?: string | null;
             /** System Context */
             system_context?: string | null;
+            /** Targets */
+            targets?: components["schemas"]["GatewayTargetRequest"][] | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1560,13 +1603,17 @@ export interface components {
          * RequestDetailResponse
          * @description One request, with everything the §10.3 drawer draws.
          *
-         *     ``routing`` and the retrieval lists are here and empty until tasks 08 and 10 fill
-         *     them, for the same reason the gateway editor shows its unbuilt sections: a drawer
-         *     that grows two panels later moves everything the reader has learned the position of.
+         *     The retrieval lists are here and empty until task 10 fills them, for the same reason
+         *     the gateway editor shows its unbuilt sections: a drawer that grows a panel later moves
+         *     everything the reader has learned the position of.
+         *
+         *     ``failover_attempts`` is empty for the overwhelming majority of requests, and that is
+         *     information rather than an omission: it means one target answered, which the ``log``
+         *     fields already describe completely. Non-empty means more than one was involved.
          */
         RequestDetailResponse: {
             /** Failover Attempts */
-            failover_attempts: unknown[];
+            failover_attempts: components["schemas"]["AttemptResponse"][];
             log: components["schemas"]["RequestLogResponse"];
             /** Retrieved Chunk Ids */
             retrieved_chunk_ids: unknown[];
@@ -1596,6 +1643,8 @@ export interface components {
             error_code: string | null;
             /** Error Message */
             error_message: string | null;
+            /** Failed After Stream Start */
+            failed_after_stream_start: boolean;
             /**
              * Gateway Id
              * Format: uuid
@@ -1714,6 +1763,16 @@ export interface components {
             name: string;
             /** Organization Id */
             organization_id: string | null;
+            /**
+             * Priority
+             * @default 0
+             */
+            priority: number;
+            /**
+             * Weight
+             * @default 100
+             */
+            weight: number;
         };
         /**
          * TranscriptResponse

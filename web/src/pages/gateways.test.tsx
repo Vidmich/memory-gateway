@@ -91,7 +91,14 @@ function fakeServer(options: ServerOptions = {}) {
       return Promise.resolve(json({ items: gateways, next_cursor: null }))
     }
     if (path.startsWith('/api/v1/models')) {
-      return Promise.resolve(json({ items: [makeModel()], next_cursor: null }))
+      // Two, because a routing chain needs somewhere to route to: with one model in the
+      // catalog every failover and A/B assertion below would be about an empty picker.
+      return Promise.resolve(
+        json({
+          items: [makeModel(), makeModel({ id: 'mo2', name: 'acme-mini' })],
+          next_cursor: null,
+        }),
+      )
     }
     // The list's 24-hour column: one grouped series for the whole page.
     if (path.startsWith('/api/v1/metrics/timeseries')) {
@@ -152,6 +159,28 @@ describe('the gateways list', () => {
     ).toHaveLength(1)
   })
 
+  it('names the primary and counts the rest of a chain', async () => {
+    // Naming only the first would make a two-model gateway look like a one-model one,
+    // which is the reading that matters: a disabled *secondary* is a failover that will
+    // not work, and it is only visible if the count says there is one.
+    const { client } = fakeServer({
+      gateways: [
+        makeGateway({
+          routing_mode: 'failover',
+          targets: [
+            { id: 'mo1', name: 'acme-gpt', dialect: 'openai', enabled: true, organization_id: 'o1', priority: 0, weight: 100 },
+            { id: 'mo2', name: 'acme-mini', dialect: 'openai', enabled: false, organization_id: 'o1', priority: 1, weight: 100 },
+          ],
+        }),
+      ],
+    })
+    renderAt(client, '/gateways')
+
+    const table = await screen.findByRole('table')
+    expect(await within(table).findByText('+1')).toBeInTheDocument()
+    expect(within(table).getByText('1 of 2 models disabled')).toBeInTheDocument()
+  })
+
   it('shows the target model and the key count', async () => {
     const { client } = fakeServer()
     renderAt(client, '/gateways')
@@ -178,6 +207,8 @@ describe('the gateways list', () => {
               dialect: 'openai',
               enabled: false,
               organization_id: 'o1',
+              priority: 0,
+              weight: 100,
             },
           ],
         }),
@@ -330,7 +361,43 @@ describe('the editor', () => {
     expect(await screen.findByText('Unsaved changes')).toBeInTheDocument()
   })
 
-  it('offers only the routing mode this build serves', async () => {
+  it('says which target answered when the primary did not', async () => {
+    // "OK" and "OK, on the second target" would be the same green box otherwise, and
+    // only one of them is a gateway somebody needs to go and look at.
+    const { client } = fakeServer({
+      probe: makeGatewayProbe({
+        model_name: 'acme-mini',
+        attempts: [
+          {
+            target_id: 'mo1',
+            model_name: 'acme-gpt',
+            status: 503,
+            error_code: 'upstream_error',
+            latency_ms: 120,
+            retryable: true,
+          },
+          {
+            target_id: 'mo2',
+            model_name: 'acme-mini',
+            status: 200,
+            error_code: null,
+            latency_ms: 300,
+            retryable: false,
+          },
+        ],
+      }),
+    })
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.click(await screen.findByRole('button', { name: 'Send test message' }))
+
+    const result = await screen.findByRole('status')
+    expect(within(result).getByText(/answered by acme-mini after 1 failed attempt/)).toBeInTheDocument()
+    expect(within(result).getByText('upstream_error')).toBeInTheDocument()
+  })
+
+  it('offers all three routing modes', async () => {
     const { client } = fakeServer()
     renderAt(client, '/gateways/g1')
 
@@ -338,7 +405,129 @@ describe('the editor', () => {
     const options = within(mode).getAllByRole<HTMLOptionElement>('option')
     expect(options.filter((option) => !option.disabled).map((option) => option.value)).toEqual([
       'single',
+      'failover',
+      'ab_split',
     ])
+  })
+
+  it('describes each mode by what happens when it fails', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.selectOptions(await screen.findByLabelText('Mode'), 'failover')
+
+    expect(await screen.findByText(/moves to the next one/)).toBeInTheDocument()
+  })
+
+  it('warns that a stream cannot fail over once output has begun', async () => {
+    // Genuinely surprising behaviour, and a release note is not where anybody reads it.
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.selectOptions(await screen.findByLabelText('Mode'), 'failover')
+
+    expect(
+      await screen.findByText(/cannot fail over once\s+output has begun/),
+    ).toBeInTheDocument()
+  })
+
+  it('saves a failover chain in the order the buttons put it in', async () => {
+    const { client, requests } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.selectOptions(await screen.findByLabelText('Mode'), 'failover')
+    await person.selectOptions(await screen.findByLabelText('Target 2'), 'mo2')
+    await person.click(screen.getByLabelText('Move target 2 up'))
+    await person.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    const saved = await waitFor(() => {
+      const patch = requests.find((request) => request.method === 'PATCH')
+      expect(patch).toBeDefined()
+      return patch!
+    })
+    expect(saved.body.targets).toEqual([
+      { model_id: 'mo2', weight: 100 },
+      { model_id: 'mo1', weight: 100 },
+    ])
+  })
+
+  it('sends the chain rather than the single-target shorthand', async () => {
+    // Both together are a 422: the server refuses to guess which one meant it.
+    const { client, requests } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.click(await screen.findByRole('button', { name: 'Save changes' }))
+
+    const saved = await waitFor(() => {
+      const patch = requests.find((request) => request.method === 'PATCH')
+      expect(patch).toBeDefined()
+      return patch!
+    })
+    expect(saved.body).not.toHaveProperty('model_id')
+    expect(saved.body.targets).toEqual([{ model_id: 'mo1', weight: 100 }])
+  })
+
+  it('blocks the save until A/B weights add up to a hundred', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.selectOptions(await screen.findByLabelText('Mode'), 'ab_split')
+    await person.selectOptions(await screen.findByLabelText('Target 2'), 'mo2')
+
+    // Two rows at 100 and 0: a legal-looking pair that is not a split.
+    const save = screen.getByRole('button', { name: 'Save changes' })
+    expect(save).toBeEnabled()
+
+    const weight = screen.getByLabelText('Weight percentage for target 1')
+    await person.clear(weight)
+    await person.type(weight, '70')
+
+    expect(await screen.findByText(/must add up to 100. These add up to 70/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  })
+
+  it('shows the split it will actually produce, not the numbers typed', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.selectOptions(await screen.findByLabelText('Mode'), 'ab_split')
+    await person.selectOptions(await screen.findByLabelText('Target 2'), 'mo2')
+    const first = screen.getByLabelText('Weight percentage for target 1')
+    await person.clear(first)
+    await person.type(first, '70')
+    const second = screen.getByLabelText('Weight percentage for target 2')
+    await person.clear(second)
+    await person.type(second, '20')
+
+    // 70 and 20 is not a 70/20 split. It is a 78/22 split the server will refuse, and
+    // the bar is where that becomes obvious rather than a surprise after saving.
+    expect(await screen.findByText('90 / 100')).toBeInTheDocument()
+    expect(screen.getByText(/78% · 22%/)).toBeInTheDocument()
+  })
+
+  it('puts a rejected chain on the routing section rather than in a banner', async () => {
+    const { client } = fakeServer({
+      saveError: {
+        status: 422,
+        code: 'validation_error',
+        message: 'A/B weights are percentages and must add up to 100.',
+        param: 'targets',
+      },
+    })
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.click(await screen.findByRole('button', { name: 'Save changes' }))
+
+    expect(
+      await screen.findByText('A/B weights are percentages and must add up to 100.'),
+    ).toBeInTheDocument()
   })
 
   it('previews the assembled system message', async () => {

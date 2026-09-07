@@ -44,6 +44,7 @@ async def build_gateway(
     enabled: bool = True,
     model_enabled: bool = True,
     ciphertext: bytes | None = None,
+    weight: int = 100,
 ) -> tuple[Gateway, UpstreamModel, str]:
     organization = Organization(id=uuid7(), name="Acme", slug=f"org-{uuid7().hex[:8]}")
     session.add(organization)
@@ -78,7 +79,13 @@ async def build_gateway(
     await session.flush()
 
     session.add(
-        GatewayTarget(id=uuid7(), gateway_id=gateway.id, upstream_model_id=model.id, priority=0)
+        GatewayTarget(
+            id=uuid7(),
+            gateway_id=gateway.id,
+            upstream_model_id=model.id,
+            priority=0,
+            weight=weight,
+        )
     )
     minted = keys.mint(uuid7())
     session.add(
@@ -211,12 +218,27 @@ async def test_resolver_returns_a_decrypted_target(
     assert resolved.id == gateway.id
     assert resolved.virtual_model == "resolvable"
     assert resolved.param_overrides == {"top_p": 0.9}
-    target = resolved.target()
+    target = resolved.require_targets()[0]
     assert target.credential == CREDENTIAL
     assert target.upstream_model_id == "gpt-4o-mini"
     assert target.system_context == "You are terse."
     assert target.default_params == {"temperature": 0.2}
     assert target.timeout_seconds == 45
+
+
+async def test_the_resolver_carries_the_routing_weight(
+    db_session: AsyncSession,
+    db_session_factory: async_sessionmaker[AsyncSession],
+    secret_box: SecretBox,
+) -> None:
+    """The one column A/B selection reads. Keyed by model id rather than by position,
+    because ``uq_gateway_targets_pair`` makes that unique and a parallel array is one
+    refactor away from putting the 70 on the wrong variant."""
+    _, model, _ = await build_gateway(db_session, secret_box, slug="weighted", weight=70)
+
+    resolved = await DatabaseGatewayResolver(db_session_factory, secret_box).resolve("weighted")
+
+    assert resolved.weights == {model.id: 70}
 
 
 async def test_resolver_does_not_leak_the_credential_in_a_repr(
@@ -228,7 +250,7 @@ async def test_resolver_does_not_leak_the_credential_in_a_repr(
 
     resolved = await DatabaseGatewayResolver(db_session_factory, secret_box).resolve("quiet")
 
-    assert CREDENTIAL not in repr(resolved.target())
+    assert CREDENTIAL not in repr(resolved.require_targets()[0])
 
 
 async def test_unknown_slug_raises_not_found(
@@ -260,7 +282,7 @@ async def test_a_disabled_model_is_skipped_rather_than_returned(
 
     assert resolved.targets == ()
     with pytest.raises(GatewayUnavailable):
-        resolved.target()
+        resolved.require_targets()
 
 
 async def test_a_credential_from_another_master_key_fails_loudly(

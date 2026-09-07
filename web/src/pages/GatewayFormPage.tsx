@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { ApiError } from '@/api/client'
 import {
@@ -15,22 +15,16 @@ import { useAuth } from '@/auth/AuthContext'
 import { can } from '@/auth/capabilities'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { CopyButton } from '@/components/CopyButton'
-import { Field, Form, Select, SubmitButton, TextArea, TextInput } from '@/components/Form'
+import { Field, Form, SubmitButton, TextArea, TextInput } from '@/components/Form'
 import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { useToast } from '@/components/Toast'
 import { GatewayKeys } from '@/pages/GatewayKeys'
+import { RoutingSection } from '@/pages/GatewayRouting'
+import { chainBody, chainProblem, rowsOf, sameChain, type ChainRow } from '@/pages/routing'
 import { suggestSlug } from '@/pages/slug'
 import { useUnsavedChanges } from '@/pages/useUnsavedChanges'
 
 const MAX_SYSTEM_CONTEXT = 32_000
-
-const ROUTING_MODES = [
-  { value: 'single', label: 'Single model' },
-  // Present and disabled, so "can this gateway fail over?" is answerable from the screen
-  // rather than from the changelog. Task 08 turns them on.
-  { value: 'failover', label: 'Failover chain (coming soon)' },
-  { value: 'ab_split', label: 'A/B split (coming soon)' },
-]
 
 type FormState = {
   name: string
@@ -38,7 +32,9 @@ type FormState = {
   description: string
   enabled: boolean
   routingMode: string
-  modelId: string
+  //  In priority order. Position is what the server stores as `priority`, so the list is
+  //  the order and there is no separate number to keep in step with it.
+  targets: ChainRow[]
   systemContext: string
   paramOverrides: string
   lockedParams: string
@@ -60,7 +56,7 @@ const BLANK: FormState = {
   description: '',
   enabled: true,
   routingMode: 'single',
-  modelId: '',
+  targets: [],
   systemContext: '',
   paramOverrides: '{}',
   lockedParams: '{}',
@@ -140,6 +136,7 @@ export function GatewayFormPage() {
   }, [source])
 
   const writes = can(user, 'resources:write')
+  const routingProblem = chainProblem(state.routingMode, state.targets)
   const dirty = useMemo(() => !sameState(state, saved), [state, saved])
   const { confirmLeave } = useUnsavedChanges(dirty && writes)
 
@@ -162,7 +159,10 @@ export function GatewayFormPage() {
       description: state.description || null,
       enabled: state.enabled,
       routing_mode: state.routingMode,
-      model_id: state.modelId || null,
+      // The general form, always. `model_id` remains in the API for scripts written
+      // against task 06, but a form that can express a chain should not also be sending
+      // the shorthand — the two together are a 422.
+      targets: chainBody(state.targets),
       system_context: state.systemContext || null,
       param_overrides: overrides,
       locked_params: locked,
@@ -299,62 +299,13 @@ export function GatewayFormPage() {
           </Section>
 
           {/* 2. Routing -------------------------------------------------- */}
-          <Section title="Routing" subtitle="Where completions are sent.">
-            <Field
-              name="routing_mode"
-              label="Mode"
-              hint="Failover and A/B split arrive with routing modes. Until then a gateway has exactly one target."
-            >
-              {(props) => (
-                <Select
-                  {...props}
-                  value={state.routingMode}
-                  onChange={(event) => set('routingMode', event.target.value)}
-                >
-                  {ROUTING_MODES.map((option) => (
-                    <option
-                      key={option.value}
-                      value={option.value}
-                      disabled={option.value !== 'single'}
-                    >
-                      {option.label}
-                    </option>
-                  ))}
-                </Select>
-              )}
-            </Field>
-
-            <Field
-              name="model_id"
-              label="Model"
-              hint={
-                <>
-                  Your own models and the shared catalog. Add one under{' '}
-                  <Link to="/models" className="underline">
-                    Models
-                  </Link>
-                  .
-                </>
-              }
-            >
-              {(props) => (
-                <Select
-                  {...props}
-                  value={state.modelId}
-                  onChange={(event) => set('modelId', event.target.value)}
-                >
-                  <option value="">No model — requests will fail</option>
-                  {(models?.items ?? []).map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
-                      {model.organization_id ? '' : ' (shared)'}
-                      {model.enabled ? '' : ' — disabled'}
-                    </option>
-                  ))}
-                </Select>
-              )}
-            </Field>
-          </Section>
+          <RoutingSection
+            mode={state.routingMode}
+            rows={state.targets}
+            models={models?.items ?? []}
+            onMode={(mode) => set('routingMode', mode)}
+            onRows={(targets) => set('targets', targets)}
+          />
 
           {/* 3. Memory --------------------------------------------------- */}
           <Placeholder
@@ -422,8 +373,13 @@ export function GatewayFormPage() {
             <PromptPreview
               gatewayContext={state.systemContext}
               modelContext={
-                (models?.items ?? []).find((model) => model.id === state.modelId)
-                  ?.system_context ?? ''
+                //  The first target: in failover it is the primary, and in A/B it is one
+                //  of two. A preview cannot show both without claiming a request goes to
+                //  both, so it shows the one a request is most likely to reach and the
+                //  Test panel below reports what actually happened.
+                (models?.items ?? []).find(
+                  (model) => model.id === state.targets[0]?.modelId,
+                )?.system_context ?? ''
               }
             />
           </Section>
@@ -440,7 +396,11 @@ export function GatewayFormPage() {
 
         <div className="mb-8 flex flex-wrap items-center gap-3">
           {writes ? (
-            <SubmitButton busy={create.isPending || update.isPending} className="w-auto">
+            <SubmitButton
+              busy={create.isPending || update.isPending}
+              disabled={routingProblem !== null}
+              className="w-auto"
+            >
               {isNew ? 'Create gateway' : 'Save changes'}
             </SubmitButton>
           ) : null}
@@ -856,6 +816,9 @@ function TestResult({ result }: { result: GatewayTestResponse }) {
         {result.ok
           ? `OK, ${result.total_ms} ms`
           : `Failed${result.upstream_status ? ` — HTTP ${result.upstream_status}` : ''}`}
+        {result.ok && result.attempts?.length
+          ? ` — answered by ${result.model_name ?? 'a fallback'} after ${result.attempts.length - 1} failed attempt(s)`
+          : ''}
       </p>
       {result.error_message ? (
         <p className="mt-1 break-words font-mono text-xs">{result.error_message}</p>
@@ -873,6 +836,28 @@ function TestResult({ result }: { result: GatewayTestResponse }) {
         <p className="mt-1 text-xs">
           Locked by this gateway: {result.locked_overrides.join(', ')}
         </p>
+      ) : null}
+
+      {result.attempts?.length ? (
+        <div className="mt-3">
+          {/*  A green tick on a gateway whose primary is dead would be worse than a red
+                one, so the probe walks the whole chain and says what it found. */}
+          <p className="text-xs font-medium">Attempts</p>
+          <ul className="mt-1 space-y-1">
+            {result.attempts.map((attempt, index) => (
+              <li
+                key={`${attempt.target_id}-${index}`}
+                className="flex items-center gap-2 text-xs"
+              >
+                <span className="w-4 text-slate-500">{index + 1}</span>
+                <span className="flex-1 truncate font-medium">{attempt.model_name}</span>
+                <span className="tabular-nums">{attempt.status}</span>
+                {attempt.error_code ? <code>{attempt.error_code}</code> : null}
+                <span className="w-14 text-right tabular-nums">{attempt.latency_ms} ms</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       {result.assembled_prompt.length > 0 ? (
@@ -907,7 +892,7 @@ function stateOf(gateway: GatewayResponse): FormState {
     description: gateway.description ?? '',
     enabled: gateway.enabled,
     routingMode: gateway.routing_mode,
-    modelId: gateway.targets[0]?.id ?? '',
+    targets: rowsOf(gateway),
     systemContext: gateway.system_context ?? '',
     paramOverrides: JSON.stringify(gateway.param_overrides, null, 2),
     lockedParams: JSON.stringify(gateway.locked_params, null, 2),
@@ -922,7 +907,15 @@ function stateOf(gateway: GatewayResponse): FormState {
 }
 
 function sameState(left: FormState, right: FormState): boolean {
-  return (Object.keys(left) as (keyof FormState)[]).every((key) => left[key] === right[key])
+  //  Everything is a scalar except the routing chain, which has to be compared by value —
+  //  a new array on every render would otherwise make the form permanently dirty and put
+  //  an "unsaved changes" prompt in front of anyone navigating away.
+  return (
+    sameChain(left.targets, right.targets) &&
+    (Object.keys(left) as (keyof FormState)[])
+      .filter((key) => key !== 'targets')
+      .every((key) => left[key] === right[key])
+  )
 }
 
 /** `undefined` means "not JSON" — distinct from `{}`, which is a valid empty object. */

@@ -161,7 +161,15 @@ export function makeGateway(overrides: Partial<GatewayResponse> = {}): GatewayRe
     routing_mode: 'single',
     endpoint_url: 'https://localhost:8000/g/acme-support/v1',
     targets: [
-      { id: 'mo1', name: 'acme-gpt', dialect: 'openai', enabled: true, organization_id: 'o1' },
+      {
+        id: 'mo1',
+        name: 'acme-gpt',
+        dialect: 'openai',
+        enabled: true,
+        organization_id: 'o1',
+        priority: 0,
+        weight: 100,
+      },
     ],
     system_context: null,
     param_overrides: {},
@@ -315,6 +323,7 @@ export function makeRequestLog(
     memory_tokens: null,
     request_id: 'req-1',
     response_truncated: false,
+    failed_after_stream_start: false,
     bodies_omitted: null,
     ...overrides,
   }

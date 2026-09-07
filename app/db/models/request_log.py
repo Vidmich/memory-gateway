@@ -146,8 +146,11 @@ class RequestLog(Base):
     retrieved_fact_ids: Mapped[list[Any]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
-    #: Task 08 fills this with one entry per attempted target. Empty means the first
-    #: target answered, which is also what ``single`` mode always means.
+    #: One entry per attempted target — ``{target_id, model_name, status, error_code,
+    #: latency_ms, retryable}`` — written only when more than one target was involved.
+    #: Empty is the common case and means the row's own ``upstream_model_id`` and
+    #: ``status_code`` already tell the whole story; see
+    #: :meth:`app.services.routing.Attempts.as_json`.
     failover_attempts: Mapped[list[Any]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
@@ -163,6 +166,14 @@ class RequestLog(Base):
     #: two causes need different actions — one is capacity, the other is somebody's
     #: regular expression — and the detail view has to be able to say which.
     bodies_omitted: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: SPEC §8.2. The upstream failed after the first chunk had been flushed, so failover
+    #: was no longer possible and the client got a truncated answer under a 200. A column
+    #: rather than an error code because ``status_code`` is honestly 200 and
+    #: ``error_code`` is honestly ``stream_failed``: this is the third fact, the one that
+    #: says why nothing recovered it.
+    failed_after_stream_start: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
 
 class Transcript(Base):

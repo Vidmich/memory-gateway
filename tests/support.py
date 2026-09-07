@@ -60,6 +60,10 @@ class Behaviour:
     chunk_delay: float = 0.0
     #: Accept the request and never answer, so the caller's read timeout fires.
     hang: bool = False
+    #: Written frames, then silence. A provider that produced some output and then
+    #: stopped: with a target timeout shorter than this, the read timeout fires *after*
+    #: the first frame, which is the one failure failover cannot rescue (SPEC 8.2).
+    stall_seconds: float = 0.0
     send_done: bool = True
 
 
@@ -167,6 +171,8 @@ class MockUpstream:
                             "more_body": True,
                         }
                     )
+            if behaviour.stall_seconds:
+                await asyncio.sleep(behaviour.stall_seconds)
             if behaviour.send_done:
                 await send(
                     {"type": "http.response.body", "body": b"data: [DONE]\n\n", "more_body": True}

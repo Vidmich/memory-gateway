@@ -6,7 +6,12 @@
  * they can be tested by calling them, without mounting anything.
  */
 
-import type { BucketResponse } from '@/api/types'
+import type {
+  BucketResponse,
+  GatewayResponse,
+  SummaryResponse,
+} from '@/api/types'
+import type { Slice } from '@/components/Charts'
 
 /** One line, or one layer of a stack. */
 export type Series = {
@@ -99,6 +104,35 @@ export function tokenSeries(buckets: readonly BucketResponse[]): Series[] {
     { name: 'memory', label: 'Memory' },
   ])
 }
+
+/**
+ * Traffic per model, with the configured A/B weight overlaid when there is one.
+ *
+ * The drift between an intended 70/30 and an actual 68/32 is the whole reason the mode
+ * exists to be checked on, and it is invisible unless the two numbers are on the same
+ * chart. The overlay appears only for a single gateway in `ab_split`: a failover chain's
+ * weights are not a target share — a healthy chain sends everything to its primary — and
+ * a mark at 100% would suggest something had gone wrong.
+ */
+export function modelSlices(
+  summary: SummaryResponse | undefined,
+  gateway: GatewayResponse | undefined,
+): Slice[] {
+  const weights =
+    gateway?.routing_mode === 'ab_split'
+      ? new Map(gateway.targets.map((target) => [target.id, target.weight]))
+      : null
+
+  return (summary?.models ?? []).map((model) => {
+    const expected = model.upstream_model_id ? weights?.get(model.upstream_model_id) : undefined
+    return {
+      label: model.model_name ?? '(deleted model)',
+      value: model.requests,
+      ...(expected === undefined ? {} : { expected }),
+    }
+  })
+}
+
 
 /** "5-minute buckets" — the resolution the *server* chose, in words. */
 export function intervalLabel(seconds: number | undefined): string {

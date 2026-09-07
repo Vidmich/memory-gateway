@@ -40,6 +40,11 @@ from app.db.repositories import (
 )
 from app.services.memory_db import MemoryDatabase
 
+#: One link of a routing chain: the model, and its A/B weight. A tuple rather than a
+#: dataclass because it crosses the port in one direction only and is unpacked
+#: immediately on the other side.
+type Chain = tuple[UpstreamModel, int]
+
 
 class GatewayTransaction(Protocol):
     """One unit of work, already scoped. Returned objects are live in both
@@ -71,13 +76,18 @@ class GatewayTransaction(Protocol):
 
     async def delete_gateway(self, gateway: Gateway) -> None: ...
 
-    async def set_targets(self, gateway: Gateway, models: Sequence[UpstreamModel]) -> None:
-        """Replace the routing chain, in the order given.
+    async def set_targets(self, gateway: Gateway, chain: Sequence[Chain]) -> None:
+        """Replace the routing chain, in the order given, with its weights.
 
         Takes the loaded models rather than their ids so the new rows carry
         ``upstream_model`` already populated. Assigning ids alone would leave the
         relationship unloaded, and reading it afterwards — which the response does —
         is a lazy load on an async session, which raises rather than querying.
+
+        Position is priority: index 0 is tried first in ``failover`` and is the one
+        ``single`` uses. The weight is only read by ``ab_split``, but it is stored for
+        every mode so that switching modes does not silently discard a split somebody
+        configured.
         """
 
     async def keys(self, gateway_id: uuid.UUID) -> Sequence[ApiKey]: ...
@@ -140,7 +150,7 @@ class PostgresGatewayTransaction:
     async def delete_gateway(self, gateway: Gateway) -> None:
         await self._gateways.delete(gateway)
 
-    async def set_targets(self, gateway: Gateway, models: Sequence[UpstreamModel]) -> None:
+    async def set_targets(self, gateway: Gateway, chain: Sequence[Chain]) -> None:
         # Replaced wholesale rather than diffed. `cascade="all, delete-orphan"` removes
         # the dropped rows, the list is at most a handful long, and a diff would have to
         # get priority renumbering right for no benefit anyone can see.
@@ -150,9 +160,10 @@ class PostgresGatewayTransaction:
                 gateway_id=gateway.id,
                 upstream_model_id=model.id,
                 priority=index,
+                weight=weight,
                 upstream_model=model,
             )
-            for index, model in enumerate(models)
+            for index, (model, weight) in enumerate(chain)
         ]
         await self._session.flush()
 
@@ -253,18 +264,18 @@ class MemoryGatewayTransaction:
             if key.gateway_id == gateway.id:
                 self._db.api_keys.pop(key.id, None)
 
-    async def set_targets(self, gateway: Gateway, models: Sequence[UpstreamModel]) -> None:
+    async def set_targets(self, gateway: Gateway, chain: Sequence[Chain]) -> None:
         for target in list(self._db.gateway_targets.values()):
             if target.gateway_id == gateway.id:
                 self._db.gateway_targets.pop(target.id, None)
-        for index, model in enumerate(models):
+        for index, (model, weight) in enumerate(chain):
             self._db.add_target(
                 GatewayTarget(
                     id=uuid7(),
                     gateway_id=gateway.id,
                     upstream_model_id=model.id,
                     priority=index,
-                    weight=100,
+                    weight=weight,
                 )
             )
         self._hydrate(gateway)
@@ -336,6 +347,7 @@ class MemoryGatewayStore:
 
 
 __all__ = [
+    "Chain",
     "GatewayStore",
     "GatewayTransaction",
     "MemoryGatewayStore",

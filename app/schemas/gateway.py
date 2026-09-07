@@ -14,6 +14,12 @@ The three config sections are sent as partial objects and merged server-side, so
 Prompt section of the editor can save without knowing what the Logging section contains.
 That is what makes the editor extensible by tasks 07, 10 and 14 rather than a form that
 has to send everything it has ever heard of.
+
+**``model_id`` and ``targets`` are the same field twice**, and that is on purpose rather
+than by accident. A gateway with one model is the common case and ``{"model_id": "..."}``
+is how task 06's API said it; ``targets`` is the general form that failover and A/B need.
+Sending both is a 422 rather than a precedence rule, because a precedence rule is a thing
+somebody has to look up and get wrong once.
 """
 
 from __future__ import annotations
@@ -28,8 +34,18 @@ from app.db.models import ApiKey
 from app.db.models.gateway import MAX_SLUG_LENGTH, MIN_SLUG_LENGTH, ROUTING_MODES
 from app.schemas.common import Page
 from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig
+from app.schemas.routing import AttemptResponse
 from app.services.gateway_probe import MAX_PROBE_MESSAGE, GatewayProbeResult
-from app.services.gateways import UNSET, GatewayDraft, GatewayPatch, GatewayView, IssuedKey, Maybe
+from app.services.gateways import (
+    MAX_TARGETS,
+    UNSET,
+    GatewayDraft,
+    GatewayPatch,
+    GatewayView,
+    IssuedKey,
+    Maybe,
+    TargetSpec,
+)
 
 MAX_NAME = 200
 MAX_DESCRIPTION = 2000
@@ -55,9 +71,28 @@ KeyName = Annotated[str, Field(min_length=1, max_length=MAX_KEY_NAME)]
 _CONFIG = ConfigDict(extra="forbid", protected_namespaces=())
 
 
+def _reject_both_target_forms(data: Any) -> Any:
+    """``model_id`` and ``targets`` are two spellings of one field. Pick one."""
+    if isinstance(data, dict) and data.get("model_id") is not None and data.get("targets"):
+        raise ValueError(
+            "Send either 'model_id' for a single target or 'targets' for a routing chain, not both."
+        )
+    return data
+
+
+def _chain(
+    targets: list[GatewayTargetRequest] | None, model_id: uuid.UUID | None
+) -> tuple[TargetSpec, ...]:
+    """Both spellings, as the one representation the service knows about."""
+    if targets is not None:
+        return tuple(target.to_spec() for target in targets)
+    return (TargetSpec(model_id=model_id),) if model_id is not None else ()
+
+
 def _validate_routing_mode(value: str | None) -> str | None:
-    # Membership only. Whether the mode has a working *implementation* is a different
-    # question, answered in the service so task 08 changes one place.
+    # Membership only. Whether the *chain* suits the mode — two targets for failover,
+    # weights totalling 100 for A/B — is a different question, answered in the service
+    # where the existing targets are visible.
     if value is not None and value not in ROUTING_MODES:
         raise ValueError(f"must be one of {', '.join(ROUTING_MODES)}")
     return value
@@ -66,6 +101,20 @@ def _validate_routing_mode(value: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 # gateways
 # ---------------------------------------------------------------------------
+
+
+class GatewayTargetRequest(BaseModel):
+    """One link of a routing chain. List position is priority: index 0 is tried first."""
+
+    model_config = _CONFIG
+
+    model_id: uuid.UUID
+    #: A percentage, read only by ``ab_split``. Stored for every mode, so switching a
+    #: gateway to ``single`` and back does not lose the split somebody configured.
+    weight: Annotated[int, Field(ge=0, le=100)] = 100
+
+    def to_spec(self) -> TargetSpec:
+        return TargetSpec(model_id=self.model_id, weight=self.weight)
 
 
 class TargetSummary(BaseModel):
@@ -83,6 +132,11 @@ class TargetSummary(BaseModel):
     enabled: bool
     #: ``None`` for a global catalog model, matching ``ModelResponse``.
     organization_id: uuid.UUID | None
+    #: Position in the chain, and the A/B percentage. Both are on the *summary* rather
+    #: than in a parallel array, so the editor cannot render a weight against the wrong
+    #: model.
+    priority: int = 0
+    weight: int = 100
 
 
 class GatewayResponse(BaseModel):
@@ -124,13 +178,15 @@ class GatewayResponse(BaseModel):
             endpoint_url=view.endpoint_url,
             targets=[
                 TargetSummary(
-                    id=model.id,
-                    name=model.name,
-                    dialect=model.dialect,
-                    enabled=model.enabled,
-                    organization_id=model.organization_id,
+                    id=target.model.id,
+                    name=target.model.name,
+                    dialect=target.model.dialect,
+                    enabled=target.model.enabled,
+                    organization_id=target.model.organization_id,
+                    priority=target.priority,
+                    weight=target.weight,
                 )
-                for model in view.models
+                for target in view.targets
             ],
             system_context=gateway.system_context,
             param_overrides=dict(gateway.param_overrides or {}),
@@ -154,7 +210,9 @@ class GatewayCreateRequest(BaseModel):
     routing_mode: str = "single"
     #: Optional so a gateway can exist before a model does — the editor lets you save
     #: Identity first, and the list shows "no model" rather than refusing the save.
+    #: The one-target shorthand for ``targets``; see the module docstring.
     model_id: uuid.UUID | None = None
+    targets: Annotated[list[GatewayTargetRequest], Field(max_length=MAX_TARGETS)] | None = None
     system_context: SystemContext | None = None
     param_overrides: dict[str, Any] = Field(default_factory=dict)
     locked_params: dict[str, Any] = Field(default_factory=dict)
@@ -164,6 +222,11 @@ class GatewayCreateRequest(BaseModel):
 
     _check_routing_mode = field_validator("routing_mode")(_validate_routing_mode)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _one_way_of_saying_it(cls, data: Any) -> Any:
+        return _reject_both_target_forms(data)
+
     def to_draft(self) -> GatewayDraft:
         return GatewayDraft(
             name=self.name,
@@ -171,7 +234,7 @@ class GatewayCreateRequest(BaseModel):
             description=self.description,
             enabled=self.enabled,
             routing_mode=self.routing_mode,
-            model_id=self.model_id,
+            targets=_chain(self.targets, self.model_id),
             system_context=self.system_context,
             param_overrides=self.param_overrides,
             locked_params=self.locked_params,
@@ -187,6 +250,9 @@ NOT_NULLABLE = (
     "name",
     "enabled",
     "routing_mode",
+    # `model_id: null` detaches; `targets: null` would mean the same thing in a way
+    # nobody would guess, so it is refused and `targets: []` is the spelling.
+    "targets",
     "param_overrides",
     "locked_params",
     "memory_config",
@@ -209,6 +275,7 @@ class GatewayUpdateRequest(BaseModel):
     enabled: bool | None = None
     routing_mode: str | None = None
     model_id: uuid.UUID | None = None
+    targets: Annotated[list[GatewayTargetRequest], Field(max_length=MAX_TARGETS)] | None = None
     system_context: SystemContext | None = None
     param_overrides: dict[str, Any] | None = None
     locked_params: dict[str, Any] | None = None
@@ -221,6 +288,7 @@ class GatewayUpdateRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_slug_and_nulls(cls, data: Any) -> Any:
+        data = _reject_both_target_forms(data)
         if isinstance(data, dict):
             if "slug" in data:
                 # `extra="forbid"` would already refuse it; this replaces "unexpected
@@ -242,12 +310,19 @@ class GatewayUpdateRequest(BaseModel):
             value: T = getattr(self, name)
             return value if name in sent else UNSET
 
+        # Either spelling means "here is the whole chain", and neither being present
+        # means "leave it alone". `model_id: null` therefore detaches, exactly as it did
+        # before `targets` existed.
+        chain: Maybe[tuple[TargetSpec, ...]] = (
+            _chain(self.targets, self.model_id) if {"targets", "model_id"} & sent else UNSET
+        )
+
         return GatewayPatch(
             name=maybe("name"),
             description=maybe("description"),
             enabled=maybe("enabled"),
             routing_mode=maybe("routing_mode"),
-            model_id=maybe("model_id"),
+            targets=chain,
             system_context=maybe("system_context"),
             param_overrides=maybe("param_overrides"),
             locked_params=maybe("locked_params"),
@@ -349,6 +424,9 @@ class GatewayTestResponse(BaseModel):
     upstream_status: int | None = None
     error_message: str | None = None
     locked_overrides: list[str] = Field(default_factory=list)
+    #: Only when more than one target was tried. A green tick on a gateway whose primary
+    #: is dead is worse than a red one, so the editor renders this list next to it.
+    attempts: list[AttemptResponse] = Field(default_factory=list)
 
     model_config = ConfigDict(protected_namespaces=())
 
@@ -367,6 +445,7 @@ class GatewayTestResponse(BaseModel):
             upstream_status=result.upstream_status,
             error_message=result.error_message,
             locked_overrides=list(result.locked_overrides),
+            attempts=[AttemptResponse.of(attempt) for attempt in result.attempts],
         )
 
 
@@ -380,6 +459,7 @@ __all__ = [
     "GatewayCreateRequest",
     "GatewayPage",
     "GatewayResponse",
+    "GatewayTargetRequest",
     "GatewayTestRequest",
     "GatewayTestResponse",
     "GatewayUpdateRequest",

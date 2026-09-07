@@ -182,6 +182,167 @@ async def test_a_target_summary_carries_no_credential_status(
     assert "credential" not in response.json()["targets"][0]
 
 
+# ---------------------------------------------------------------------------
+# routing (SPEC 8.1)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_chain_is_returned_in_priority_order_with_its_weights(
+    directory: DirectoryHarness,
+) -> None:
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin,
+        "POST",
+        "/api/v1/gateways",
+        json_body={
+            **NEW_GATEWAY,
+            "routing_mode": "ab_split",
+            "targets": [
+                {"model_id": str(world.acme_model.id), "weight": 70},
+                {"model_id": str(world.global_model.id), "weight": 30},
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    targets = response.json()["targets"]
+    assert [(target["name"], target["priority"], target["weight"]) for target in targets] == [
+        ("acme-gpt", 0, 70),
+        ("shared-gpt-4o", 1, 30),
+    ]
+
+
+async def test_weights_that_do_not_total_a_hundred_cannot_be_saved(
+    directory: DirectoryHarness,
+) -> None:
+    """The acceptance criterion. Refused at save time so the request path never has to
+    decide what a 70/20 split means at three in the morning."""
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin,
+        "POST",
+        "/api/v1/gateways",
+        json_body={
+            **NEW_GATEWAY,
+            "routing_mode": "ab_split",
+            "targets": [
+                {"model_id": str(world.acme_model.id), "weight": 70},
+                {"model_id": str(world.global_model.id), "weight": 20},
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["param"] == "targets"
+
+
+async def test_the_single_target_shorthand_still_works(directory: DirectoryHarness) -> None:
+    """``model_id`` is how task 06's API said it, and a gateway with one model is still
+    the common case. Removing it would break every deployed script for no gain."""
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin,
+        "POST",
+        "/api/v1/gateways",
+        json_body={**NEW_GATEWAY, "model_id": str(world.acme_model.id)},
+    )
+
+    assert response.status_code == 201
+    assert [target["name"] for target in response.json()["targets"]] == ["acme-gpt"]
+
+
+async def test_saying_it_both_ways_is_refused(directory: DirectoryHarness) -> None:
+    """A precedence rule is a thing somebody has to look up and gets wrong once."""
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin,
+        "POST",
+        "/api/v1/gateways",
+        json_body={
+            **NEW_GATEWAY,
+            "model_id": str(world.acme_model.id),
+            "targets": [{"model_id": str(world.global_model.id)}],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_a_failover_mode_can_be_saved_now(directory: DirectoryHarness) -> None:
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin,
+        "POST",
+        "/api/v1/gateways",
+        json_body={
+            **NEW_GATEWAY,
+            "routing_mode": "failover",
+            "targets": [
+                {"model_id": str(world.acme_model.id)},
+                {"model_id": str(world.global_model.id)},
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["routing_mode"] == "failover"
+
+
+async def test_a_chain_can_be_replaced_by_a_patch(directory: DirectoryHarness) -> None:
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin,
+        "PATCH",
+        f"/api/v1/gateways/{world.acme_gateway.id}",
+        json_body={
+            "routing_mode": "failover",
+            "targets": [
+                {"model_id": str(world.global_model.id)},
+                {"model_id": str(world.acme_model.id)},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert [target["name"] for target in response.json()["targets"]] == [
+        "shared-gpt-4o",
+        "acme-gpt",
+    ]
+
+
+async def test_a_null_chain_is_refused_because_an_empty_one_is_the_spelling(
+    directory: DirectoryHarness,
+) -> None:
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin,
+        "PATCH",
+        f"/api/v1/gateways/{world.acme_gateway.id}",
+        json_body={"targets": None},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_an_over_long_chain_is_refused_before_any_lookup(
+    directory: DirectoryHarness,
+) -> None:
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin,
+        "POST",
+        "/api/v1/gateways",
+        json_body={
+            **NEW_GATEWAY,
+            "routing_mode": "failover",
+            "targets": [{"model_id": str(world.acme_model.id)}] * 20,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 async def test_a_duplicate_slug_is_a_409_naming_the_field(directory: DirectoryHarness) -> None:
     response = await directory.as_user(
         directory.world.acme_admin,

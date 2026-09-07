@@ -14,6 +14,7 @@ from app.services.api_keys import KeyAuthenticator
 from app.services.gateway_resolver import GatewayResolver
 from app.services.proxy import ProxyService
 from app.services.request_log import RequestLogService
+from app.services.routing import Router
 
 
 def get_resolver(request: Request) -> GatewayResolver:
@@ -29,6 +30,17 @@ def get_authenticator(request: Request) -> KeyAuthenticator:
 def get_proxy_service(request: Request) -> ProxyService:
     service: ProxyService = request.app.state.proxy_service
     return service
+
+
+def get_router(request: Request) -> Router:
+    """The routing executor: the plan walker in front of the proxy.
+
+    Separate from :func:`get_proxy_service` because the two are different jobs and the
+    probe uses both — the proxy alone knows how to talk to one provider, and this knows
+    which providers to try.
+    """
+    routing: Router = request.app.state.upstream_router
+    return routing
 
 
 def get_request_logs(request: Request) -> RequestLogService:

@@ -40,7 +40,7 @@ while `/healthz` stays 200.
 ## Work items
 
 ### Repository & tooling
-- [ ] Layout:
+- [x] Layout:
       ```
       app/            # Python package
         api/          # routers: proxy/, control/
@@ -54,59 +54,59 @@ while `/healthz` stays 200.
       web/            # React SPA (populated in task 03)
       deploy/         # compose, helm (populated in task 18)
       ```
-- [ ] `pyproject.toml` with `uv`; Python 3.12 pinned via `.python-version`.
-- [ ] `ruff` (lint + format), `mypy` in strict mode for `app/`, `pytest` + `pytest-asyncio`.
-- [ ] `Makefile`: `dev`, `test`, `lint`, `typecheck`, `migrate`, `revision`, `seed`, `clean`.
-- [ ] Pre-commit hooks running ruff and mypy on staged files.
-- [ ] CI (GitHub Actions): lint → typecheck → test with a Postgres service container. Fails the
+- [x] `pyproject.toml` with `uv`; Python 3.12 pinned via `.python-version`.
+- [x] `ruff` (lint + format), `mypy` in strict mode for `app/`, `pytest` + `pytest-asyncio`.
+- [x] `Makefile`: `dev`, `test`, `lint`, `typecheck`, `migrate`, `revision`, `seed`, `clean`.
+- [x] Pre-commit hooks running ruff and mypy on staged files.
+- [x] CI (GitHub Actions): lint → typecheck → test with a Postgres service container. Fails the
       build on any of the three.
 
 ### Application core
-- [ ] `create_app()` factory so tests build isolated app instances.
-- [ ] `Settings` (Pydantic Settings) reading env vars, **validated at import time** — a missing
+- [x] `create_app()` factory so tests build isolated app instances.
+- [x] `Settings` (Pydantic Settings) reading env vars, **validated at import time** — a missing
       `DATABASE_URL` must crash at startup with a readable message, not at first request.
       Required: `DATABASE_URL`, `REDIS_URL`, `QDRANT_URL`, `S3_ENDPOINT`/`S3_BUCKET`/creds,
       `ENCRYPTION_MASTER_KEY`, `JWT_SIGNING_KEY`, `PUBLIC_BASE_URL`.
-- [ ] Structured JSON logging with a `request_id` bound per request via contextvar, emitted on
+- [x] Structured JSON logging with a `request_id` bound per request via contextvar, emitted on
       every log line and returned as `X-Gateway-Request-Id`.
-- [ ] Request-id middleware: accept an inbound id or generate a UUIDv7.
-- [ ] Global exception handlers producing a consistent error envelope. Note: the proxy routes
+- [x] Request-id middleware: accept an inbound id or generate a UUIDv7.
+- [x] Global exception handlers producing a consistent error envelope. Note: the proxy routes
       need the *OpenAI* error shape instead — task 02 registers its own handler for that subtree.
-- [ ] `AppError` hierarchy (`NotFound`, `Conflict`, `Forbidden`, `Unauthorized`, `Validation`,
+- [x] `AppError` hierarchy (`NotFound`, `Conflict`, `Forbidden`, `Unauthorized`, `Validation`,
       `UpstreamError`) mapped to status codes in one place.
 
 ### Database
-- [ ] Async SQLAlchemy 2.0 engine + session factory; `get_session` FastAPI dependency with
+- [x] Async SQLAlchemy 2.0 engine + session factory; `get_session` FastAPI dependency with
       per-request transaction and rollback on exception.
-- [ ] Declarative `Base` with shared mixins: `id` (UUIDv7 primary key), `created_at`,
+- [x] Declarative `Base` with shared mixins: `id` (UUIDv7 primary key), `created_at`,
       `updated_at`.
-- [ ] Alembic configured for async, with an empty baseline revision.
-- [ ] Test fixtures: a per-test-session database created from migrations (not `create_all`, so
+- [x] Alembic configured for async, with an empty baseline revision.
+- [x] Test fixtures: a per-test-session database created from migrations (not `create_all`, so
       migrations are exercised) and a transaction-rollback fixture per test.
 
 ### Health
-- [ ] `GET /healthz` — liveness only, no dependency checks, always cheap.
-- [ ] `GET /readyz` — checks Postgres (`SELECT 1`), Redis (`PING`), Qdrant (collections list),
+- [x] `GET /healthz` — liveness only, no dependency checks, always cheap.
+- [x] `GET /readyz` — checks Postgres (`SELECT 1`), Redis (`PING`), Qdrant (collections list),
       and object storage (bucket head). Returns 503 with a per-dependency status map on failure.
-- [ ] `GET /metrics` — Prometheus endpoint with default process and HTTP metrics registered.
+- [x] `GET /metrics` — Prometheus endpoint with default process and HTTP metrics registered.
 
 ### Compose
-- [ ] `deploy/compose/docker-compose.yml` with `api`, `postgres` (16), `redis` (7),
+- [x] `deploy/compose/docker-compose.yml` with `api`, `postgres` (16), `redis` (7),
       `qdrant`, `minio` (+ a one-shot bucket-create job), and a placeholder `web` service.
-- [ ] Healthchecks on every service; `api` `depends_on` them with `condition: service_healthy`.
-- [ ] `api` runs migrations on start in dev (an entrypoint flag, never in prod — see task 18).
-- [ ] Hot reload of `app/` via a bind mount.
-- [ ] `.env.example` documenting every variable, with dev-safe defaults.
+- [x] Healthchecks on every service; `api` `depends_on` them with `condition: service_healthy`.
+- [x] `api` runs migrations on start in dev (an entrypoint flag, never in prod — see task 18).
+- [x] Hot reload of `app/` via a bind mount.
+- [x] `.env.example` documenting every variable, with dev-safe defaults.
 
 ## Acceptance criteria
 
-- [ ] A clean clone reaches a passing demo with only `docker compose up`.
-- [ ] `make test lint typecheck` passes with zero warnings suppressed.
-- [ ] Startup with a missing required env var exits non-zero within 2 seconds and names the
+- [ ] A clean clone reaches a passing demo with only `docker compose up`. *(unverified: no Docker on the dev machine)*
+- [x] `make test lint typecheck` passes with zero warnings suppressed.
+- [x] Startup with a missing required env var exits non-zero within 2 seconds and names the
       variable.
-- [ ] Every log line is valid JSON and carries `request_id`.
-- [ ] `/readyz` correctly reports a downed dependency by name.
-- [ ] CI runs the full suite on pull requests.
+- [x] Every log line is valid JSON and carries `request_id`.
+- [x] `/readyz` correctly reports a downed dependency by name.
+- [ ] CI runs the full suite on pull requests. *(workflow written; unverified until the first push)*
 
 ## Tests
 

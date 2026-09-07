@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+.mypy_cache
+.ruff_cache
+.pytest_cache
+__pycache__
+*.pyc
+.env
+tests
+web/node_modules
+deploy/compose/*.yml
+docs
+SPEC.md
+tasks

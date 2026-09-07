@@ -1,0 +1,122 @@
+[project]
+name = "memory-gateway"
+version = "0.1.0"
+description = "AI model gateway that augments requests with memory"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "redis>=5.2",
+    "qdrant-client>=1.12",
+    "boto3>=1.35",
+    "httpx>=0.28",
+    "prometheus-client>=0.21",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-env>=1.1",
+    "pytest-cov>=6.0",
+    "boto3-stubs[s3]>=1.35",
+    "pre-commit>=4.0",
+]
+
+[tool.uv]
+package = false
+
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["."]
+# ruff formats fenced Python in Markdown too; the spec and task files are prose and must
+# not be rewritten by a formatter run.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "ASYNC",
+    "RUF",
+]
+
+ignore = [
+    # The AppError hierarchy is named for how it reads at the raise site
+    # (`raise NotFound(...)`), which SPEC/task 01 specify; the Error suffix adds noise.
+    "N818",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/versions/*" = ["N999"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "tests"]
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_decorators = false
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error"]
+markers = [
+    "db: requires a reachable PostgreSQL instance",
+]
+# "D:" means "default" — only applied when the variable is not already set,
+# so CI and local overrides win.
+env = [
+    "D:ENVIRONMENT=test",
+    "D:LOG_LEVEL=WARNING",
+    "D:DATABASE_URL=postgresql+asyncpg://gateway:gateway@localhost:5432/gateway",
+    "D:REDIS_URL=redis://localhost:6379/0",
+    "D:QDRANT_URL=http://localhost:6333",
+    "D:S3_ENDPOINT=http://localhost:9000",
+    "D:S3_BUCKET=memory-gateway",
+    "D:S3_ACCESS_KEY_ID=minioadmin",
+    "D:S3_SECRET_ACCESS_KEY=minioadmin",
+    "D:ENCRYPTION_MASTER_KEY=dGVzdC1tYXN0ZXIta2V5LTMyLWJ5dGVzLWxvbmchISE=",
+    "D:JWT_SIGNING_KEY=test-jwt-signing-key-at-least-32-chars",
+    "D:PUBLIC_BASE_URL=http://localhost:8000",
+]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true

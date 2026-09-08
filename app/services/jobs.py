@@ -351,12 +351,16 @@ class JobRunner:
 INGEST_DOCUMENT = "ingest_document"
 DELETE_CONNECTOR = "delete_connector"
 DISTIL_MEMORY = "distil_memory"
+REINDEX = "reindex"
 
-#: Every job this build knows how to run. Three: one file's extraction and embedding, a
-#: connector's whole teardown, and one conversation's distillation — all unbounded work
-#: that a request must not wait on. Resync is not here: SPEC §9.1 has it return a summary,
-#: which a job cannot do, and what it does synchronously is a listing plus row writes.
-JOB_NAMES = (INGEST_DOCUMENT, DELETE_CONNECTOR, DISTIL_MEMORY)
+#: Every job this build knows how to run. Four: one file's extraction and embedding, a
+#: connector's whole teardown, one conversation's distillation, and task 17's reindex —
+#: all unbounded work that a request must not wait on. Resync is not here: SPEC §9.1 has
+#: it return a summary, which a job cannot do, and what it does synchronously is a listing
+#: plus row writes. The *scheduled* jobs are not here either: retention, partitions and the
+#: orphan sweep are cron entries on the worker rather than enqueued work, because nothing
+#: requests them and there is nothing to deduplicate them against.
+JOB_NAMES = (INGEST_DOCUMENT, DELETE_CONNECTOR, DISTIL_MEMORY, REINDEX)
 
 
 def ingest_key(document_id: uuid.UUID, content_hash: str | None) -> str:
@@ -407,6 +411,16 @@ def distil_key(end_user_id: uuid.UUID, session_id: str | None, token: str) -> st
     return f"distil:{end_user_id}:{session_id or '-'}:{token}"
 
 
+def reindex_key(run_id: uuid.UUID) -> str:
+    """One job per run row.
+
+    The run is created before the enqueue and carries its own progress, so a duplicate
+    enqueue is the *same* work rather than a second copy of it — and the handler is safe
+    to run twice anyway, because every target resumes from its cursor.
+    """
+    return f"reindex:{run_id}"
+
+
 def resync_key(connector_id: uuid.UUID) -> str:
     """The lock name for a reconciliation. Pressing the button twice is one sync."""
     return f"resync:{connector_id}"
@@ -423,6 +437,7 @@ __all__ = [
     "HEAVY_QUEUE",
     "INGEST_DOCUMENT",
     "JOB_NAMES",
+    "REINDEX",
     "DeadLetter",
     "DeadLetterSink",
     "Decision",
@@ -438,5 +453,6 @@ __all__ = [
     "distil_key",
     "ingest_key",
     "queue_for",
+    "reindex_key",
     "resync_key",
 ]

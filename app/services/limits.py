@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import math
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -146,6 +147,19 @@ class Ceilings:
 #: default constructed per call, which is both cheaper and the only shape ruff will accept
 #: in a signature.
 NO_CEILINGS = Ceilings()
+
+#: Either the ceilings themselves, or something that will produce them when asked.
+#:
+#: The callable form exists because task 17 moved these into ``platform_settings``, where an
+#: operator can change them while the process is running. The limiter resolves a gateway on
+#: the request path, synchronously, so it cannot await a read — it holds a function that
+#: returns the cached snapshot instead. A fixed :class:`Ceilings` still works everywhere it
+#: worked before, which is what keeps the several dozen tests that pass one unchanged.
+CeilingSource = Ceilings | Callable[[], Ceilings]
+
+
+def ceilings_from(source: CeilingSource) -> Ceilings:
+    return source if isinstance(source, Ceilings) else source()
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,12 +398,14 @@ __all__ = [
     "NEAR_LIMIT",
     "NO_CEILINGS",
     "WINDOWS",
+    "CeilingSource",
     "Ceilings",
     "Effective",
     "Reading",
     "Rule",
     "Scope",
     "bucket_key",
+    "ceilings_from",
     "effective",
     "headers",
     "message",

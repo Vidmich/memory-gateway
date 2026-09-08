@@ -15,10 +15,17 @@ import pytest
 
 from app.core.config import Settings, get_settings
 from app.services.job_queue import ARQ_FUNCTION
-from app.services.jobs import DELETE_CONNECTOR, DISTIL_MEMORY, INGEST_DOCUMENT, JOB_NAMES
+from app.services.jobs import (
+    DELETE_CONNECTOR,
+    DISTIL_MEMORY,
+    INGEST_DOCUMENT,
+    JOB_NAMES,
+    REINDEX,
+)
 from app.workers.main import WorkerSettings, run_gateway_job
 from app.workers.runtime import (
     Distillation,
+    Platform,
     build_handlers,
     embedding_settings,
     ingestion_settings,
@@ -27,6 +34,8 @@ from app.workers.runtime import (
 from tests.auth_support import make_organization
 from tests.connector_support import build_connectors
 from tests.distillation_support import build_distillation
+from tests.platform_support import PlatformFixture
+from tests.platform_support import build_platform as build_platform_fixture
 
 
 def test_the_queue_and_the_worker_agree_on_the_function_name() -> None:
@@ -50,12 +59,20 @@ def test_the_job_timeout_is_well_above_the_extraction_cap() -> None:
 
 def test_there_is_a_handler_for_every_job_this_build_can_enqueue() -> None:
     """The other half of the same failure: an enqueue with no handler dead-letters, which
-    is loud but useless."""
+    is loud but useless.
+
+    Driven against a *fully wired* worker — ingestion, conversation memory and task 17's
+    platform bundle — because that is the deployment every name in ``JOB_NAMES`` is
+    enqueued by. A worker missing one of those registers fewer handlers on purpose; the
+    two tests below are the ones that say so.
+    """
     fixture = build_connectors(make_organization())
     ingestion = _ingestion_of(fixture)
+    platform = build_platform_fixture()
 
-    assert set(build_handlers(ingestion, _distillation_of()[0])) == set(JOB_NAMES)
-    assert set(JOB_NAMES) == {INGEST_DOCUMENT, DELETE_CONNECTOR, DISTIL_MEMORY}
+    handlers = build_handlers(ingestion, _distillation_of()[0], _platform_of(platform))
+    assert set(handlers) == set(JOB_NAMES)
+    assert set(JOB_NAMES) == {INGEST_DOCUMENT, DELETE_CONNECTOR, DISTIL_MEMORY, REINDEX}
 
 
 def test_a_worker_without_conversation_memory_registers_two_handlers() -> None:
@@ -65,6 +82,30 @@ def test_a_worker_without_conversation_memory_registers_two_handlers() -> None:
     handlers = build_handlers(_ingestion_of(build_connectors(make_organization())))
 
     assert set(handlers) == {INGEST_DOCUMENT, DELETE_CONNECTOR}
+
+
+async def test_the_reindex_handler_turns_a_string_run_id_back_into_a_uuid() -> None:
+    """The payload crossed a process boundary as JSON, so the id arrived as a string.
+
+    A handler that passed it through would fail deep inside the reindex with a lookup
+    that found nothing — indistinguishable, from the log, from a run somebody deleted.
+    """
+    platform = build_platform_fixture()
+    seen: list[uuid.UUID] = []
+
+    async def capture(run_id: uuid.UUID) -> Any:
+        seen.append(run_id)
+        return None
+
+    platform.reindexer.run = capture  # type: ignore[method-assign]
+    handlers = build_handlers(
+        _ingestion_of(build_connectors(make_organization())), None, _platform_of(platform)
+    )
+    run_id = uuid.uuid4()
+
+    await handlers[REINDEX]({"run_id": str(run_id)})
+
+    assert seen == [run_id]
 
 
 async def test_the_distillation_handler_turns_string_ids_back_into_uuids() -> None:
@@ -192,3 +233,23 @@ def test_a_payload_carries_only_what_survives_a_deploy() -> None:
     }
 
     assert all(isinstance(value, str) for value in payload.values())
+
+
+def _platform_of(fixture: PlatformFixture) -> Platform:
+    """The fixture as the bundle ``build_handlers`` expects.
+
+    Only ``reindexer`` is ever read by a handler, and the rest are the fixture's own
+    objects rather than doubles — so a handler that grew a second dependency would find a
+    working one here instead of a ``None`` that only fails in production.
+    """
+    return Platform(
+        settings=fixture.platform_settings,
+        store=fixture.store,
+        index=fixture.index,
+        partitions=fixture.partitions,
+        retention=fixture.retention,
+        sweeper=fixture.sweeper,
+        reindexer=fixture.reindexer,
+        eraser=fixture.eraser,
+        service=fixture.service,
+    )

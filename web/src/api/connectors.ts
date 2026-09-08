@@ -165,6 +165,23 @@ export function useDeleteConnector() {
   })
 }
 
+/**
+ * Re-run ingestion for every document in a connector.
+ *
+ * Not `POST /platform/reindex`, despite the shared word. That one re-embeds chunks that are
+ * still correct under a new model; this one exists because a changed `chunk_size` makes the
+ * chunks themselves wrong, and only running the pipeline again fixes that.
+ */
+export function useReindexConnector(connectorId: string | undefined) {
+  const client = useApiClient()
+  const invalidate = useInvalidateConnectors()
+  return useMutation({
+    mutationFn: () =>
+      client.post<{ documents: number }>(`/api/v1/connectors/${connectorId}/reindex`, {}),
+    onSuccess: invalidate,
+  })
+}
+
 export function useResync(connectorId: string | undefined) {
   const client = useApiClient()
   const invalidate = useInvalidateConnectors()

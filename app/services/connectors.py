@@ -36,7 +36,7 @@ from app.core.errors import Conflict, NotFound, Validation
 from app.core.ids import uuid7
 from app.core.tenancy import Actor
 from app.db.models import Connector, Document
-from app.db.models.connector import CONNECTOR_TYPES
+from app.db.models.connector import CONNECTOR_TYPES, TERMINAL_DOCUMENT_STATUSES
 from app.schemas.config import merge_config
 from app.schemas.connector_config import ChunkingConfig, requires_reindex
 from app.services.audit import Target, summarize
@@ -60,6 +60,10 @@ from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
 from app.services.vector_store import Match, Stored, VectorStore
 
 logger = logging.getLogger(__name__)
+
+#: Documents re-enqueued per transaction by a connector-wide reindex. Bounded so one
+#: button press on a large connector is many short transactions rather than one long one.
+REINDEX_PAGE = 200
 
 MAX_NAME_LENGTH = 200
 
@@ -449,6 +453,73 @@ class ConnectorService:
             await transaction.commit()
         await outbox.flush()
         return document
+
+    async def reindex_connector(self, actor: Actor, connector_id: uuid.UUID) -> int:
+        """Apply a chunking change to every document this connector holds.
+
+        A *different* operation from task 17's platform reindex, and the difference is
+        worth stating because both are called "reindex". Changing the embedding model
+        re-embeds chunks that are still correct; changing ``chunk_size`` makes the chunks
+        themselves wrong, so nothing short of running the pipeline again fixes it. This is
+        therefore the same path as **Retry** on one document, applied to all of them,
+        rather than anything to do with collections or aliases.
+
+        Documents in a non-terminal state are skipped: they already have a job coming, and
+        resetting one mid-ingestion would race the worker that is writing it.
+
+        Paged and committed per page, rather than one transaction over the whole connector.
+        A folder of ten thousand files would otherwise hold a connection and its row locks
+        for as long as the enqueue takes — and a page that lands is a page whose documents
+        are already on their way, which is the right partial outcome for a button somebody
+        pressed by hand.
+        """
+        queued = 0
+        after: uuid.UUID | None = None
+        while True:
+            outbox = JobOutbox(self._queue)
+            async with self._store.begin(actor.scope) as transaction:
+                connector = await self._require(transaction, connector_id)
+                page = await transaction.documents(connector_id, after=after, limit=REINDEX_PAGE)
+                for document in page:
+                    after = document.id
+                    if document.status not in TERMINAL_DOCUMENT_STATUSES:
+                        continue
+                    document.status = "pending"
+                    document.error = None
+                    document.chunk_count = 0
+                    document.indexed_at = None
+                    outbox.add(
+                        INGEST_DOCUMENT,
+                        {
+                            "organization_id": str(document.organization_id),
+                            "document_id": str(document.id),
+                        },
+                        # Not the plain ingest key: a re-chunk is a request to run again
+                        # even though the bytes have not changed, and the plain key would
+                        # make the button do nothing for an hour.
+                        idempotency_key=(
+                            f"{ingest_key(document.id, document.content_hash)}:rechunk"
+                        ),
+                        queue=queue_for(document.source_name),
+                    )
+                    queued += 1
+                if not page:
+                    transaction.audit(
+                        actor,
+                        "connector.reindex",
+                        target=target_of(connector),
+                        organization_id=connector.organization_id,
+                        summary=summarize(queued),
+                    )
+                await transaction.commit()
+            await outbox.flush()
+            if not page:
+                break
+        logger.info(
+            "connector reindex enqueued",
+            extra={"connector_id": str(connector_id), "documents": queued},
+        )
+        return queued
 
     # -- upload ----------------------------------------------------------
 

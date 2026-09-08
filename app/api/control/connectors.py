@@ -36,6 +36,7 @@ from app.schemas.connector import (
     DocumentChunk,
     DocumentChunksResponse,
     DocumentResponse,
+    ReindexSummary,
     ResyncResponse,
     SearchHit,
     SearchRequest,
@@ -228,6 +229,21 @@ async def document_chunks(
         chunks=[DocumentChunk.of(chunk) for chunk in found.chunks],
         chunk_count=found.chunk_count,
     )
+
+
+@router.post("/connectors/{connector_id}/reindex", dependencies=[_writes])
+async def reindex_connector(
+    connector_id: uuid.UUID, actor: CurrentActor, service: _Service
+) -> ReindexSummary:
+    """Re-run ingestion for every document, which is how a chunking change is applied.
+
+    Not the same operation as ``POST /platform/reindex``, despite the name they share. That
+    one re-embeds chunks that are still correct under a new model; this one exists because a
+    changed ``chunk_size`` makes the chunks themselves wrong, and only running the pipeline
+    again fixes that. The connector detail screen offers it exactly when ``reindex_required``
+    comes back set.
+    """
+    return ReindexSummary(documents=await service.reindex_connector(actor, connector_id))
 
 
 @router.post("/documents/{document_id}/reindex", dependencies=[_writes])

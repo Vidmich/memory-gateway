@@ -183,31 +183,79 @@ class QdrantVectorStore:
         self._widths: dict[str, int] = {}
 
     async def ensure_collection(self, organization_id: uuid.UUID, *, dimension: int) -> None:
-        from qdrant_client import models
+        """Create the tenant's first collection and its alias, if there is neither.
+
+        Since task 17 the name every other method uses is an *alias*, so this creates
+        ``org_{id}_docs_v1`` and points ``org_{id}_docs`` at it. A tenant that already has
+        a collection under the alias name — indexed before this task — is left exactly as
+        it is: promoting it costs a gap in retrieval, and the only thing worth paying that
+        for is a reindex, which does it deliberately. See
+        :mod:`app.services.vector_index`.
+        """
+        from app.services.vector_index import FIRST_VERSION, versioned
 
         name = collection_for(organization_id)
         if name in self._ensured:
             return
-        if not await self._client.collection_exists(name):
-            await self._client.create_collection(
-                collection_name=name,
-                vectors_config=models.VectorParams(
-                    size=dimension,
-                    # Cosine, per SPEC §9.4. Embeddings are direction, not magnitude; dot
-                    # product would rank long chunks above relevant ones.
-                    distance=models.Distance.COSINE,
-                ),
-            )
-            for path in INDEXED_PAYLOAD_FIELDS:
-                await self._client.create_payload_index(
-                    collection_name=name,
-                    field_name=path,
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                )
+        if not await self._present(name):
+            physical = versioned(organization_id, FIRST_VERSION)
+            await self._create(physical, dimension=dimension)
+            await self._point_alias(name, physical)
             logger.info(
-                "created vector collection", extra={"collection": name, "dimension": dimension}
+                "created vector collection",
+                extra={"collection": physical, "alias": name, "dimension": dimension},
             )
         self._ensured.add(name)
+
+    async def _create(self, collection: str, *, dimension: int) -> None:
+        from qdrant_client import models
+
+        await self._client.create_collection(
+            collection_name=collection,
+            vectors_config=models.VectorParams(
+                size=dimension,
+                # Cosine, per SPEC §9.4. Embeddings are direction, not magnitude; dot
+                # product would rank long chunks above relevant ones.
+                distance=models.Distance.COSINE,
+            ),
+        )
+        for path in INDEXED_PAYLOAD_FIELDS:
+            await self._client.create_payload_index(
+                collection_name=collection,
+                field_name=path,
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+
+    async def _point_alias(self, alias: str, collection: str) -> None:
+        from qdrant_client import models
+
+        await self._client.update_collection_aliases(
+            change_aliases_operations=[
+                models.CreateAliasOperation(
+                    create_alias=models.CreateAlias(collection_name=collection, alias_name=alias)
+                )
+            ]
+        )
+
+    async def _present(self, name: str) -> bool:
+        """Whether ``name`` resolves to anything — a collection, or an alias for one.
+
+        Every read below guards on this rather than on ``collection_exists`` alone.
+        Qdrant's existence check answers about *collections*, so a tenant whose data sits
+        behind an alias would otherwise read as "nothing indexed" and every search would
+        quietly return no documents.
+        """
+        if await self._client.collection_exists(name):
+            return True
+        try:
+            described = await self._client.get_aliases()
+        except Exception:
+            logger.warning("could not list qdrant aliases", exc_info=True)
+            return False
+        return any(
+            getattr(entry, "alias_name", None) == name
+            for entry in getattr(described, "aliases", ()) or ()
+        )
 
     async def upsert(self, organization_id: uuid.UUID, points: Sequence[ChunkPoint]) -> None:
         from qdrant_client import models
@@ -235,7 +283,7 @@ class QdrantVectorStore:
         from qdrant_client import models
 
         name = collection_for(organization_id)
-        if not await self._client.collection_exists(name):
+        if not await self._present(name):
             # Nothing was ever indexed for this tenant. A delete asks for an end state,
             # and that end state already holds.
             return
@@ -246,11 +294,17 @@ class QdrantVectorStore:
         )
 
     async def drop(self, organization_id: uuid.UUID) -> None:
+        from app.services.vector_index import QdrantVectorIndexAdmin
+
         name = collection_for(organization_id)
         self._ensured.discard(name)
         self._widths.pop(name, None)
-        if await self._client.collection_exists(name):
-            await self._client.delete_collection(name)
+        # Through the admin so the *collection* behind the alias goes, not just the
+        # alias: deleting an alias leaves the vectors in place, which for an
+        # offboarding is the one outcome that must not happen.
+        live = await QdrantVectorIndexAdmin(self._client).live_collection(organization_id)
+        if live is not None:
+            await self._client.delete_collection(live)
 
     async def dimension(self, organization_id: uuid.UUID) -> int | None:
         """One round trip per collection per process, then a dictionary lookup.
@@ -265,7 +319,7 @@ class QdrantVectorStore:
         name = collection_for(organization_id)
         if (cached := self._widths.get(name)) is not None:
             return cached
-        if not await self._client.collection_exists(name):
+        if not await self._present(name):
             return None
         info = await self._client.get_collection(name)
         size = vector_size(info)
@@ -285,7 +339,7 @@ class QdrantVectorStore:
         from qdrant_client import models
 
         name = collection_for(organization_id)
-        if not await self._client.collection_exists(name):
+        if not await self._present(name):
             return []
 
         query_filter = None
@@ -319,7 +373,7 @@ class QdrantVectorStore:
         self, organization_id: uuid.UUID, document_id: uuid.UUID, *, limit: int = 500
     ) -> list[Stored]:
         name = collection_for(organization_id)
-        if not await self._client.collection_exists(name):
+        if not await self._present(name):
             return []
         # `scroll`, not `query_points`: this is a filtered read of everything matching,
         # with no vector to score against. Ordering is done here rather than pushed down
@@ -343,7 +397,7 @@ class QdrantVectorStore:
         document_id: uuid.UUID | None = None,
     ) -> int:
         name = collection_for(organization_id)
-        if not await self._client.collection_exists(name):
+        if not await self._present(name):
             return 0
         query_filter = None
         if document_id is not None:
@@ -390,18 +444,39 @@ def _equals(key: str, value: str) -> Any:
 
 @dataclass
 class MemoryVectorStore:
-    """Brute-force cosine over a dict. Exact, which is what a test wants."""
+    """Brute-force cosine over a dict. Exact, which is what a test wants.
+
+    Since task 17 it models the alias indirection too: ``collections`` is keyed by the
+    *physical* name and ``aliases`` maps the name callers use onto it. Without that a
+    reindex would pass here — two dictionary keys, swapped — and fail against Qdrant,
+    where the swap is the only part that is hard.
+    """
 
     collections: dict[str, dict[str, ChunkPoint]] = field(default_factory=dict)
     dimensions: dict[str, int] = field(default_factory=dict)
+    #: Alias name to collection name. Populated by ``ensure_collection`` and by a swap.
+    aliases: dict[str, str] = field(default_factory=dict)
+
+    def live(self, organization_id: uuid.UUID) -> str:
+        """The collection the tenant's alias resolves to right now.
+
+        Falls back to the alias name itself, which is both the pre-alias shape and what
+        makes a store somebody filled in by hand behave the way it always did.
+        """
+        alias = collection_for(organization_id)
+        return self.aliases.get(alias, alias)
 
     async def ensure_collection(self, organization_id: uuid.UUID, *, dimension: int) -> None:
-        name = collection_for(organization_id)
+        alias = collection_for(organization_id)
+        name = self.aliases.get(alias)
+        if name is None:
+            name = alias if alias in self.collections else f"{alias}_v1"
+            self.aliases[alias] = name
         self.collections.setdefault(name, {})
         self.dimensions[name] = dimension
 
     async def upsert(self, organization_id: uuid.UUID, points: Sequence[ChunkPoint]) -> None:
-        name = collection_for(organization_id)
+        name = self.live(organization_id)
         if name not in self.collections:
             raise KeyError(f"collection {name} does not exist")
         expected = self.dimensions[name]
@@ -421,19 +496,20 @@ class MemoryVectorStore:
         self._delete_where(organization_id, "connector_id", str(connector_id))
 
     def _delete_where(self, organization_id: uuid.UUID, key: str, value: str) -> None:
-        points = self.collections.get(collection_for(organization_id))
+        points = self.collections.get(self.live(organization_id))
         if points is None:
             return
         for identifier in [pid for pid, p in points.items() if str(p.payload.get(key)) == value]:
             del points[identifier]
 
     async def drop(self, organization_id: uuid.UUID) -> None:
-        name = collection_for(organization_id)
+        name = self.live(organization_id)
         self.collections.pop(name, None)
         self.dimensions.pop(name, None)
+        self.aliases.pop(collection_for(organization_id), None)
 
     async def dimension(self, organization_id: uuid.UUID) -> int | None:
-        return self.dimensions.get(collection_for(organization_id))
+        return self.dimensions.get(self.live(organization_id))
 
     async def search(
         self,
@@ -444,7 +520,7 @@ class MemoryVectorStore:
         limit: int = DEFAULT_SEARCH_LIMIT,
         min_score: float = 0.0,
     ) -> list[Match]:
-        points = self.collections.get(collection_for(organization_id), {})
+        points = self.collections.get(self.live(organization_id), {})
         wanted = {str(value) for value in connector_ids}
         scored = [
             Match(id=point.id, score=cosine(vector, point.vector), payload=dict(point.payload))
@@ -458,7 +534,7 @@ class MemoryVectorStore:
     async def chunks(
         self, organization_id: uuid.UUID, document_id: uuid.UUID, *, limit: int = 500
     ) -> list[Stored]:
-        points = self.collections.get(collection_for(organization_id), {})
+        points = self.collections.get(self.live(organization_id), {})
         found = [
             Stored(id=point.id, payload=dict(point.payload))
             for point in points.values()
@@ -474,7 +550,7 @@ class MemoryVectorStore:
         connector_id: uuid.UUID | None = None,
         document_id: uuid.UUID | None = None,
     ) -> int:
-        points = self.collections.get(collection_for(organization_id), {})
+        points = self.collections.get(self.live(organization_id), {})
         if document_id is not None:
             return sum(
                 1 for p in points.values() if str(p.payload.get("document_id")) == str(document_id)

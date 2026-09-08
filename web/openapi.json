@@ -705,6 +705,25 @@
         "title": "DistillationConfig",
         "type": "object"
       },
+      "DistillationDefaults": {
+        "description": "The platform's fallback distillation model (SPEC \u00a76.4).\n\nAn upstream-model id, which has to name a *global* model since every organization\nuses it. Validated where it is written rather than here \u2014 this schema cannot reach the\ncatalog, and a settings module that could would be a settings module with a database.",
+        "properties": {
+          "model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          }
+        },
+        "title": "DistillationDefaults",
+        "type": "object"
+      },
       "DistillationSettingsRequest": {
         "additionalProperties": false,
         "description": "A partial update, merged into whatever is stored.\n\nEvery field optional and applied only when present, so a form that renders six knobs\nand a later build that renders seven do not overwrite each other's.",
@@ -1079,6 +1098,36 @@
         "title": "DocumentResponse",
         "type": "object"
       },
+      "EmbeddingChoice": {
+        "description": "SPEC \u00a79.4's platform embedding model \u2014 provider, model and width, together.\n\nOne section rather than three settings because the three are only ever correct as a\nset: a model changed without its dimension produces vectors Qdrant refuses, and a\ndimension changed without its model produces vectors it accepts and cannot rank. A\nsingle row makes the change atomic and makes \"what is the platform embedding on\"\na single value to compare a collection against.",
+        "properties": {
+          "dimension": {
+            "default": 256,
+            "maximum": 8192.0,
+            "minimum": 8.0,
+            "title": "Dimension",
+            "type": "integer"
+          },
+          "name": {
+            "default": "hash-bow",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "default": "hash",
+            "enum": [
+              "openai",
+              "hash"
+            ],
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "title": "EmbeddingChoice",
+        "type": "object"
+      },
       "EndUserResponse": {
         "description": "One identity, with the two numbers the list screen sorts by.",
         "properties": {
@@ -1136,6 +1185,74 @@
           "anonymous"
         ],
         "title": "EndUserResponse",
+        "type": "object"
+      },
+      "ErasureReport": {
+        "description": "SPEC \u00a76.5's artefact: the thing you hand somebody who asks whether a deletion\nrequest was honoured.",
+        "properties": {
+          "complete": {
+            "default": true,
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "stores": {
+            "items": {
+              "$ref": "#/components/schemas/ErasureStore"
+            },
+            "title": "Stores",
+            "type": "array"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "subject_id": {
+            "format": "uuid",
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "subject_id",
+          "organization_id",
+          "requested_at"
+        ],
+        "title": "ErasureReport",
+        "type": "object"
+      },
+      "ErasureStore": {
+        "description": "What was removed from one store, named so the report reads as a checklist.",
+        "properties": {
+          "checked": {
+            "default": true,
+            "title": "Checked",
+            "type": "boolean"
+          },
+          "removed": {
+            "default": 0,
+            "title": "Removed",
+            "type": "integer"
+          },
+          "store": {
+            "title": "Store",
+            "type": "string"
+          }
+        },
+        "required": [
+          "store"
+        ],
+        "title": "ErasureStore",
         "type": "object"
       },
       "ErrorGroupResponse": {
@@ -1915,6 +2032,19 @@
         "title": "IssuedInvitationResponse",
         "type": "object"
       },
+      "LimitPolicy": {
+        "description": "Two quotas with opposite jobs.\n\n``defaults`` is what a *new* gateway starts from \u2014 a starting point somebody can then\nlower or raise. ``global_model_ceilings`` is what a gateway pointed at a model on the\noperator's own credential may never exceed, whatever it asks for. Keeping them in one\nsection makes the difference visible on the screen where both are set, which is the\nonly place the distinction is easy to get wrong.",
+        "properties": {
+          "defaults": {
+            "$ref": "#/components/schemas/Quota"
+          },
+          "global_model_ceilings": {
+            "$ref": "#/components/schemas/Quota"
+          }
+        },
+        "title": "LimitPolicy",
+        "type": "object"
+      },
       "LimitUsageResponse": {
         "additionalProperties": false,
         "description": "One cap's live bar.",
@@ -2111,6 +2241,108 @@
           "password"
         ],
         "title": "LoginRequest",
+        "type": "object"
+      },
+      "MaintenanceResponse": {
+        "properties": {
+          "last_runs": {
+            "items": {
+              "$ref": "#/components/schemas/MaintenanceRunResponse"
+            },
+            "title": "Last Runs",
+            "type": "array"
+          },
+          "recent_reindexes": {
+            "items": {
+              "$ref": "#/components/schemas/ReindexRunResponse"
+            },
+            "title": "Recent Reindexes",
+            "type": "array"
+          },
+          "reindex": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReindexRunResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runway": {
+            "items": {
+              "$ref": "#/components/schemas/PartitionRunway"
+            },
+            "title": "Runway",
+            "type": "array"
+          },
+          "runway_threshold_days": {
+            "title": "Runway Threshold Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runway_threshold_days"
+        ],
+        "title": "MaintenanceResponse",
+        "type": "object"
+      },
+      "MaintenanceRunResponse": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "job": {
+            "title": "Job",
+            "type": "string"
+          },
+          "report": {
+            "additionalProperties": true,
+            "title": "Report",
+            "type": "object"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "job",
+          "status",
+          "started_at"
+        ],
+        "title": "MaintenanceRunResponse",
         "type": "object"
       },
       "ManualPassResponse": {
@@ -3442,6 +3674,27 @@
         "title": "OrganizationCreateRequest",
         "type": "object"
       },
+      "OrganizationDeletionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirm": {
+            "title": "Confirm",
+            "type": "string"
+          },
+          "grace_days": {
+            "default": 7,
+            "maximum": 90.0,
+            "minimum": 0.0,
+            "title": "Grace Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "confirm"
+        ],
+        "title": "OrganizationDeletionRequest",
+        "type": "object"
+      },
       "OrganizationResponse": {
         "properties": {
           "created_at": {
@@ -3577,6 +3830,36 @@
           }
         },
         "title": "OrganizationUpdateRequest",
+        "type": "object"
+      },
+      "OrphanGroup": {
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "sample": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sample",
+            "type": "array"
+          },
+          "store": {
+            "title": "Store",
+            "type": "string"
+          }
+        },
+        "required": [
+          "store",
+          "kind"
+        ],
+        "title": "OrphanGroup",
         "type": "object"
       },
       "Page_AuditEventResponse_": {
@@ -3876,6 +4159,41 @@
         "title": "Page[RequestLogResponse]",
         "type": "object"
       },
+      "PartitionRunway": {
+        "description": "How many days of partitions exist ahead of today, per table.",
+        "properties": {
+          "days_ahead": {
+            "title": "Days Ahead",
+            "type": "integer"
+          },
+          "last_day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Day"
+          },
+          "low": {
+            "default": false,
+            "title": "Low",
+            "type": "boolean"
+          },
+          "table": {
+            "title": "Table",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table",
+          "days_ahead"
+        ],
+        "title": "PartitionRunway",
+        "type": "object"
+      },
       "PasswordChangeRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3937,6 +4255,173 @@
           }
         },
         "title": "PercentilesResponse",
+        "type": "object"
+      },
+      "PlatformSettings": {
+        "description": "Every operator-configurable value, in sections.\n\nA :class:`~app.schemas.config.ConfigBlob` so that a section added by a later build\nloads against an older row, and so that ``merge_config`` gives PATCH its partial-update\nsemantics and its refusal of unknown keys for free.",
+        "properties": {
+          "distillation": {
+            "$ref": "#/components/schemas/DistillationDefaults"
+          },
+          "embedding": {
+            "$ref": "#/components/schemas/EmbeddingChoice"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/LimitPolicy"
+          },
+          "logging": {
+            "$ref": "#/components/schemas/LoggingConfig"
+          },
+          "retention": {
+            "$ref": "#/components/schemas/RetentionCeilings"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageCaps"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "title": "PlatformSettings",
+        "type": "object"
+      },
+      "PlatformSettingsPatch": {
+        "additionalProperties": false,
+        "description": "A partial update. Only the sections present are touched.",
+        "properties": {
+          "confirm_reindex": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirm Reindex"
+          },
+          "distillation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Distillation"
+          },
+          "embedding": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding"
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limits"
+          },
+          "logging": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logging"
+          },
+          "retention": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention"
+          },
+          "storage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage"
+          }
+        },
+        "title": "PlatformSettingsPatch",
+        "type": "object"
+      },
+      "PlatformSettingsResponse": {
+        "properties": {
+          "attribution": {
+            "items": {
+              "$ref": "#/components/schemas/SettingAttribution"
+            },
+            "title": "Attribution",
+            "type": "array"
+          },
+          "from_environment": {
+            "items": {
+              "type": "string"
+            },
+            "title": "From Environment",
+            "type": "array"
+          },
+          "pending_embedding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmbeddingChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reindex": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReindexRunResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settings": {
+            "$ref": "#/components/schemas/PlatformSettings"
+          }
+        },
+        "required": [
+          "settings"
+        ],
+        "title": "PlatformSettingsResponse",
         "type": "object"
       },
       "PressureListResponse": {
@@ -4252,6 +4737,300 @@
           }
         },
         "title": "QuotaResponse",
+        "type": "object"
+      },
+      "ReindexEstimate": {
+        "description": "What a reindex would cost, before anybody starts one.\n\n``points`` and ``tokens`` are counted rather than guessed \u2014 the chunks are in the\nindex with their text \u2014 so this is an estimate only in the sense that a provider's\ntokenizer may differ from ours by a few percent.",
+        "properties": {
+          "collections": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Collections",
+            "type": "array"
+          },
+          "from_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Model"
+          },
+          "organizations": {
+            "default": 0,
+            "title": "Organizations",
+            "type": "integer"
+          },
+          "points": {
+            "default": 0,
+            "title": "Points",
+            "type": "integer"
+          },
+          "to_dimension": {
+            "title": "To Dimension",
+            "type": "integer"
+          },
+          "to_model": {
+            "title": "To Model",
+            "type": "string"
+          },
+          "tokens": {
+            "default": 0,
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "to_model",
+          "to_dimension"
+        ],
+        "title": "ReindexEstimate",
+        "type": "object"
+      },
+      "ReindexRequest": {
+        "additionalProperties": false,
+        "description": "A rebuild, of the whole platform or of one organization.\n\nThere is deliberately no ``connector_id``. A reindex re-embeds chunks that are still\ncorrect under a different model, and an embedding model is a property of the whole\n*collection* \u2014 one connector re-embedded on its own would leave the tenant's index\nholding vectors from two models, which is the exact failure SPEC \u00a79.4 makes the model a\nplatform-level setting to prevent. The operation a connector actually needs after a\nchunking change is a re-*ingestion*, which is\n``POST /api/v1/connectors/{id}/reindex``.",
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id"
+          }
+        },
+        "title": "ReindexRequest",
+        "type": "object"
+      },
+      "ReindexRunResponse": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "estimated_points": {
+            "default": 0,
+            "title": "Estimated Points",
+            "type": "integer"
+          },
+          "estimated_tokens": {
+            "default": 0,
+            "title": "Estimated Tokens",
+            "type": "integer"
+          },
+          "eta_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eta Seconds"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "from_dimension": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Dimension"
+          },
+          "from_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Model"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/ReindexTargetResponse"
+            },
+            "title": "Targets",
+            "type": "array"
+          },
+          "to_dimension": {
+            "title": "To Dimension",
+            "type": "integer"
+          },
+          "to_model": {
+            "title": "To Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "status",
+          "to_model",
+          "to_dimension",
+          "started_at"
+        ],
+        "title": "ReindexRunResponse",
+        "type": "object"
+      },
+      "ReindexSummary": {
+        "description": "How many documents a connector-wide reindex put back in the queue.\n\nA count rather than a list: what the person pressing the button needs to know is\nwhether it did anything and roughly how long to wait, and the document table beside it\nis already about to show every one of them turn ``pending``.",
+        "properties": {
+          "documents": {
+            "default": 0,
+            "title": "Documents",
+            "type": "integer"
+          }
+        },
+        "title": "ReindexSummary",
+        "type": "object"
+      },
+      "ReindexTargetResponse": {
+        "properties": {
+          "collection": {
+            "title": "Collection",
+            "type": "string"
+          },
+          "done_points": {
+            "title": "Done Points",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "organization_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Name"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_points": {
+            "title": "Total Points",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "organization_id",
+          "collection",
+          "status",
+          "total_points",
+          "done_points"
+        ],
+        "title": "ReindexTargetResponse",
         "type": "object"
       },
       "RequestDetailResponse": {
@@ -4576,6 +5355,68 @@
         "title": "ResyncResponse",
         "type": "object"
       },
+      "RetentionCeilings": {
+        "description": "The longest an organization may keep each kind of data.\n\n``None`` means the platform sets no ceiling, which is the default: a limit nobody\nconfigured should not silently start deleting a customer's logs on upgrade.",
+        "properties": {
+          "max_body_days": {
+            "anyOf": [
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Body Days"
+          },
+          "max_metadata_days": {
+            "anyOf": [
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Metadata Days"
+          }
+        },
+        "title": "RetentionCeilings",
+        "type": "object"
+      },
+      "RetentionCeilingsResponse": {
+        "description": "What the platform allows, for a screen inside an organization.\n\nIts own response rather than a slice of the settings document, because this is the\none part of the platform configuration an organization is *entitled* to see: it\nexplains why the number they typed is not the number being honoured. Everything else\non that screen \u2014 other tenants' quotas, the operator's spending ceilings, the\nembedding model \u2014 is none of their business.",
+        "properties": {
+          "max_body_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Body Days"
+          },
+          "max_metadata_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Metadata Days"
+          }
+        },
+        "title": "RetentionCeilingsResponse",
+        "type": "object"
+      },
       "RetrievalPreviewResponse": {
         "additionalProperties": false,
         "description": "What Try retrieval returns. ``outcome`` distinguishes the four kinds of empty.",
@@ -4898,6 +5739,74 @@
         "title": "SessionResponse",
         "type": "object"
       },
+      "SettingAttribution": {
+        "description": "When a section was last changed and by whom. Absent while it still comes from the\nenvironment, which is how the screen distinguishes \"bootstrapped\" from \"configured\".",
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          },
+          "updated_by_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By Label"
+          }
+        },
+        "required": [
+          "key",
+          "updated_at"
+        ],
+        "title": "SettingAttribution",
+        "type": "object"
+      },
+      "StorageCaps": {
+        "description": "SPEC \u00a79.2's per-file cap and the per-organization quota.",
+        "properties": {
+          "max_file_bytes": {
+            "default": 52428800,
+            "minimum": 1024.0,
+            "title": "Max File Bytes",
+            "type": "integer"
+          },
+          "quota_bytes": {
+            "anyOf": [
+              {
+                "minimum": 1024.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quota Bytes"
+          }
+        },
+        "title": "StorageCaps",
+        "type": "object"
+      },
       "SummaryResponse": {
         "additionalProperties": false,
         "description": "The cards, the latency numbers, and the two distribution charts.",
@@ -4987,6 +5896,60 @@
           "error_groups"
         ],
         "title": "SummaryResponse",
+        "type": "object"
+      },
+      "SweepRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id"
+          }
+        },
+        "title": "SweepRequest",
+        "type": "object"
+      },
+      "SweepResponse": {
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "deleted": {
+            "default": 0,
+            "title": "Deleted",
+            "type": "integer"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/OrphanGroup"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "organizations": {
+            "default": 0,
+            "title": "Organizations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "applied"
+        ],
+        "title": "SweepResponse",
         "type": "object"
       },
       "TargetSummary": {
@@ -6169,6 +7132,50 @@
           }
         },
         "summary": "List Documents",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/v1/connectors/{connector_id}/reindex": {
+      "post": {
+        "description": "Re-run ingestion for every document, which is how a chunking change is applied.\n\nNot the same operation as ``POST /platform/reindex``, despite the name they share. That\none re-embeds chunks that are still correct under a new model; this one exists because a\nchanged ``chunk_size`` makes the chunks themselves wrong, and only running the pipeline\nagain fixes that. The connector detail screen offers it exactly when ``reindex_required``\ncomes back set.",
+        "operationId": "reindex_connector_api_v1_connectors__connector_id__reindex_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReindexSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reindex Connector",
         "tags": [
           "connectors"
         ]
@@ -9474,6 +10481,427 @@
         "summary": "List Members",
         "tags": [
           "directory"
+        ]
+      }
+    },
+    "/api/v1/platform/maintenance": {
+      "get": {
+        "description": "Partition runway, the last run of each scheduled job, and any reindex in flight.",
+        "operationId": "read_maintenance_api_v1_platform_maintenance_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Maintenance",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/maintenance/partitions": {
+      "post": {
+        "description": "Create the missing partitions now.\n\nSynchronous, unlike everything else an operator can press here, because it is a handful\nof ``CREATE TABLE`` statements and the reason somebody is pressing it is that the runway\nalert has fired \u2014 at which point \"it is queued\" is the wrong answer.",
+        "operationId": "run_partitions_api_v1_platform_maintenance_partitions_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Partitions",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/maintenance/retention": {
+      "post": {
+        "description": "Run the nightly retention pass now, and report what it pruned.",
+        "operationId": "run_retention_api_v1_platform_maintenance_retention_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Retention",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/maintenance/sweep": {
+      "post": {
+        "description": "Find vectors and objects with no row behind them.\n\n``apply`` defaults to false and nothing is deleted without it. That is not caution\ntheatre: the first version of a sweeper is usually wrong in one direction, and the\nwrong direction here destroys customer data that no backup of the database contains.",
+        "operationId": "run_sweep_api_v1_platform_maintenance_sweep_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SweepRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SweepResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Sweep",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/organizations/purge": {
+      "post": {
+        "description": "Run the destructive pass for every organization whose grace period has expired.\n\nAlso scheduled nightly; the button exists because \"it is deleted\" is a promise somebody\nsometimes has to keep on a specific afternoon. ``confirm=purge`` is required, for the\nsame reason the sweeper needs ``apply``.",
+        "operationId": "purge_due_api_v1_platform_organizations_purge_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "confirm",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Confirm",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ErasureReport"
+                  },
+                  "title": "Response Purge Due Api V1 Platform Organizations Purge Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Purge Due",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/organizations/{organization_id}/deletion": {
+      "delete": {
+        "description": "Take it back, while there is still something to take back.",
+        "operationId": "cancel_deletion_api_v1_platform_organizations__organization_id__deletion_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Deletion",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "description": "Mark an organization for deletion. Destroys nothing yet.\n\nReturns the report shape with nothing removed and ``complete`` false, so the caller\nholds the same artefact before and after \u2014 the difference between \"requested\" and\n\"done\" is the numbers in it, not two unrelated response bodies.",
+        "operationId": "schedule_deletion_api_v1_platform_organizations__organization_id__deletion_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationDeletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Schedule Deletion",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/reindex": {
+      "post": {
+        "description": "Rebuild collections under the current embedding model.\n\n``dry_run`` returns the estimate and starts nothing \u2014 which is what the confirmation\ndialog calls, so the cost an operator agrees to is the cost this endpoint counted\nrather than a number the browser worked out for itself.",
+        "operationId": "start_reindex_api_v1_platform_reindex_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReindexRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ReindexRunResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ReindexEstimate"
+                    }
+                  ],
+                  "title": "Response Start Reindex Api V1 Platform Reindex Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Reindex",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/reindex/{run_id}": {
+      "get": {
+        "operationId": "read_reindex_api_v1_platform_reindex__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReindexRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Reindex",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/settings": {
+      "get": {
+        "description": "Every operator-configurable value, and where each section's value came from.\n\nSections listed in ``from_environment`` have no row: they are running on the variable\nthat bootstrapped them. That is a different state from \"configured to the same value\",\nand the screen says which, because the first one changes when a pod is redeployed.",
+        "operationId": "read_settings_api_v1_platform_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Settings",
+        "tags": [
+          "platform"
+        ]
+      },
+      "patch": {
+        "description": "Change one or more sections. Audit-logged, at platform scope.\n\nChanging ``embedding.name`` or ``embedding.dimension`` requires ``confirm_reindex`` to\nrepeat the model name, and starts a reindex instead of writing the section \u2014 the\nsetting lands when the aliases swap.",
+        "operationId": "update_settings_api_v1_platform_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformSettingsPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Settings",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/retention-ceilings": {
+      "get": {
+        "operationId": "read_retention_ceilings_api_v1_retention_ceilings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionCeilingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Retention Ceilings",
+        "tags": [
+          "platform"
         ]
       }
     },

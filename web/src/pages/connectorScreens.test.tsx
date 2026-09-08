@@ -397,6 +397,35 @@ describe('chunking panel', () => {
     expect(await screen.findByText(/keep their old chunks/)).toBeInTheDocument()
   })
 
+  it('offers a reindex when the stored chunking no longer matches what is indexed', async () => {
+    // Saying "your chunks are stale" and offering nothing to do about it is the state
+    // task 09 left this screen in. The button is the action, and it is a *different*
+    // operation from Platform → Settings' reindex: this one re-runs the pipeline, because
+    // a changed chunk size makes the chunks wrong rather than the vectors.
+    const server = fakeServer({
+      connectors: [makeConnector({ reindex_required: true })],
+    })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Reindex every document' }))
+
+    await waitFor(() => {
+      expect(
+        server.requests.some((request) => request.path === '/api/v1/connectors/c1/reindex'),
+      ).toBe(true)
+    })
+  })
+
+  it('offers no reindex when nothing is stale', async () => {
+    renderAt('/connectors/c1', fakeServer())
+    await screen.findByLabelText('Chunk size (tokens)')
+
+    expect(
+      screen.queryByRole('button', { name: 'Reindex every document' }),
+    ).not.toBeInTheDocument()
+  })
+
   it('does not warn an empty connector', async () => {
     renderAt(
       '/connectors/c1',

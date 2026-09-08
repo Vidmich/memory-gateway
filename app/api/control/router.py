@@ -23,6 +23,7 @@ from app.api.control import (
     limits,
     models,
     monitoring,
+    platform,
 )
 from app.api.control.deps import require_identity
 
@@ -47,6 +48,8 @@ authenticated_router.include_router(connectors.router)
 authenticated_router.include_router(monitoring.router)
 authenticated_router.include_router(end_users.router)
 authenticated_router.include_router(distillation.router)
+authenticated_router.include_router(platform.router)
+authenticated_router.include_router(platform.ceilings_router)
 
 
 def build_control_router() -> APIRouter:

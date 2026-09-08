@@ -41,6 +41,7 @@ AUDITED: dict[tuple[str, str], str] = {
     ("POST", f"{API}/connectors"): "connector.create",
     ("PATCH", f"{API}/connectors/{{connector_id}}"): "connector.update",
     ("DELETE", f"{API}/connectors/{{connector_id}}"): "connector.delete",
+    ("POST", f"{API}/connectors/{{connector_id}}/reindex"): "connector.reindex",
     ("POST", f"{API}/connectors/{{connector_id}}/resync"): "connector.resync",
     ("POST", f"{API}/connectors/{{connector_id}}/upload"): "connector.upload",
     ("PATCH", f"{API}/distillation"): "organization.distillation.update",
@@ -67,6 +68,13 @@ AUDITED: dict[tuple[str, str], str] = {
     ("POST", f"{API}/organizations"): "organization.create",
     ("PATCH", f"{API}/organizations/{{organization_id}}"): "organization.update",
     ("POST", f"{API}/organizations/{{organization_id}}/invitations"): "invitation.create",
+    ("PATCH", f"{API}/platform/settings"): "platform_settings.update",
+    ("POST", f"{API}/platform/organizations/{{organization_id}}/deletion"): (
+        "organization.delete.request"
+    ),
+    ("DELETE", f"{API}/platform/organizations/{{organization_id}}/deletion"): (
+        "organization.delete.cancel"
+    ),
 }
 
 #: Routes with a mutating verb that change no configuration, and why. A reason rather
@@ -117,6 +125,32 @@ UNAUDITED: dict[tuple[str, str], str] = {
         "Probes a stored model with its stored credential and stored URL, changing "
         "neither; see the model-draft probe above."
     ),
+    ("POST", f"{API}/platform/maintenance/partitions"): (
+        "Creates the daily partitions that would otherwise be created at 03:05. It "
+        "changes no configuration and its record is the `maintenance_runs` row, which "
+        "carries what it did — an audit event would say strictly less."
+    ),
+    ("POST", f"{API}/platform/maintenance/retention"): (
+        "Runs the nightly prune now. Same reasoning as the partition job: what it "
+        "removed is on its `maintenance_runs` row, per gateway, which is more than a "
+        "before/after diff of nothing could carry."
+    ),
+    ("POST", f"{API}/platform/maintenance/sweep"): (
+        "Reports orphans, and with `apply` deletes the ones it reported. Deliberately "
+        "not audited as configuration: it removes rows and points that already have no "
+        "owner, and the run row records the set. Deleting the *reported* set is what "
+        "makes that record sufficient."
+    ),
+    ("POST", f"{API}/platform/reindex"): (
+        "Starts a job. The configuration change it eventually makes — the embedding "
+        "section — is written at the swap and audited there, by the reindex, so an "
+        "event here would claim a change that has not happened yet and might not."
+    ),
+    ("POST", f"{API}/platform/organizations/purge"): (
+        "Runs the scheduled destructive pass for organizations whose grace period has "
+        "expired. Each purge writes `organization.delete.purge` from the pass itself; "
+        "see OFF_ROUTE. The endpoint with nothing due writes nothing, correctly."
+    ),
 }
 
 #: Actions with no route of their own, and where they come from instead. Named so the
@@ -124,6 +158,9 @@ UNAUDITED: dict[tuple[str, str], str] = {
 OFF_ROUTE = {
     "connector.purge": "the delete-connector job, once the row is actually gone",
     "organization.assume": "the first request of a support session, debounced",
+    "organization.delete.purge": (
+        "the destructive pass, once the grace period has expired and the rows are gone"
+    ),
 }
 
 
@@ -195,7 +232,7 @@ async def tour(directory: DirectoryHarness) -> list[str]:
     acme = world.acme.id
 
     # -- organizations, members, invitations ------------------------------
-    ok(
+    initech = ok(
         await directory.as_user(
             superadmin,
             "POST",
@@ -251,6 +288,37 @@ async def tour(directory: DirectoryHarness) -> list[str]:
     )
     ok(
         await directory.as_user(admin, "DELETE", f"{API}/members/{world.acme_member.id}"),
+        expect=(204,),
+    )
+
+    # -- the platform (task 17) -------------------------------------------
+    # Superadmin only, and driven here rather than in a test of its own for the reason
+    # this whole tour exists: the set of audited actions has to be complete, and a screen
+    # exercised somewhere else is a screen this file stops noticing.
+    ok(
+        await directory.as_user(
+            superadmin,
+            "PATCH",
+            f"{API}/platform/settings",
+            json_body={"retention": {"max_body_days": 90}},
+        )
+    )
+    # Scheduled, then called off. The organization created a moment ago rather than one
+    # with data in it: what is being asserted is the record, and a tour that actually
+    # destroyed a tenant would be asserting it by making the rest of itself impossible.
+    ok(
+        await directory.as_user(
+            superadmin,
+            "POST",
+            f"{API}/platform/organizations/{initech['id']}/deletion",
+            json_body={"confirm": "initech", "grace_days": 7},
+        ),
+        expect=(202,),
+    )
+    ok(
+        await directory.as_user(
+            superadmin, "DELETE", f"{API}/platform/organizations/{initech['id']}/deletion"
+        ),
         expect=(204,),
     )
 
@@ -342,6 +410,7 @@ async def tour(directory: DirectoryHarness) -> list[str]:
             files=[("files", ("handbook.md", b"# Handbook\n\nBe kind.", "text/markdown"))],
         )
     )
+    ok(await directory.as_user(admin, "POST", f"{API}/connectors/{connector['id']}/reindex"))
     ok(await directory.as_user(admin, "POST", f"{API}/connectors/{connector['id']}/resync"))
     ok(await directory.as_user(admin, "POST", f"{API}/documents/{world.acme_document.id}/reindex"))
     ok(

@@ -59,7 +59,6 @@ from app.services.gateways import GatewayService
 from app.services.impersonation import SupportAccessRecorder
 from app.services.limit_store import RedisLimitStore
 from app.services.limiter import RateLimiter
-from app.services.limits import Ceilings
 from app.services.limits_service import LimitsService
 from app.services.log_store import PostgresLogWriter
 from app.services.login_throttle import LoginThrottle, RedisThrottleStore
@@ -67,13 +66,20 @@ from app.services.memory_preview import MemoryPreview
 from app.services.metrics_store import PostgresMetricsRepository
 from app.services.model_probe import ModelProbe
 from app.services.monitoring import MonitoringService, RedisSummaryCache
+from app.services.platform_settings import ceilings_of
 from app.services.proxy import ProxyService
 from app.services.rate_limit import FixedWindowLimiter
 from app.services.request_log import LogFlusher, LogQueue, RequestLogService
 from app.services.retrieval import MemoryService, Retriever
 from app.services.routing import Router
 from app.services.tokenizer import build_tokenizer
-from app.workers.runtime import build_distillation, build_ingestion, build_queue
+from app.workers.runtime import (
+    build_distillation,
+    build_ingestion,
+    build_platform,
+    build_platform_settings,
+    build_queue,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +98,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         clients = Clients.create(settings)
         app.state.clients = clients
+
+        # First, because the embedder every other object is built with depends on it: the
+        # platform's embedding choice is a row, and a process that built its pipeline from
+        # the environment and then discovered the row would be embedding with one model
+        # and searching with another until it restarted. `warm` never raises — a database
+        # that is not up yet leaves the process on its environment bootstrap, which is
+        # exactly what it ran on before this table existed.
+        platform_settings = build_platform_settings(clients, settings)
+        await platform_settings.warm()
+        platform_settings.start()
+        app.state.platform_settings = platform_settings
 
         # Built once, here, so a request pays for a dict lookup rather than for wiring.
         secret_box = SecretBox.from_settings(settings)
@@ -123,7 +140,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         limit_store = RedisLimitStore(clients.redis)
         rate_limiter = RateLimiter(
             limit_store,
-            ceilings=Ceilings.of(settings),
+            # A function rather than a value: since task 17 the ceilings live in
+            # `platform_settings`, and an operator lowering one has to bind on the next
+            # request rather than on the next deploy. The limiter reads the cached
+            # snapshot, so this stays a dictionary lookup on the request path.
+            ceilings=lambda: ceilings_of(platform_settings.snapshot),
             fail_open=settings.rate_limit_fail_open,
             metrics=metrics.rate_limits,
         )
@@ -133,7 +154,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # synchronous — deleting a document and reconciling a connector — and the worker
         # builds the same objects from the same function, so the two cannot drift.
         ingestion = build_ingestion(
-            clients, settings, queue=build_queue(clients.jobs), metrics=metrics.extraction
+            clients,
+            settings,
+            queue=build_queue(clients.jobs),
+            metrics=metrics.extraction,
+            embedding=platform_settings.snapshot.embedding,
         )
         app.state.ingestion = ingestion
         # Conversation memory's write half, from the same builder the worker uses. Built
@@ -143,6 +168,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             clients, settings, ingestion=ingestion, metrics=metrics.distillation
         )
         app.state.distillation = distillation
+
+        # The operator's half. Built after ingestion and distillation because it reuses
+        # their vector stores and their object store: a sweep that read a different index
+        # from the one ingestion writes would report every point as an orphan.
+        platform = build_platform(
+            clients,
+            settings,
+            ingestion=ingestion,
+            distillation=distillation,
+            platform_settings=platform_settings,
+            queue=ingestion.queue,
+            metrics=metrics.maintenance,
+        )
+        app.state.platform = platform
+        app.state.platform_service = platform.service
 
         # The request log's write half. The queue is created before the flusher because
         # the flusher only reads from it, and started here rather than lazily so a
@@ -285,7 +325,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # out of the buckets the limiter consumes from — see the module docstring for why
         # those two sources are deliberately different.
         app.state.limits_service = LimitsService(
-            gateway_store, buckets=limit_store, ceilings=Ceilings.of(settings)
+            gateway_store,
+            buckets=limit_store,
+            # The same source the limiter reads, so the number on the Limits screen is the
+            # number the request path just enforced rather than one from process start.
+            ceilings=lambda: ceilings_of(platform_settings.snapshot),
         )
         # The editor's Memory section: the same retriever and the same assembler the data
         # plane uses, so what it shows is what a request would inject.
@@ -305,6 +349,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 window_seconds=settings.model_test_window_seconds,
             ),
             settings=settings,
+            # SPEC §10.2's platform ceiling, read from the cached snapshot for the same
+            # reason the rate-limit one is: an operator lowering it has to bind on the
+            # next save rather than on the next deploy.
+            retention_ceilings=lambda: platform_settings.snapshot.retention,
         )
 
         logger.info("service started", extra={"environment": settings.environment})
@@ -315,6 +363,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # closes, so the last half-second of traffic has to reach the database before
             # the connections it needs are taken away.
             await request_logs.stop()
+            # Before the pools it reads through are closed underneath its next tick.
+            await platform_settings.stop()
             # Same reasoning one table along: the last window of end-user sightings has to
             # reach the database before the connections it needs are taken away.
             await counters.stop()

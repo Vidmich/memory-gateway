@@ -339,6 +339,17 @@ def _identifier(value: Any) -> uuid.UUID | None:
         return None
 
 
+class ReindexSummary(BaseModel):
+    """How many documents a connector-wide reindex put back in the queue.
+
+    A count rather than a list: what the person pressing the button needs to know is
+    whether it did anything and roughly how long to wait, and the document table beside it
+    is already about to show every one of them turn ``pending``.
+    """
+
+    documents: int = 0
+
+
 __all__ = [
     "ConnectorCreateRequest",
     "ConnectorResponse",
@@ -346,6 +357,7 @@ __all__ = [
     "DocumentChunk",
     "DocumentChunksResponse",
     "DocumentResponse",
+    "ReindexSummary",
     "ResyncResponse",
     "SearchHit",
     "SearchRequest",

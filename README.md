@@ -8,7 +8,7 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 16 complete**. An organization goes from empty to a working
+Current state: **task 17 complete**. An organization goes from empty to a working
 OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream model,
 create a gateway, copy its URL, mint a key, call it — and every request through it is
 recorded and inspectable. **Connectors** ingest the documents customers actually have —
@@ -38,7 +38,12 @@ a field-level before and after — a rotated provider credential shows as
 OpenAI-shaped: point a model at **Claude** and the same unmodified OpenAI SDK gets
 completions from it, streaming included, with the right `finish_reason` and token counts.
 Split a gateway 50/50 between an OpenAI model and an Anthropic one and nothing downstream
-can tell which answered.
+can tell which answered. And the data lifecycle is now enforced by **jobs that run** rather
+than by settings nothing honours: retention prunes bodies to the day, per gateway; the
+partitions logging writes into are created a month ahead and alerted on before they run
+out; expired memory facts leave Qdrant as well as PostgreSQL; and changing the platform
+embedding model rebuilds every collection beside the live one and swaps the aliases, with a
+search loop running throughout that never comes back empty.
 
 ## Quick start (Docker)
 
@@ -498,8 +503,8 @@ serving traffic and silently dropping ingestion.
 ### Embeddings
 
 One model for the whole platform (SPEC §9.4) — a collection's vectors must all come from
-one, and mixing them silently degrades retrieval. Configured by environment for now; task
-17 moves it into `platform_settings` with a reindex-and-swap flow.
+one, and mixing them silently degrades retrieval. It is set on **Platform → Settings**, and
+changing it is a reindex rather than a save: see [The data lifecycle](#the-data-lifecycle).
 
 The development default is `EMBEDDING_PROVIDER=hash`: a local hashing-trick bag-of-words
 embedder that needs no key and no network. It is genuinely lexical — shared words score
@@ -946,6 +951,146 @@ organization and query; the cache is read-through and fails open.
 The log detail endpoint takes no time range. Primary keys are UUIDv7 and carry the
 millisecond they were minted, so the id itself says which day's partition to look in.
 
+## The data lifecycle
+
+Everything below runs on a schedule in the worker (03:05 UTC, one cron entry) and can be
+run by hand from **Platform → Maintenance**. Nothing here is new configuration — task 07
+already gave every gateway a `retention_days` and SPEC §9.4 already promised a reindex. What
+task 17 adds is the part that makes those true.
+
+### Partitions, before they matter
+
+`request_logs` and `transcripts` are partitioned by day. A missing partition is not a slow
+query — it is an `INSERT` that fails, and the thing that fails is request logging, so the
+first symptom is silence on the monitoring screen. The job keeps **thirty days of runway**
+and reports how many *consecutive* days exist ahead of today, which is a different number
+from how many partitions there are: a deployment with a partition for today and another for
+a day next month has one day of runway, and counting rows would report the reassuring
+number right up until midnight. `partition_runway_days` is the gauge to alert on.
+
+### Retention, per gateway, to the day
+
+`retention_days` is per gateway and a partition is global, so the same day holds rows with
+different claims on it. Retention is therefore two-stage:
+
+- a whole day is dropped — `DROP TABLE`, instant, no bloat — once it is older than the
+  **longest** metadata window any gateway has;
+- inside the days that are still live, each gateway's own windows are applied by predicate,
+  one `(gateway, day)` at a time.
+
+So two gateways sharing a partition are each honoured exactly, and the common case is still
+a drop. The unit of work is idempotent — it deletes by predicate, so running it twice
+deletes nothing the second time — which is what makes the pass safe to resume; the cursor it
+keeps is an optimisation, so the steady state is one or two days per gateway rather than a
+year of empty deletes.
+
+Bodies are **hard-deleted**, per SPEC §10.2, rather than nulled: a row of nulls is a row
+somebody has to remember means "erased" rather than "never captured", and `bodies_omitted`
+already carries that distinction for the case where nothing was stored.
+
+Expired `memory_facts` go in the same pass, from Qdrant **and** PostgreSQL, vectors first —
+a fact whose vector outlives its row keeps shaping answers after it should have expired,
+and neither store can see that alone. A vector that could not be removed leaves its row in
+place for the next pass and is reported as `facts_stranded`, because deleting the row anyway
+would strand the vector permanently.
+
+### Platform settings
+
+Everything an operator can change without a deploy lives in `platform_settings`, one row per
+section, each carrying who changed it and when. The precedence is:
+
+1. the environment variable is the **bootstrap** — what a fresh database runs on;
+2. a row **overrides** it, per section;
+3. there is no "revert to the environment", because that would mean a screen showing a value
+   that changes when a pod is redeployed.
+
+The rows are not seeded at migration time, deliberately: that would freeze whatever the
+machine running the migration happened to have configured, usually a CI container with
+`EMBEDDING_PROVIDER=hash`. A section with no row is shown as **From the environment**, which
+is a different state from "set to the same value" and changes on the next deploy.
+
+Two of these are read on the request path — the rate-limit ceilings and the storage caps —
+so each process holds a resolved snapshot refreshed in the background. A write updates it
+immediately in the process that made the change; other replicas pick it up within one
+refresh interval, which is thirty seconds. That bound is stated rather than hidden: closing
+it would need a pub/sub channel, which is a second thing that has to be running for
+configuration to be correct, and these are settings that change a few times a year.
+
+**Retention ceilings** are maxima, not defaults: an organization may always be stricter,
+never more permissive. A gateway asking for longer is *capped* rather than refused — the
+same treatment a rate limit gets, and for the same reason: an operator lowering a ceiling
+must not make every gateway configured under the old one unsaveable. The number is applied
+on save, applied again by the nightly pass for gateways nobody re-saves, and shown on the
+organization's Settings screen so a customer can see why their number is not the number
+being honoured.
+
+### Reindex: a new embedding model, with no gap in retrieval
+
+Every tenant's collection is behind an **alias**. Reads use `org_{id}_docs`; the collection
+behind it carries a version, `org_{id}_docs_v3`. The indirection exists before anything needs
+it, on an index that is usually empty, precisely because retrofitting it costs a gap in
+retrieval and the moment you want it is an urgent migration.
+
+Changing the model on **Platform → Settings** does not save a setting. It starts a run:
+
+1. create `org_{id}_docs_v{n+1}` at the new width;
+2. re-embed every chunk into it — from the text already in the old collection's payloads, so
+   this is a read of the index rather than a re-extraction of a corpus of PDFs;
+3. catch up anything ingested while the copy was running, until the counts agree;
+4. verify — the count, and a sample search, both failing closed;
+5. swap the alias, atomically;
+6. leave the old collection for the orphan sweep.
+
+The **setting is written at the swap**, and that is the load-bearing decision. Writing it up
+front is the obvious design and it is wrong: between the write and the swap every new
+ingestion would embed with the new model and upsert into a collection of the old width,
+which Qdrant refuses. So the screen shows the old model as current and the new one as
+pending, because until the swap the old one is what every collection agrees with.
+
+A run needs the model name **retyped** to start, and shows what it will cost — collections,
+chunks and tokens, counted rather than guessed — before it does. One run at a time per
+scope; a second is a 409 naming the first. A killed run resumes per organization from its
+own cursor, and because point ids are deterministic a repeated page costs time and changes
+nothing.
+
+There is deliberately **no connector-scoped** version of this. An embedding model is a
+property of a whole collection, so re-embedding one connector would leave a tenant's index
+holding vectors from two models — the exact failure SPEC §9.4 makes the model a
+platform-level setting to prevent. What a connector needs after a **chunking** change is a
+different operation: the chunks themselves are wrong, not the vectors, so
+`POST /api/v1/connectors/{id}/reindex` runs the pipeline again, and the connector screen
+offers it exactly when the stored chunking no longer matches what is indexed.
+
+The one non-atomic moment is promoting a collection created *before* the alias existed:
+Qdrant will not let an alias take a name a collection already holds, so that one is a drop
+and a create with a gap between them, once, on an index that has just been rebuilt beside
+the live one.
+
+### Orphans, reported before they are deleted
+
+The sweep compares three stores: Qdrant points whose document has no row, fact vectors whose
+fact has no row, and stored objects with no document. It **reports by default** and deletes
+only the set it reported, with an explicit flag. That is not caution theatre — the first
+version of a sweeper is usually wrong in one direction, and the wrong direction here
+destroys customer data no database backup contains. It also ignores anything written in the
+last hour, because an upload whose row has not committed yet looks exactly like an orphan.
+
+### Erasure
+
+`DELETE /end-users/{id}/memory` was task 12's. What task 17 adds is the **report**: what is
+left in each store, read back rather than counted from what was sent. Those differ exactly
+when it matters — a delete that failed and was swallowed, a filter that missed points an
+older build wrote — so the artefact you hand somebody who asks whether a deletion was
+honoured is produced by looking.
+
+An organization is deleted in two steps: marked `deleting` with a `purge_after`, and then
+destroyed by the nightly pass. The grace period is the only window in which "we deleted the
+wrong tenant" is recoverable, because the destructive pass drops Qdrant collections and
+object-store prefixes that no database backup contains. Requesting it needs the slug typed,
+in the API and not only in the form. Audit events are the one thing that deliberately
+survives: "who deleted this organization, and when" is the question a deletion record exists
+to answer, so it is written into the *platform's* log rather than the one going with them.
+
 ## Try the proxy
 
 Create a gateway and a key in the UI, or let `make seed` wire a demo one up. With
@@ -1081,7 +1226,9 @@ app/
   db/         engine, session, declarative base, models, scoping (ScopedRepository
               and the unscoped-query guard), repositories
   schemas/    the OpenAI wire format, the slice of Anthropic's the gateway reads,
-              control-plane request/response bodies
+              control-plane request/response bodies, and the platform's own
+              configuration (platform.py — the sections, their ceilings, and the
+              shapes the Platform screens render)
   services/   gateway resolution and its Redis config cache (gateway_resolver),
               API-key auth, prompt assembly, forwarding, SSE, control-plane auth
               (auth, auth_provider, auth_store, login_throttle), tenancy
@@ -1111,10 +1258,19 @@ app/
               control plane (connectors, connector_store, connector_source) — and
               the read side of the same index: retrieval (search, timeouts, the
               failure policy) and memory_preview (the editor's Try retrieval and
-              prompt preview)
+              prompt preview) — and the data lifecycle (maintenance — the
+              partition planner, the retention pass and the orphan sweeper,
+              maintenance_store — the DDL and the pruning statements,
+              platform_settings — precedence and the cached snapshot,
+              platform_store, platform_service — the Platform screens' one
+              object, reindex and reindex_store — the alias swap and its
+              resumable progress, vector_index — collection names and the
+              operations only a reindex needs, erasure — the report and the
+              organization purge)
   workers/    the ingestion workers — `arq app.workers.main.WorkerSettings` and
-              `HeavyWorkerSettings` for the PDF and Office queue — and the
-              composition root they and the API both build their stack from
+              `HeavyWorkerSettings` for the PDF and Office queue — the nightly
+              maintenance cron, and the composition root they and the API both
+              build their stack from
   cli.py      operator commands — `python -m app.cli seed | openapi |
               distil-backfill`
 migrations/   alembic
@@ -1137,7 +1293,9 @@ web/          the React SPA
                 monitoring (charts, request table, detail drawer with the
                 attempts timeline, the retrieved chunks and the recalled facts),
                 the audit log (the filterable screen, the expandable diff shared
-                with the per-object History panels)
+                with the per-object History panels), and the Platform screens
+                (settings with the embedding-change flow, and maintenance with
+                the runway, the last runs, reindex progress and the sweep)
   e2e/          Playwright
 ```
 
@@ -1192,6 +1350,7 @@ first request. See [.env.example](.env.example) for the full list.
 | `POST /api/v1/connectors/{id}/upload` | Multipart, many files at once, streamed to object storage. Always 200, with a per-file outcome. |
 | `POST /api/v1/connectors/{id}/upload-url` | A short-lived presigned `PUT`, for scripted uploads. Picked up by the next resync. |
 | `POST /api/v1/connectors/{id}/resync` | Reconcile against storage; reports `{added, updated, deleted, unchanged, skipped}`. |
+| `POST /api/v1/connectors/{id}/reindex` | Re-run ingestion for every document — how a chunking change is applied. Not the platform reindex: that re-embeds, this re-chunks. |
 | `POST /api/v1/connectors/{id}/search` | Debug-only semantic search over one connector's chunks, with scores. |
 | `POST /api/v1/documents/{id}/reindex` | The retry button. Resets the row to `pending` and enqueues it. |
 | `GET /api/v1/documents/{id}/chunks` | The chunk inspector: what one document became, with each chunk's page or section. |
@@ -1205,6 +1364,15 @@ first request. See [.env.example](.env.example) for the full list.
 | `GET /api/v1/distillation` · `PATCH /api/v1/distillation` | The organization's memory write-back settings, plus today's spend against the cap. |
 | `GET /api/v1/distillation/health` | SPEC §10.1's memory health: facts written per day, failure rate, dedupe rate, supersession rate. |
 | `DELETE /api/v1/documents/{id}` | The document, its object and its vectors. |
+| `GET`/`PATCH /api/v1/platform/settings` | Superadmin. Every operator-configurable value, and where each section's came from. A `PATCH` that changes the embedding model starts a reindex instead of writing it. |
+| `GET /api/v1/platform/maintenance` | Partition runway, the last run of each scheduled job, and any reindex in flight. |
+| `POST /api/v1/platform/maintenance/partitions` · `/retention` | Run one now. Synchronous; each reports what it did. |
+| `POST /api/v1/platform/maintenance/sweep` | Find orphaned vectors and objects. `apply: true` deletes the reported set, and nothing else. |
+| `POST /api/v1/platform/reindex` | Start a rebuild of every collection, or one organization's, or `dry_run` for the cost. Blocked while one is running for the same scope. |
+| `GET /api/v1/platform/reindex/{id}` | One run, with per-organization progress and an ETA. |
+| `POST`/`DELETE /api/v1/platform/organizations/{id}/deletion` | Schedule a tenant's deletion (slug typed to confirm), or call it off. |
+| `POST /api/v1/platform/organizations/purge` | Run the destructive pass for everything past its grace period. Needs `confirm=purge`. |
+| `GET /api/v1/retention-ceilings` | Readable inside an organization: the platform maxima, which is what explains a capped retention. |
 | `GET /healthz` | Liveness. Checks nothing else — a dependency outage must not get the pod restarted into the same outage. |
 | `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. |
 | `GET /metrics` | Prometheus. Request counts and latency labelled by route template. |

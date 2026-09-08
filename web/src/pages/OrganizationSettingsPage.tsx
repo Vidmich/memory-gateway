@@ -8,6 +8,7 @@ import { Field, Form, SubmitButton, TextInput } from '@/components/Form'
 import { StatusBadge } from '@/components/StatusBadge'
 import { useToast } from '@/components/Toast'
 import { DistillationSettings } from '@/pages/DistillationSettings'
+import { useRetentionCeilings } from '@/api/platform'
 
 /**
  * Settings → Organization (SPEC §13.1).
@@ -117,17 +118,58 @@ export function OrganizationSettingsPage() {
 
       <DistillationSettings />
 
+      <RetentionCeilings />
+
       <section className="mt-8 rounded-lg border border-slate-200 bg-white p-6">
         <h2 className="text-sm font-semibold text-slate-900">Stored defaults</h2>
         <p className="mt-2 max-w-xl text-sm text-slate-600">
           Everything this organization has set, as it is stored. The write-back section
           above edits the <code className="font-mono">distillation</code> key; logging
-          defaults and retention land in task 17.
+          defaults live on each gateway.
         </p>
         <pre className="mt-3 overflow-x-auto rounded-md bg-slate-50 p-3 font-mono text-xs text-slate-600">
           {JSON.stringify(organization.settings, null, 2)}
         </pre>
       </section>
     </div>
+  )
+}
+
+/**
+ * What the platform allows, and therefore why a gateway's retention may not be the number
+ * that was typed into it.
+ *
+ * Rendered only when a ceiling is actually set. A panel that permanently said "no ceiling"
+ * would be a sentence every operator reads once and never again, taking up the space where
+ * the exception belongs.
+ */
+function RetentionCeilings() {
+  const { data } = useRetentionCeilings()
+  const bodies = data?.max_body_days ?? null
+  const metadata = data?.max_metadata_days ?? null
+  if (bodies === null && metadata === null) return null
+
+  return (
+    <section className="mt-8 rounded-lg border border-slate-200 bg-white p-6">
+      <h2 className="text-sm font-semibold text-slate-900">Retention ceilings</h2>
+      <p className="mt-2 max-w-xl text-sm text-slate-600">
+        This platform caps how long data may be kept. A gateway configured for longer is
+        lowered to the ceiling, and the nightly retention pass enforces the same number.
+      </p>
+      <ul className="mt-3 space-y-1 text-sm text-slate-700">
+        {bodies === null ? null : (
+          <li>
+            Request and response bodies: at most{' '}
+            <strong>{bodies} day{bodies === 1 ? '' : 's'}</strong>.
+          </li>
+        )}
+        {metadata === null ? null : (
+          <li>
+            Metadata rows: at most{' '}
+            <strong>{metadata} day{metadata === 1 ? '' : 's'}</strong>.
+          </li>
+        )}
+      </ul>
+    </section>
   )
 }

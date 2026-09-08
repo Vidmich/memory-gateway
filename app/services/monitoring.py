@@ -84,8 +84,9 @@ LADDER: tuple[tuple[timedelta, int], ...] = (
 #: visible yet" is answered within one impatient refresh.
 SUMMARY_CACHE_TTL_SECONDS = 30
 
-#: The furthest back a query may reach. Task 17 enforces retention; until then this keeps
-#: an open-ended ``from`` from turning into a full scan of every partition.
+#: The furthest back a query may reach. Independent of retention, which is per gateway
+#: and can be much longer: this is what keeps an open-ended ``from`` from turning into a
+#: full scan of every partition a tenant is entitled to keep.
 MAX_WINDOW = timedelta(days=90)
 
 #: Slack either side of a request's id-derived timestamp when looking one up. A UUIDv7's

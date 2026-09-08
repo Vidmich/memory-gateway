@@ -165,8 +165,13 @@ class Settings(BaseSettings):
 
     # -- embeddings (SPEC §9.4) --------------------------------------------
     #: ``openai`` for any OpenAI-compatible ``/embeddings`` endpoint; ``hash`` for the
-    #: local lexical embedder, which needs no key and no network. Task 17 moves all of
-    #: this into ``platform_settings`` with a reindex flow.
+    #: local lexical embedder, which needs no key and no network.
+    #:
+    #: Since task 17 these three are the **bootstrap**: a row in ``platform_settings``
+    #: overrides them, and changing the model there is a reindex rather than a restart.
+    #: They still matter — they are what a fresh database runs on — and the endpoint and
+    #: the credential below stay here on both paths, because a base URL is deployment
+    #: topology and an API key is a secret, and neither belongs in a table on a screen.
     embedding_provider: Literal["openai", "hash"] = "hash"
     embedding_model: str = "hash-bow"
     #: Must match the model. A mismatch is caught on the first call rather than silently
@@ -185,8 +190,8 @@ class Settings(BaseSettings):
     #: An id rather than a name because a name is unique only within one catalog, and a
     #: lookup that resolved to a different organization's "gpt-4o-mini" would be both a
     #: bill and a disclosure. It has to name a *global* model, since it is used by every
-    #: organization. Task 17 moves this into ``platform_settings``, where it becomes a
-    #: selector on a screen instead of a UUID in an environment variable.
+    #: organization. Since task 17 this is the bootstrap for the ``distillation`` section
+    #: of ``platform_settings``, which is where an operator sets it on a screen.
     distillation_model_id: uuid.UUID | None = None
 
     # -- worker ------------------------------------------------------------

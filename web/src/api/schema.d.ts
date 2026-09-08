@@ -224,6 +224,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/connectors/{connector_id}/reindex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reindex Connector
+         * @description Re-run ingestion for every document, which is how a chunking change is applied.
+         *
+         *     Not the same operation as ``POST /platform/reindex``, despite the name they share. That
+         *     one re-embeds chunks that are still correct under a new model; this one exists because a
+         *     changed ``chunk_size`` makes the chunks themselves wrong, and only running the pipeline
+         *     again fixes that. The connector detail screen offers it exactly when ``reindex_required``
+         *     comes back set.
+         */
+        post: operations["reindex_connector_api_v1_connectors__connector_id__reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connectors/{connector_id}/resync": {
         parameters: {
             query?: never;
@@ -1221,6 +1247,236 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/platform/maintenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Maintenance
+         * @description Partition runway, the last run of each scheduled job, and any reindex in flight.
+         */
+        get: operations["read_maintenance_api_v1_platform_maintenance_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/maintenance/partitions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Partitions
+         * @description Create the missing partitions now.
+         *
+         *     Synchronous, unlike everything else an operator can press here, because it is a handful
+         *     of ``CREATE TABLE`` statements and the reason somebody is pressing it is that the runway
+         *     alert has fired — at which point "it is queued" is the wrong answer.
+         */
+        post: operations["run_partitions_api_v1_platform_maintenance_partitions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/maintenance/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Retention
+         * @description Run the nightly retention pass now, and report what it pruned.
+         */
+        post: operations["run_retention_api_v1_platform_maintenance_retention_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/maintenance/sweep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Sweep
+         * @description Find vectors and objects with no row behind them.
+         *
+         *     ``apply`` defaults to false and nothing is deleted without it. That is not caution
+         *     theatre: the first version of a sweeper is usually wrong in one direction, and the
+         *     wrong direction here destroys customer data that no backup of the database contains.
+         */
+        post: operations["run_sweep_api_v1_platform_maintenance_sweep_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/organizations/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Purge Due
+         * @description Run the destructive pass for every organization whose grace period has expired.
+         *
+         *     Also scheduled nightly; the button exists because "it is deleted" is a promise somebody
+         *     sometimes has to keep on a specific afternoon. ``confirm=purge`` is required, for the
+         *     same reason the sweeper needs ``apply``.
+         */
+        post: operations["purge_due_api_v1_platform_organizations_purge_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/organizations/{organization_id}/deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Schedule Deletion
+         * @description Mark an organization for deletion. Destroys nothing yet.
+         *
+         *     Returns the report shape with nothing removed and ``complete`` false, so the caller
+         *     holds the same artefact before and after — the difference between "requested" and
+         *     "done" is the numbers in it, not two unrelated response bodies.
+         */
+        post: operations["schedule_deletion_api_v1_platform_organizations__organization_id__deletion_post"];
+        /**
+         * Cancel Deletion
+         * @description Take it back, while there is still something to take back.
+         */
+        delete: operations["cancel_deletion_api_v1_platform_organizations__organization_id__deletion_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/reindex": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Reindex
+         * @description Rebuild collections under the current embedding model.
+         *
+         *     ``dry_run`` returns the estimate and starts nothing — which is what the confirmation
+         *     dialog calls, so the cost an operator agrees to is the cost this endpoint counted
+         *     rather than a number the browser worked out for itself.
+         */
+        post: operations["start_reindex_api_v1_platform_reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/reindex/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Reindex */
+        get: operations["read_reindex_api_v1_platform_reindex__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/platform/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Settings
+         * @description Every operator-configurable value, and where each section's value came from.
+         *
+         *     Sections listed in ``from_environment`` have no row: they are running on the variable
+         *     that bootstrapped them. That is a different state from "configured to the same value",
+         *     and the screen says which, because the first one changes when a pod is redeployed.
+         */
+        get: operations["read_settings_api_v1_platform_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Settings
+         * @description Change one or more sections. Audit-logged, at platform scope.
+         *
+         *     Changing ``embedding.name`` or ``embedding.dimension`` requires ``confirm_reindex`` to
+         *     repeat the model name, and starts a reindex instead of writing the section — the
+         *     setting lands when the aliases swap.
+         */
+        patch: operations["update_settings_api_v1_platform_settings_patch"];
+        trace?: never;
+    };
+    "/api/v1/retention-ceilings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Retention Ceilings */
+        get: operations["read_retention_ceilings_api_v1_retention_ceilings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/g/{slug}/v1/chat/completions": {
         parameters: {
             query?: never;
@@ -1568,6 +1824,18 @@ export interface components {
             version: number;
         };
         /**
+         * DistillationDefaults
+         * @description The platform's fallback distillation model (SPEC §6.4).
+         *
+         *     An upstream-model id, which has to name a *global* model since every organization
+         *     uses it. Validated where it is written rather than here — this schema cannot reach the
+         *     catalog, and a settings module that could would be a settings module with a database.
+         */
+        DistillationDefaults: {
+            /** Model Id */
+            model_id?: string | null;
+        };
+        /**
          * DistillationSettingsRequest
          * @description A partial update, merged into whatever is stored.
          *
@@ -1703,6 +1971,34 @@ export interface components {
             updated_at: string;
         };
         /**
+         * EmbeddingChoice
+         * @description SPEC §9.4's platform embedding model — provider, model and width, together.
+         *
+         *     One section rather than three settings because the three are only ever correct as a
+         *     set: a model changed without its dimension produces vectors Qdrant refuses, and a
+         *     dimension changed without its model produces vectors it accepts and cannot rank. A
+         *     single row makes the change atomic and makes "what is the platform embedding on"
+         *     a single value to compare a collection against.
+         */
+        EmbeddingChoice: {
+            /**
+             * Dimension
+             * @default 256
+             */
+            dimension: number;
+            /**
+             * Name
+             * @default hash-bow
+             */
+            name: string;
+            /**
+             * Provider
+             * @default hash
+             * @enum {string}
+             */
+            provider: "openai" | "hash";
+        };
+        /**
          * EndUserResponse
          * @description One identity, with the two numbers the list screen sorts by.
          */
@@ -1732,6 +2028,55 @@ export interface components {
             last_seen_at: string;
             /** Request Count */
             request_count: number;
+        };
+        /**
+         * ErasureReport
+         * @description SPEC §6.5's artefact: the thing you hand somebody who asks whether a deletion
+         *     request was honoured.
+         */
+        ErasureReport: {
+            /**
+             * Complete
+             * @default true
+             */
+            complete: boolean;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Stores */
+            stores?: components["schemas"]["ErasureStore"][];
+            /** Subject */
+            subject: string;
+            /**
+             * Subject Id
+             * Format: uuid
+             */
+            subject_id: string;
+        };
+        /**
+         * ErasureStore
+         * @description What was removed from one store, named so the report reads as a checklist.
+         */
+        ErasureStore: {
+            /**
+             * Checked
+             * @default true
+             */
+            checked: boolean;
+            /**
+             * Removed
+             * @default 0
+             */
+            removed: number;
+            /** Store */
+            store: string;
         };
         /** ErrorGroupResponse */
         ErrorGroupResponse: {
@@ -2052,6 +2397,20 @@ export interface components {
             invitation: components["schemas"]["InvitationResponse"];
         };
         /**
+         * LimitPolicy
+         * @description Two quotas with opposite jobs.
+         *
+         *     ``defaults`` is what a *new* gateway starts from — a starting point somebody can then
+         *     lower or raise. ``global_model_ceilings`` is what a gateway pointed at a model on the
+         *     operator's own credential may never exceed, whatever it asks for. Keeping them in one
+         *     section makes the difference visible on the screen where both are set, which is the
+         *     only place the distinction is easy to get wrong.
+         */
+        LimitPolicy: {
+            defaults?: components["schemas"]["Quota"];
+            global_model_ceilings?: components["schemas"]["Quota"];
+        };
+        /**
          * LimitUsageResponse
          * @description One cap's live bar.
          */
@@ -2168,6 +2527,43 @@ export interface components {
              * @default false
              */
             remember: boolean;
+        };
+        /** MaintenanceResponse */
+        MaintenanceResponse: {
+            /** Last Runs */
+            last_runs?: components["schemas"]["MaintenanceRunResponse"][];
+            /** Recent Reindexes */
+            recent_reindexes?: components["schemas"]["ReindexRunResponse"][];
+            reindex?: components["schemas"]["ReindexRunResponse"] | null;
+            /** Runway */
+            runway?: components["schemas"]["PartitionRunway"][];
+            /** Runway Threshold Days */
+            runway_threshold_days: number;
+        };
+        /** MaintenanceRunResponse */
+        MaintenanceRunResponse: {
+            /** Error */
+            error?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Job */
+            job: string;
+            /** Report */
+            report?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Status */
+            status: string;
         };
         /**
          * ManualPassResponse
@@ -2804,6 +3200,16 @@ export interface components {
             /** Slug */
             slug: string;
         };
+        /** OrganizationDeletionRequest */
+        OrganizationDeletionRequest: {
+            /** Confirm */
+            confirm: string;
+            /**
+             * Grace Days
+             * @default 7
+             */
+            grace_days: number;
+        };
         /** OrganizationResponse */
         OrganizationResponse: {
             /**
@@ -2863,6 +3269,20 @@ export interface components {
             slug?: string | null;
             /** Status */
             status?: string | null;
+        };
+        /** OrphanGroup */
+        OrphanGroup: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Kind */
+            kind: string;
+            /** Sample */
+            sample?: string[];
+            /** Store */
+            store: string;
         };
         /** Page[AuditEventResponse] */
         Page_AuditEventResponse_: {
@@ -2941,6 +3361,23 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /**
+         * PartitionRunway
+         * @description How many days of partitions exist ahead of today, per table.
+         */
+        PartitionRunway: {
+            /** Days Ahead */
+            days_ahead: number;
+            /** Last Day */
+            last_day?: string | null;
+            /**
+             * Low
+             * @default false
+             */
+            low: boolean;
+            /** Table */
+            table: string;
+        };
         /** PasswordChangeRequest */
         PasswordChangeRequest: {
             /** Current Password */
@@ -2956,6 +3393,69 @@ export interface components {
             p95?: number | null;
             /** P99 */
             p99?: number | null;
+        };
+        /**
+         * PlatformSettings
+         * @description Every operator-configurable value, in sections.
+         *
+         *     A :class:`~app.schemas.config.ConfigBlob` so that a section added by a later build
+         *     loads against an older row, and so that ``merge_config`` gives PATCH its partial-update
+         *     semantics and its refusal of unknown keys for free.
+         */
+        PlatformSettings: {
+            distillation?: components["schemas"]["DistillationDefaults"];
+            embedding?: components["schemas"]["EmbeddingChoice"];
+            limits?: components["schemas"]["LimitPolicy"];
+            logging?: components["schemas"]["LoggingConfig"];
+            retention?: components["schemas"]["RetentionCeilings"];
+            storage?: components["schemas"]["StorageCaps"];
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /**
+         * PlatformSettingsPatch
+         * @description A partial update. Only the sections present are touched.
+         */
+        PlatformSettingsPatch: {
+            /** Confirm Reindex */
+            confirm_reindex?: string | null;
+            /** Distillation */
+            distillation?: {
+                [key: string]: unknown;
+            } | null;
+            /** Embedding */
+            embedding?: {
+                [key: string]: unknown;
+            } | null;
+            /** Limits */
+            limits?: {
+                [key: string]: unknown;
+            } | null;
+            /** Logging */
+            logging?: {
+                [key: string]: unknown;
+            } | null;
+            /** Retention */
+            retention?: {
+                [key: string]: unknown;
+            } | null;
+            /** Storage */
+            storage?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** PlatformSettingsResponse */
+        PlatformSettingsResponse: {
+            /** Attribution */
+            attribution?: components["schemas"]["SettingAttribution"][];
+            /** From Environment */
+            from_environment?: string[];
+            pending_embedding?: components["schemas"]["EmbeddingChoice"] | null;
+            reindex?: components["schemas"]["ReindexRunResponse"] | null;
+            settings: components["schemas"]["PlatformSettings"];
         };
         /**
          * PressureListResponse
@@ -3069,6 +3569,144 @@ export interface components {
             tokens_per_minute?: number | null;
         };
         /**
+         * ReindexEstimate
+         * @description What a reindex would cost, before anybody starts one.
+         *
+         *     ``points`` and ``tokens`` are counted rather than guessed — the chunks are in the
+         *     index with their text — so this is an estimate only in the sense that a provider's
+         *     tokenizer may differ from ours by a few percent.
+         */
+        ReindexEstimate: {
+            /** Collections */
+            collections?: string[];
+            /** From Model */
+            from_model?: string | null;
+            /**
+             * Organizations
+             * @default 0
+             */
+            organizations: number;
+            /**
+             * Points
+             * @default 0
+             */
+            points: number;
+            /** To Dimension */
+            to_dimension: number;
+            /** To Model */
+            to_model: string;
+            /**
+             * Tokens
+             * @default 0
+             */
+            tokens: number;
+        };
+        /**
+         * ReindexRequest
+         * @description A rebuild, of the whole platform or of one organization.
+         *
+         *     There is deliberately no ``connector_id``. A reindex re-embeds chunks that are still
+         *     correct under a different model, and an embedding model is a property of the whole
+         *     *collection* — one connector re-embedded on its own would leave the tenant's index
+         *     holding vectors from two models, which is the exact failure SPEC §9.4 makes the model a
+         *     platform-level setting to prevent. The operation a connector actually needs after a
+         *     chunking change is a re-*ingestion*, which is
+         *     ``POST /api/v1/connectors/{id}/reindex``.
+         */
+        ReindexRequest: {
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /** Organization Id */
+            organization_id?: string | null;
+        };
+        /** ReindexRunResponse */
+        ReindexRunResponse: {
+            /** Error */
+            error?: string | null;
+            /**
+             * Estimated Points
+             * @default 0
+             */
+            estimated_points: number;
+            /**
+             * Estimated Tokens
+             * @default 0
+             */
+            estimated_tokens: number;
+            /** Eta Seconds */
+            eta_seconds?: number | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** From Dimension */
+            from_dimension?: number | null;
+            /** From Model */
+            from_model?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** Scope */
+            scope: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Status */
+            status: string;
+            /** Targets */
+            targets?: components["schemas"]["ReindexTargetResponse"][];
+            /** To Dimension */
+            to_dimension: number;
+            /** To Model */
+            to_model: string;
+        };
+        /**
+         * ReindexSummary
+         * @description How many documents a connector-wide reindex put back in the queue.
+         *
+         *     A count rather than a list: what the person pressing the button needs to know is
+         *     whether it did anything and roughly how long to wait, and the document table beside it
+         *     is already about to show every one of them turn ``pending``.
+         */
+        ReindexSummary: {
+            /**
+             * Documents
+             * @default 0
+             */
+            documents: number;
+        };
+        /** ReindexTargetResponse */
+        ReindexTargetResponse: {
+            /** Collection */
+            collection: string;
+            /** Done Points */
+            done_points: number;
+            /** Error */
+            error?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Organization Name */
+            organization_name?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
+            /** Total Points */
+            total_points: number;
+        };
+        /**
          * RequestDetailResponse
          * @description One request, with everything the §10.3 drawer draws.
          *
@@ -3168,6 +3806,35 @@ export interface components {
             unchanged: number;
             /** Updated */
             updated: number;
+        };
+        /**
+         * RetentionCeilings
+         * @description The longest an organization may keep each kind of data.
+         *
+         *     ``None`` means the platform sets no ceiling, which is the default: a limit nobody
+         *     configured should not silently start deleting a customer's logs on upgrade.
+         */
+        RetentionCeilings: {
+            /** Max Body Days */
+            max_body_days?: number | null;
+            /** Max Metadata Days */
+            max_metadata_days?: number | null;
+        };
+        /**
+         * RetentionCeilingsResponse
+         * @description What the platform allows, for a screen inside an organization.
+         *
+         *     Its own response rather than a slice of the settings document, because this is the
+         *     one part of the platform configuration an organization is *entitled* to see: it
+         *     explains why the number they typed is not the number being honoured. Everything else
+         *     on that screen — other tenants' quotas, the operator's spending ceilings, the
+         *     embedding model — is none of their business.
+         */
+        RetentionCeilingsResponse: {
+            /** Max Body Days */
+            max_body_days?: number | null;
+            /** Max Metadata Days */
+            max_metadata_days?: number | null;
         };
         /**
          * RetrievalPreviewResponse
@@ -3284,6 +3951,37 @@ export interface components {
             user: components["schemas"]["UserSummary"];
         };
         /**
+         * SettingAttribution
+         * @description When a section was last changed and by whom. Absent while it still comes from the
+         *     environment, which is how the screen distinguishes "bootstrapped" from "configured".
+         */
+        SettingAttribution: {
+            /** Key */
+            key: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Updated By */
+            updated_by?: string | null;
+            /** Updated By Label */
+            updated_by_label?: string | null;
+        };
+        /**
+         * StorageCaps
+         * @description SPEC §9.2's per-file cap and the per-organization quota.
+         */
+        StorageCaps: {
+            /**
+             * Max File Bytes
+             * @default 52428800
+             */
+            max_file_bytes: number;
+            /** Quota Bytes */
+            quota_bytes?: number | null;
+        };
+        /**
          * SummaryResponse
          * @description The cards, the latency numbers, and the two distribution charts.
          */
@@ -3317,6 +4015,33 @@ export interface components {
             };
             total: components["schemas"]["PercentilesResponse"];
             ttft: components["schemas"]["PercentilesResponse"];
+        };
+        /** SweepRequest */
+        SweepRequest: {
+            /**
+             * Apply
+             * @default false
+             */
+            apply: boolean;
+            /** Organization Id */
+            organization_id?: string | null;
+        };
+        /** SweepResponse */
+        SweepResponse: {
+            /** Applied */
+            applied: boolean;
+            /**
+             * Deleted
+             * @default 0
+             */
+            deleted: number;
+            /** Groups */
+            groups?: components["schemas"]["OrphanGroup"][];
+            /**
+             * Organizations
+             * @default 0
+             */
+            organizations: number;
         };
         /**
          * TargetSummary
@@ -3857,6 +4582,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_DocumentResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reindex_connector_api_v1_connectors__connector_id__reindex_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReindexSummary"];
                 };
             };
             /** @description Validation Error */
@@ -5720,6 +6476,331 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_maintenance_api_v1_platform_maintenance_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceResponse"];
+                };
+            };
+        };
+    };
+    run_partitions_api_v1_platform_maintenance_partitions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceRunResponse"];
+                };
+            };
+        };
+    };
+    run_retention_api_v1_platform_maintenance_retention_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceRunResponse"];
+                };
+            };
+        };
+    };
+    run_sweep_api_v1_platform_maintenance_sweep_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SweepRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SweepResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    purge_due_api_v1_platform_organizations_purge_post: {
+        parameters: {
+            query?: {
+                confirm?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErasureReport"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    schedule_deletion_api_v1_platform_organizations__organization_id__deletion_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrganizationDeletionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErasureReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_deletion_api_v1_platform_organizations__organization_id__deletion_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_reindex_api_v1_platform_reindex_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReindexRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReindexRunResponse"] | components["schemas"]["ReindexEstimate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_reindex_api_v1_platform_reindex__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReindexRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_settings_api_v1_platform_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformSettingsResponse"];
+                };
+            };
+        };
+    };
+    update_settings_api_v1_platform_settings_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlatformSettingsPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformSettingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_retention_ceilings_api_v1_retention_ceilings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionCeilingsResponse"];
                 };
             };
         };

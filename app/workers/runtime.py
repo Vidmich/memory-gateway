@@ -20,6 +20,7 @@ So this module builds both once from :class:`~app.core.clients.Clients` and
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -27,7 +28,13 @@ from typing import Any
 from app.core.clients import Clients
 from app.core.config import Settings
 from app.core.crypto import SecretBox
-from app.core.metrics import DistillationMetrics, ExtractionMetrics, JobMetrics
+from app.core.metrics import (
+    DistillationMetrics,
+    ExtractionMetrics,
+    JobMetrics,
+    MaintenanceMetrics,
+)
+from app.schemas.platform import EmbeddingChoice
 from app.services.catalog_store import PostgresCatalogStore
 from app.services.connector_store import ConnectorStore, PostgresConnectorStore
 from app.services.debounce import Debouncer, RedisDebouncer
@@ -37,6 +44,7 @@ from app.services.distillation_trigger import DistillationTrigger
 from app.services.distiller import Distiller
 from app.services.embeddings import Embedder, EmbeddingSettings, build_embedder
 from app.services.end_user_store import EndUserStore, PostgresEndUserStore
+from app.services.erasure import OrganizationEraser
 from app.services.extraction import ExtractorRegistry, build_registry
 from app.services.extraction_pool import ExtractionPool
 from app.services.fact_vectors import FactVectorStore, QdrantFactVectorStore
@@ -47,16 +55,25 @@ from app.services.jobs import (
     DELETE_CONNECTOR,
     DISTIL_MEMORY,
     INGEST_DOCUMENT,
+    REINDEX,
     DeadLetterSink,
     JobQueue,
     JobRunner,
     RetryPolicy,
 )
 from app.services.locks import Lock, RedisLock
+from app.services.maintenance import OrphanSweeper, PartitionManager, RetentionJob
+from app.services.maintenance_store import MaintenanceStore, PostgresMaintenanceStore
 from app.services.object_store import ObjectStore, S3ObjectStore
+from app.services.platform_service import PlatformService
+from app.services.platform_settings import PlatformSettingsService
+from app.services.platform_store import PostgresPlatformSettingsStore
 from app.services.proxy import ProxyService
 from app.services.reconciliation import Reconciler
+from app.services.reindex import Reindexer
+from app.services.reindex_store import PostgresReindexStore
 from app.services.tokenizer import Tokenizer, build_tokenizer
+from app.services.vector_index import QdrantVectorIndexAdmin, VectorIndexAdmin
 from app.services.vector_store import QdrantVectorStore, VectorStore
 
 logger = logging.getLogger(__name__)
@@ -85,11 +102,22 @@ class Ingestion:
         await self.pool.aclose()
 
 
-def embedding_settings(settings: Settings) -> EmbeddingSettings:
+def embedding_settings(
+    settings: Settings, choice: EmbeddingChoice | None = None
+) -> EmbeddingSettings:
+    """The embedder's configuration: the platform's choice, over the environment's.
+
+    Since task 17 the provider, model and width come from ``platform_settings`` when a row
+    exists, and the environment is what a fresh database runs on. The endpoint and the
+    credential stay in the environment on both paths, and deliberately: a base URL is
+    deployment topology and an API key is a secret, and neither belongs in a table an
+    operator reads on a screen. That split is also why changing the *provider* needs no
+    reindex — the vectors do not know which host produced them.
+    """
     return EmbeddingSettings(
-        provider=settings.embedding_provider,
-        model=settings.embedding_model,
-        dimension=settings.embedding_dimension,
+        provider=choice.provider if choice else settings.embedding_provider,
+        model=choice.name if choice else settings.embedding_model,
+        dimension=choice.dimension if choice else settings.embedding_dimension,
         base_url=settings.embedding_base_url,
         api_key=settings.embedding_api_key,
         batch_size=settings.embedding_batch_size,
@@ -111,12 +139,13 @@ def build_ingestion(
     *,
     queue: JobQueue,
     metrics: ExtractionMetrics | None = None,
+    embedding: EmbeddingChoice | None = None,
 ) -> Ingestion:
     limits = ingestion_settings(settings)
     store = PostgresConnectorStore(clients.session_factory)
     objects = S3ObjectStore(clients.storage, clients.bucket)
     vectors = QdrantVectorStore(clients.qdrant)
-    embedder = build_embedder(embedding_settings(settings), clients.http)
+    embedder = build_embedder(embedding_settings(settings, embedding), clients.http)
     # One tokenizer for the process. Loading the BPE vocabulary is expensive and the
     # object is stateless once loaded.
     tokenizer = build_tokenizer()
@@ -237,6 +266,109 @@ def build_distillation(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Platform:
+    """The operator's half: settings, the scheduled jobs, reindex and erasure.
+
+    Built by both processes from one function, for the reason every other bundle here
+    gives and one of its own. The API needs it because the Platform screens are requests;
+    the worker needs it because the jobs are the point. If they were assembled separately,
+    the retention the worker ran nightly and the retention an operator triggered from the
+    screen could apply different ceilings — and the screen would be reporting on a pass
+    that is not the one that runs.
+    """
+
+    settings: PlatformSettingsService
+    store: MaintenanceStore
+    index: VectorIndexAdmin
+    partitions: PartitionManager
+    retention: RetentionJob
+    sweeper: OrphanSweeper
+    reindexer: Reindexer
+    eraser: OrganizationEraser
+    service: PlatformService
+
+
+def build_platform_settings(clients: Clients, settings: Settings) -> PlatformSettingsService:
+    """The settings service alone, because it is needed *before* everything else.
+
+    The embedder the ingestion pipeline is built with depends on the platform's embedding
+    choice, so the rows have to be read before that pipeline exists. Splitting this out is
+    what keeps the ordering explicit instead of hidden inside a larger builder.
+    """
+    return PlatformSettingsService(
+        PostgresPlatformSettingsStore(clients.session_factory), settings=settings
+    )
+
+
+def build_platform(
+    clients: Clients,
+    settings: Settings,
+    *,
+    ingestion: Ingestion,
+    distillation: Distillation,
+    platform_settings: PlatformSettingsService,
+    queue: JobQueue | None = None,
+    metrics: MaintenanceMetrics | None = None,
+) -> Platform:
+    store = PostgresMaintenanceStore(clients.session_factory)
+    index = QdrantVectorIndexAdmin(clients.qdrant)
+    partitions = PartitionManager(store, metrics=metrics)
+    retention = RetentionJob(
+        store,
+        partitions=partitions,
+        # The same fact vector store distillation writes through, so an expired fact's
+        # vector is removed by the object that put it there.
+        facts=distillation.vectors,
+        metrics=metrics,
+    )
+    sweeper = OrphanSweeper(
+        store,
+        vectors=ingestion.vectors,
+        index=index,
+        facts=distillation.vectors,
+        objects=ingestion.objects,
+        metrics=metrics,
+    )
+    reindexer = Reindexer(
+        PostgresReindexStore(clients.session_factory),
+        index=index,
+        maintenance=store,
+        settings=platform_settings,
+        # A fresh embedder per run rather than the serving one: the whole point of a
+        # reindex is to embed with a model the serving path is not using yet.
+        embedder_for=lambda choice: build_embedder(
+            embedding_settings(settings, choice), clients.http
+        ),
+    )
+    eraser = OrganizationEraser(
+        store,
+        vectors=ingestion.vectors,
+        facts=distillation.vectors,
+        objects=ingestion.objects,
+    )
+    return Platform(
+        settings=platform_settings,
+        store=store,
+        index=index,
+        partitions=partitions,
+        retention=retention,
+        sweeper=sweeper,
+        reindexer=reindexer,
+        eraser=eraser,
+        service=PlatformService(
+            settings=platform_settings,
+            partitions=partitions,
+            retention=retention,
+            sweeper=sweeper,
+            reindexer=reindexer,
+            eraser=eraser,
+            store=store,
+            queue=queue,
+        ),
+    )
+
+
 def retry_policy(settings: Settings) -> RetryPolicy:
     return RetryPolicy(
         max_attempts=settings.job_max_attempts,
@@ -246,7 +378,9 @@ def retry_policy(settings: Settings) -> RetryPolicy:
 
 
 def build_handlers(
-    ingestion: Ingestion, distillation: Distillation | None = None
+    ingestion: Ingestion,
+    distillation: Distillation | None = None,
+    platform: Platform | None = None,
 ) -> Mapping[str, Any]:
     """Job name to coroutine.
 
@@ -259,7 +393,6 @@ def build_handlers(
     arriving at such a worker is dead-lettered by name, which is a visible bad deploy
     rather than a silent one.
     """
-    import uuid
 
     async def ingest_document(payload: Mapping[str, Any]) -> None:
         await ingestion.pipeline.ingest(
@@ -277,6 +410,13 @@ def build_handlers(
         INGEST_DOCUMENT: ingest_document,
         DELETE_CONNECTOR: delete_connector,
     }
+    if platform is not None:
+
+        async def reindex(payload: Mapping[str, Any]) -> None:
+            await platform.reindexer.run(uuid.UUID(str(payload["run_id"])))
+
+        handlers[REINDEX] = reindex
+
     if distillation is None:
         return handlers
 
@@ -302,9 +442,10 @@ def build_runner(
     dead_letters: DeadLetterSink,
     metrics: JobMetrics | None = None,
     distillation: Distillation | None = None,
+    platform: Platform | None = None,
 ) -> JobRunner:
     return JobRunner(
-        build_handlers(ingestion, distillation),
+        build_handlers(ingestion, distillation, platform),
         queue=ingestion.queue,
         dead_letters=dead_letters,
         policy=retry_policy(settings),
@@ -323,10 +464,13 @@ def build_dead_letters(clients: Clients) -> PostgresDeadLetters:
 __all__ = [
     "Distillation",
     "Ingestion",
+    "Platform",
     "build_dead_letters",
     "build_distillation",
     "build_handlers",
     "build_ingestion",
+    "build_platform",
+    "build_platform_settings",
     "build_queue",
     "build_runner",
     "embedding_settings",

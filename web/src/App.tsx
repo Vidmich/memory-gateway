@@ -23,6 +23,8 @@ import { MonitoringPage } from '@/pages/MonitoringPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { OrganizationSettingsPage } from '@/pages/OrganizationSettingsPage'
 import { OrganizationsPage } from '@/pages/OrganizationsPage'
+import { PlatformMaintenancePage } from '@/pages/PlatformMaintenancePage'
+import { PlatformSettingsPage } from '@/pages/PlatformSettingsPage'
 
 export function makeQueryClient(): QueryClient {
   return new QueryClient({
@@ -75,6 +77,8 @@ export function AppRoutes() {
         <Route path="/settings/members" element={<MembersPage />} />
         {/* Rendering is gated by capability; the API is what actually refuses. */}
         <Route path="/platform/organizations" element={<OrganizationsPage />} />
+        <Route path="/platform/settings" element={<PlatformSettingsPage />} />
+        <Route path="/platform/maintenance" element={<PlatformMaintenancePage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />
     </Routes>

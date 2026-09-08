@@ -216,6 +216,30 @@ class AuditMetrics:
 
 
 @dataclass(frozen=True)
+class MaintenanceMetrics:
+    """The data-lifecycle jobs, as four numbers (task 17).
+
+    ``runway`` is the one an alert is written against, and it is a gauge per table rather
+    than a single number because the two partitioned tables are managed together and
+    failing separately is exactly the case worth catching. It goes red *before* anything
+    breaks: an exhausted runway is not a slow query, it is an insert that fails, and the
+    thing that fails is request logging — so the first symptom without this gauge is
+    silence on the monitoring screen.
+
+    The two pruning counters answer "is retention actually reclaiming anything", which is
+    the question behind every "why is the database still growing" ticket. ``orphans`` is a
+    gauge rather than a counter because it is a *level*: a number that stays above zero
+    across sweeps means something is leaking, and a total would hide that under its own
+    history.
+    """
+
+    runway: Gauge
+    pruned_rows: Counter
+    pruned_bytes: Counter
+    orphans: Gauge
+
+
+@dataclass(frozen=True)
 class Metrics:
     registry: CollectorRegistry
     http_requests: Counter
@@ -230,6 +254,7 @@ class Metrics:
     distillation: DistillationMetrics
     rate_limits: RateLimitMetrics
     audit: AuditMetrics
+    maintenance: MaintenanceMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -277,6 +302,7 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         distillation=build_distillation_metrics(registry),
         rate_limits=build_rate_limit_metrics(registry),
         audit=build_audit_metrics(registry),
+        maintenance=build_maintenance_metrics(registry),
     )
 
 
@@ -448,6 +474,33 @@ def build_job_metrics(registry: CollectorRegistry) -> JobMetrics:
         queue_depth=Gauge(
             "jobs_queue_depth",
             "Jobs waiting to be picked up.",
+            registry=registry,
+        ),
+    )
+
+
+def build_maintenance_metrics(registry: CollectorRegistry) -> MaintenanceMetrics:
+    """Split out like the others, so a job can be built in a test without an application."""
+    return MaintenanceMetrics(
+        runway=Gauge(
+            "partition_runway_days",
+            "Consecutive days of partitions that exist ahead of today, per table.",
+            labelnames=("table",),
+            registry=registry,
+        ),
+        pruned_rows=Counter(
+            "retention_pruned_rows_total",
+            "Request-log and transcript rows removed by retention.",
+            registry=registry,
+        ),
+        pruned_bytes=Counter(
+            "retention_pruned_bytes_total",
+            "Approximate body bytes reclaimed by retention.",
+            registry=registry,
+        ),
+        orphans=Gauge(
+            "orphaned_objects",
+            "Vectors and stored objects with no row behind them, at the last sweep.",
             registry=registry,
         ),
     )

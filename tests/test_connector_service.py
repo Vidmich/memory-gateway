@@ -186,6 +186,53 @@ async def test_an_empty_connector_is_not_told_to_reindex(connectors: ConnectorFi
     assert view.reindex_required is False
 
 
+async def test_reindexing_a_connector_puts_every_document_back_in_the_queue(
+    connectors: ConnectorFixture,
+) -> None:
+    """What a chunking change actually needs. Changing ``chunk_size`` does not make the
+    *vectors* wrong, it makes the chunks wrong — so nothing short of running the pipeline
+    again fixes it, which is a different operation from task 17's embedding reindex."""
+    await connectors.ingest(("handbook.md", HANDBOOK), ("notes.md", b"# Notes"))
+    await connectors.service.update_connector(
+        connectors.actor, connectors.connector.id, ConnectorPatch(chunking={"chunk_size": 500})
+    )
+
+    queued = await connectors.service.reindex_connector(connectors.actor, connectors.connector.id)
+
+    assert queued == 2
+    assert set((await connectors.statuses()).values()) == {"pending"}
+
+
+async def test_reindexing_leaves_a_document_a_worker_is_already_holding(
+    connectors: ConnectorFixture,
+) -> None:
+    """Resetting one mid-ingestion would race the worker that is writing it, and the job
+    it already has is going to produce the right chunks anyway."""
+    await connectors.ingest(("handbook.md", HANDBOOK))
+    document = (await connectors.documents())[0]
+    document.status = "embedding"
+
+    queued = await connectors.service.reindex_connector(connectors.actor, connectors.connector.id)
+
+    assert queued == 0
+    assert (await connectors.documents())[0].status == "embedding"
+
+
+async def test_reindexing_an_empty_connector_enqueues_nothing(
+    connectors: ConnectorFixture,
+) -> None:
+    assert (
+        await connectors.service.reindex_connector(connectors.actor, connectors.connector.id)
+    ) == 0
+
+
+async def test_reindexing_a_connector_that_is_not_yours_is_a_404(
+    connectors: ConnectorFixture,
+) -> None:
+    with pytest.raises(NotFound):
+        await connectors.service.reindex_connector(connectors.actor, uuid.uuid4())
+
+
 async def test_a_missing_connector_is_a_404(connectors: ConnectorFixture) -> None:
     with pytest.raises(NotFound):
         await connectors.service.get_connector(connectors.actor, uuid.uuid4())

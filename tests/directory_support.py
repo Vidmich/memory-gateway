@@ -50,6 +50,8 @@ from tests.gateway_support import (
     make_key_row,
 )
 from tests.monitoring_support import make_log_row
+from tests.platform_support import PlatformFixture
+from tests.platform_support import build_platform as build_platform_fixture
 
 
 @dataclass
@@ -71,6 +73,11 @@ class World:
     gateway_probe: FakeGatewayProbe
     cache: RecordingCache
     auth: AuthFixture
+    #: Task 17's operator half, over the same rows. Here rather than in a fixture of
+    #: its own because the audit tour and the cross-tenant net both drive the whole
+    #: control plane, and a platform screen missing from the app they drive is a
+    #: screen those guards silently stop covering.
+    platform: PlatformFixture
 
     acme: Organization
     globex: Organization
@@ -216,6 +223,8 @@ def build_world(*, settings: Settings | None = None) -> World:
     for row in (acme_log, globex_log):
         database.request_logs[row.id] = row
 
+    platform = build_platform_fixture(database, settings=settings)
+
     return World(
         settings=settings,
         hasher=hasher,
@@ -229,6 +238,7 @@ def build_world(*, settings: Settings | None = None) -> World:
         gateway_probe=auth.gateway_probe,
         cache=auth.cache,
         auth=auth,
+        platform=platform,
         acme=acme,
         globex=globex,
         superadmin=people["superadmin"],

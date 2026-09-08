@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -58,6 +58,7 @@ from app.schemas.gateway_config import (
     merge_config,
     organization_logging_defaults,
 )
+from app.schemas.platform import RetentionCeilings
 from app.services.audit_snapshots import subject
 from app.services.gateway_probe import GatewayProbe, GatewayProbeResult
 from app.services.gateway_resolver import ConfigCache
@@ -205,12 +206,41 @@ class GatewayService:
         cache: ConfigCache | None = None,
         test_limiter: FixedWindowLimiter | None = None,
         settings: Settings | None = None,
+        retention_ceilings: Callable[[], RetentionCeilings] | None = None,
     ) -> None:
         self._store = store
         self._probe = probe
         self._cache = cache
         self._limiter = test_limiter
         self._settings = settings or get_settings()
+        #: Task 17's platform maxima, read as a function because they live in
+        #: ``platform_settings`` and an operator can lower one while this process runs.
+        #: ``None`` means "no platform layer wired", which is what every test of gateway
+        #: behaviour that predates task 17 has, and it means no ceiling.
+        self._retention_ceilings = retention_ceilings
+
+    def _capped(self, logging_config: dict[str, Any]) -> dict[str, Any]:
+        """Lower a retention window that exceeds the platform ceiling.
+
+        Capped rather than refused, which is the same choice
+        :class:`~app.services.limits.Ceilings` makes for rate limits and for the same
+        reason: an operator lowering a ceiling must not make every gateway configured
+        under the old one unsaveable. What a customer sees is the number that will
+        actually be honoured, and the form says the platform is capping it.
+
+        The retention job applies the same ceiling to gateways nobody re-saves, so the
+        two cannot drift into "the screen says 30 and the pruner uses 90".
+        """
+        if self._retention_ceilings is None:
+            return logging_config
+        ceilings = self._retention_ceilings()
+        bodies = ceilings.cap_body(int(logging_config["retention_days"]))
+        metadata = ceilings.cap_metadata(int(logging_config["metadata_retention_days"]))
+        return {
+            **logging_config,
+            "retention_days": min(bodies, metadata),
+            "metadata_retention_days": metadata,
+        }
 
     # -- reads ------------------------------------------------------------
 
@@ -285,11 +315,13 @@ class GatewayService:
                 # so a form that sends its own value still wins — this is a starting
                 # point, not a ceiling. Whether it should also be a ceiling is a real
                 # question and a different feature; the work item asks for defaults.
-                logging_config=merge_config(
-                    LoggingConfig,
-                    organization_logging_defaults(await transaction.organization_settings()),
-                    draft.logging_config,
-                    field="logging_config",
+                logging_config=self._capped(
+                    merge_config(
+                        LoggingConfig,
+                        organization_logging_defaults(await transaction.organization_settings()),
+                        draft.logging_config,
+                        field="logging_config",
+                    )
                 ),
                 limits=_checked_limits(
                     merge_config(LimitsConfig, {}, draft.limits, field="limits"),
@@ -343,11 +375,13 @@ class GatewayService:
                     transaction, gateway.memory_config, patch.memory_config
                 )
             if not isinstance(patch.logging_config, _Unset):
-                gateway.logging_config = merge_config(
-                    LoggingConfig,
-                    gateway.logging_config,
-                    patch.logging_config,
-                    field="logging_config",
+                gateway.logging_config = self._capped(
+                    merge_config(
+                        LoggingConfig,
+                        gateway.logging_config,
+                        patch.logging_config,
+                        field="logging_config",
+                    )
                 )
             if not isinstance(patch.limits, _Unset):
                 merged_limits = merge_config(

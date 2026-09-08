@@ -14,8 +14,9 @@ nothing and removes the class of problem entirely.
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
+from arq import cron
 from arq.connections import RedisSettings
 
 from app.core.clients import Clients
@@ -26,9 +27,12 @@ from app.services.job_queue import ARQ_FUNCTION, ARQ_HEAVY_QUEUE_KEY, ArqJobQueu
 from app.services.jobs import JobRunner
 from app.workers.runtime import (
     Ingestion,
+    Platform,
     build_dead_letters,
     build_distillation,
     build_ingestion,
+    build_platform,
+    build_platform_settings,
     build_runner,
 )
 
@@ -59,27 +63,82 @@ async def startup(context: dict[str, Any]) -> None:
     # arq hands the worker its own pool; reusing it means the queue the runner re-enqueues
     # retries onto is the same queue this worker is reading from.
     queue = ArqJobQueue(context["redis"])
-    ingestion = build_ingestion(clients, settings, queue=queue, metrics=metrics.extraction)
+    # Read before the pipeline is built, for the same reason the API does it: the embedder
+    # has to be the one the platform is configured for, not the one the environment
+    # happened to name.
+    platform_settings = build_platform_settings(clients, settings)
+    await platform_settings.warm()
+    platform_settings.start()
+    ingestion = build_ingestion(
+        clients,
+        settings,
+        queue=queue,
+        metrics=metrics.extraction,
+        embedding=platform_settings.snapshot.embedding,
+    )
     # Conversation memory's write half. Built here as well as in the API, from the same
     # function, so the pass a worker runs and the pass "Distil now" runs are the same pass.
     distillation = build_distillation(
         clients, settings, ingestion=ingestion, metrics=metrics.distillation
     )
 
+    platform = build_platform(
+        clients,
+        settings,
+        ingestion=ingestion,
+        distillation=distillation,
+        platform_settings=platform_settings,
+        queue=queue,
+        metrics=metrics.maintenance,
+    )
+
     context["clients"] = clients
     context["ingestion"] = ingestion
     context["distillation"] = distillation
+    context["platform"] = platform
+    context["platform_settings"] = platform_settings
     context["runner"] = build_runner(
         ingestion,
         settings,
         dead_letters=build_dead_letters(clients),
         metrics=metrics.jobs,
         distillation=distillation,
+        platform=platform,
     )
     logger.info("worker started", extra={"environment": settings.environment})
 
 
+async def nightly_maintenance(context: dict[str, Any]) -> None:
+    """The scheduled half of task 17, as one function so it runs in one order.
+
+    Partitions before retention, because retention drops days and the runway has to exist
+    whatever happens next; retention before the organization purge, because a tenant on
+    its way out should have had its ordinary retention applied like everybody else. The
+    orphan sweep is **not** here: it is report-only by design, and a destructive pass on a
+    schedule is exactly what the report-first rule exists to prevent.
+
+    Failures are logged rather than raised. arq would retry the cron entry, and a retry of
+    a whole night's maintenance is not what anybody wants at 03:05 — each of these passes
+    is resumable and runs again tomorrow.
+    """
+    platform: Platform | None = context.get("platform")
+    if platform is None:  # pragma: no cover - a worker built without the platform bundle
+        return
+    for name, run in (
+        ("partitions", platform.service.run_partitions),
+        ("retention", platform.service.run_retention),
+        ("organization-purge", platform.service.purge_due),
+    ):
+        try:
+            await run()
+        except Exception:
+            logger.exception("scheduled maintenance failed", extra={"job": name})
+
+
 async def shutdown(context: dict[str, Any]) -> None:
+    settings_service = context.get("platform_settings")
+    if settings_service is not None:
+        await settings_service.stop()
     ingestion: Ingestion | None = context.get("ingestion")
     if ingestion is not None:
         # The extraction subprocesses are children of this process. A worker that exits
@@ -101,6 +160,17 @@ class WorkerSettings:
     # `ClassVar` throughout: arq reads these off the class and never instantiates it, so
     # a mutable default here is a shared constant rather than the usual trap.
     functions: ClassVar[list[Any]] = [run_gateway_job]
+    #: Task 17's scheduled work. One entry, at 03:05 UTC — a fixed hour rather than a
+    #: spread one, because the passes it runs are the cheap kind and the expensive thing
+    #: they replace is a table nobody pruned. arq runs a cron function on exactly one
+    #: worker, which is what keeps two replicas from both dropping the same partition;
+    #: the passes are idempotent anyway, and both properties are worth having.
+    cron_jobs: ClassVar[list[Any]] = [
+        # `cast` because arq types a cron function as taking its context positionally
+        # under a protocol that also demands `**kwargs`; the shape it actually calls is
+        # the one written above.
+        cron(cast("Any", nightly_maintenance), hour={3}, minute={5}, run_at_startup=False)
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()
@@ -139,4 +209,10 @@ class HeavyWorkerSettings(WorkerSettings):
 
 # `arq` also accepts a module-level `functions` list; naming the class explicitly in the
 # command keeps the settings and the functions in one place.
-__all__ = ["ARQ_FUNCTION", "HeavyWorkerSettings", "WorkerSettings", "run_gateway_job"]
+__all__ = [
+    "ARQ_FUNCTION",
+    "HeavyWorkerSettings",
+    "WorkerSettings",
+    "nightly_maintenance",
+    "run_gateway_job",
+]

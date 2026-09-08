@@ -10,8 +10,10 @@ chart scans megabytes of prompt text to compute a number that lives in four byte
 partitioning support, so these classes describe the *parent* table and the migration
 emits the ``PARTITION BY RANGE`` DDL by hand. The reason for the partitioning is
 retention: SPEC §10.2 gives every gateway a body-retention window and a longer metadata
-window, and enforcing those (task 17) is a ``DROP TABLE`` on yesterday's partition rather
-than a ``DELETE`` that rewrites a live table while the proxy is writing to it.
+window, and :mod:`app.services.maintenance` enforces those with a ``DROP TABLE`` on an
+expired partition rather than a ``DELETE`` that rewrites a live table while the proxy is
+writing to it. Windows differ per gateway and partitions do not, so a still-live day is
+pruned per gateway by predicate — see that module for the two stages.
 
 Two consequences of partitioning are visible in these models.
 
@@ -62,9 +64,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.ids import uuid7
 from app.db.base import Base
 
-#: How many daily partitions the migration creates ahead of time. Task 17 replaces this
-#: with a scheduled job; until then this is the runway, and the default partition below
-#: is what keeps running off the end of it from dropping traffic.
+#: How many daily partitions exist ahead of today. The task 07 migration creates them
+#: once and :class:`~app.services.maintenance.PartitionManager` keeps the window rolling;
+#: this constant is what the two agree on, and a test asserts the migration's copy matches.
+#: The ``_default`` partition the migration also leaves in place is the net under both.
 PARTITION_DAYS_AHEAD = 30
 
 

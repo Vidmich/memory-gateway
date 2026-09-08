@@ -31,9 +31,11 @@ from app.services.limits import (
     NEAR_LIMIT,
     NO_CEILINGS,
     Ceilings,
+    CeilingSource,
     Effective,
     Reading,
     Rule,
+    ceilings_from,
     effective,
     plan,
 )
@@ -122,7 +124,7 @@ class LimitsService:
         gateways: GatewayStore,
         *,
         buckets: LimitStore,
-        ceilings: Ceilings = NO_CEILINGS,
+        ceilings: CeilingSource = NO_CEILINGS,
     ) -> None:
         self._gateways = gateways
         self._buckets = buckets
@@ -179,13 +181,17 @@ class LimitsService:
             target.upstream_model.scope == "global" and target.upstream_model.enabled
             for target in row.targets
         )
+        # Resolved once: the ceilings can come from a live snapshot since task 17, and
+        # a view whose "enforced" and "ceilings" were read a microsecond apart could
+        # disagree about the very number it exists to explain.
+        ceilings = ceilings_from(self._ceilings)
         return GatewayLimits(
             gateway_id=row.id,
             slug=row.slug,
             name=row.name,
             configured=configured,
-            enforced=effective(configured, ceilings=self._ceilings, global_models=global_models),
-            ceilings=self._ceilings,
+            enforced=effective(configured, ceilings=ceilings, global_models=global_models),
+            ceilings=ceilings,
             global_models=global_models,
             usage=(),
         )

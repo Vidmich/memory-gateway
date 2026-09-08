@@ -123,6 +123,7 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
         "storage that no later check could undo",
     ),
     ScopedEndpoint("POST", f"/api/v1/connectors/{FOREIGN_CONNECTOR}/resync"),
+    ScopedEndpoint("POST", f"/api/v1/connectors/{FOREIGN_CONNECTOR}/reindex"),
     ScopedEndpoint(
         "POST",
         f"/api/v1/connectors/{FOREIGN_CONNECTOR}/search",
@@ -294,6 +295,15 @@ async def test_the_net_covers_every_scoped_route(directory: DirectoryHarness) ->
         # multipart route rejects one with a 422 before the scope is ever consulted —
         # which would make this row pass for entirely the wrong reason.
         "POST /api/v1/connectors/{connector_id}/upload",
+        # Task 17's platform routes. Not scoped to a tenant *by design*: they are the
+        # operator's, gated on `platform:administer`, and the id in the path is the
+        # organization being acted on rather than the one the caller belongs to. A
+        # superadmin has no organization of their own for the net to compare against, so
+        # a row here would be asserting that the platform cannot reach its own tenants.
+        # `test_platform_api.py` covers the permission instead, which is the real rule.
+        "GET /api/v1/platform/reindex/{run_id}",
+        "POST /api/v1/platform/organizations/{organization_id}/deletion",
+        "DELETE /api/v1/platform/organizations/{organization_id}/deletion",
     }
 
     assert with_parameters - covered - exempt == set()

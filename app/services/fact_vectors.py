@@ -47,6 +47,10 @@ INDEXED_PAYLOAD_FIELDS = ("end_user_id",)
 
 DEFAULT_SEARCH_LIMIT = 16
 
+#: Points per scroll page when the sweeper enumerates a collection. Ids only, so a page
+#: is small however large the payloads are.
+SCROLL_BATCH = 512
+
 
 def memory_collection_for(organization_id: uuid.UUID) -> str:
     return MEMORY_COLLECTION_TEMPLATE.format(organization_id=organization_id)
@@ -102,6 +106,16 @@ class FactVectorStore(Protocol):
     async def drop(self, organization_id: uuid.UUID) -> None: ...
 
     async def dimension(self, organization_id: uuid.UUID) -> int | None: ...
+
+    async def ids(self, organization_id: uuid.UUID) -> set[str]:
+        """Every point id in this tenant's memory collection.
+
+        Only the orphan sweeper asks. It exists because a vector whose row is gone is a
+        fact that still influences answers after it was deleted — the one failure that
+        cannot be seen from either store alone, which is exactly why the comparison has to
+        be made from outside both.
+        """
+        ...
 
     async def search(
         self,
@@ -208,6 +222,24 @@ class QdrantFactVectorStore:
         self._widths.pop(name, None)
         if await self._client.collection_exists(name):
             await self._client.delete_collection(name)
+
+    async def ids(self, organization_id: uuid.UUID) -> set[str]:
+        name = memory_collection_for(organization_id)
+        if not await self._client.collection_exists(name):
+            return set()
+        found: set[str] = set()
+        offset: Any = None
+        while True:
+            points, offset = await self._client.scroll(
+                collection_name=name,
+                offset=offset,
+                limit=SCROLL_BATCH,
+                with_payload=False,
+                with_vectors=False,
+            )
+            found.update(str(point.id) for point in points)
+            if offset is None:
+                return found
 
     async def dimension(self, organization_id: uuid.UUID) -> int | None:
         name = memory_collection_for(organization_id)
@@ -326,6 +358,9 @@ class MemoryFactVectorStore:
 
     async def dimension(self, organization_id: uuid.UUID) -> int | None:
         return self.dimensions.get(memory_collection_for(organization_id))
+
+    async def ids(self, organization_id: uuid.UUID) -> set[str]:
+        return set(self.collections.get(memory_collection_for(organization_id), {}))
 
     async def search(
         self,

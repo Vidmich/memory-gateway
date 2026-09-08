@@ -28,8 +28,11 @@ from app.db.models import (
     Gateway,
     GatewayTarget,
     Invitation,
+    MaintenanceRun,
     MemoryFact,
     Organization,
+    ReindexRun,
+    ReindexTarget,
     RequestLog,
     Transcript,
     UpstreamModel,
@@ -61,6 +64,13 @@ class MemoryDatabase:
     #: Task 15. Append-only here too: nothing in this class removes one, which is the
     #: in-memory half of the trigger the migration installs.
     audit_events: dict[uuid.UUID, AuditEvent] = field(default_factory=dict)
+    #: Task 17. Keyed by section name; the values are
+    #: :class:`app.services.platform_store.StoredSetting`, typed loosely here because
+    #: that module reads this one and the import cannot go both ways.
+    platform_settings: dict[str, Any] = field(default_factory=dict)
+    maintenance_runs: dict[uuid.UUID, MaintenanceRun] = field(default_factory=dict)
+    reindex_runs: dict[uuid.UUID, ReindexRun] = field(default_factory=dict)
+    reindex_targets: dict[uuid.UUID, ReindexTarget] = field(default_factory=dict)
 
     def add_user(self, user: User) -> User:
         self.users[user.id] = _stamped(user)

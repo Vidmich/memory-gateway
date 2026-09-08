@@ -28,6 +28,7 @@ from app.services.limits_service import LimitsService
 from app.services.memory_preview import MemoryPreview
 from app.services.monitoring import MonitoringService
 from app.services.permissions import Capability, allows
+from app.services.platform_service import PlatformService
 
 #: Sent on every 401 from the control plane. The SPA keys its refresh-and-retry off the
 #: status code, but a bare 401 with no scheme is a protocol violation clients notice.
@@ -90,6 +91,11 @@ def get_audit_service(request: Request) -> AuditService:
 
 def get_memory_preview(request: Request) -> MemoryPreview:
     service: MemoryPreview = request.app.state.memory_preview
+    return service
+
+
+def get_platform_service(request: Request) -> PlatformService:
+    service: PlatformService = request.app.state.platform_service
     return service
 
 

@@ -62,6 +62,25 @@ describe('navigation', () => {
     expect(sections.map((group) => group.section)).toContain('Platform')
   })
 
+  it('keeps every Platform entry behind the same capability', () => {
+    // Task 17 added two screens under this heading. An org admin who could reach either
+    // would be reading the operator's embedding model or another tenant's deletion
+    // schedule, and the sidebar is where that mistake would first be visible.
+    const platform = NAVIGATION.filter((entry) =>
+      entry.to.startsWith('/platform/'),
+    )
+
+    expect(platform.map((entry) => entry.label)).toEqual([
+      'Organizations',
+      'Settings',
+      'Maintenance',
+    ])
+    expect(platform.every((entry) => entry.capabilities?.includes('platform:administer'))).toBe(
+      true,
+    )
+    expect(labels(makeUser())).not.toContain('Maintenance')
+  })
+
   it('groups entries under the heading that introduced them', () => {
     const sections = navigationSections(visibleNavigation(NAVIGATION, makeUser()))
     const settings = sections.find((group) => group.section === 'Settings')

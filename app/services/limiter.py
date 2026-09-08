@@ -39,9 +39,11 @@ from app.services.limits import (
     LATE_LIMITS,
     NO_CEILINGS,
     Ceilings,
+    CeilingSource,
     Effective,
     Reading,
     Rule,
+    ceilings_from,
     effective,
     headers,
     message,
@@ -63,7 +65,7 @@ class RateLimiter:
         self,
         store: LimitStore,
         *,
-        ceilings: Ceilings = NO_CEILINGS,
+        ceilings: CeilingSource = NO_CEILINGS,
         fail_open: bool = True,
         metrics: RateLimitMetrics | None = None,
     ) -> None:
@@ -74,7 +76,7 @@ class RateLimiter:
 
     @property
     def ceilings(self) -> Ceilings:
-        return self._ceilings
+        return ceilings_from(self._ceilings)
 
     def resolve(self, gateway: ResolvedGateway) -> Effective:
         """What this gateway's limits actually come to, ceiling included.
@@ -84,7 +86,7 @@ class RateLimiter:
         disagree on the screen that exists to explain the enforcement.
         """
         return effective(
-            gateway.limits, ceilings=self._ceilings, global_models=gateway.global_models
+            gateway.limits, ceilings=self.ceilings, global_models=gateway.global_models
         )
 
     def begin(

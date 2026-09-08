@@ -1,7 +1,8 @@
 """Versioned JSONB configuration blobs.
 
 Three properties, shared by every settings blob in the product — a gateway's memory,
-logging and limits sections, a connector's chunking settings, and whatever task 17 adds.
+logging and limits sections, a connector's chunking settings, and the platform's own
+configuration.
 
 **Every field has a default, and unknown keys are ignored on load.** A row written before
 a field existed loads with the default; a row written by a *newer* build that has since
@@ -46,7 +47,7 @@ class ConfigBlob(BaseModel):
         return cls.model_validate(dict(stored or {}))
 
 
-def merge_config[BlobT: ConfigBlob](
+def merge_config[BlobT: BaseModel](
     schema: type[BlobT],
     stored: Mapping[str, Any] | None,
     patch: Mapping[str, Any] | None,
@@ -62,6 +63,11 @@ def merge_config[BlobT: ConfigBlob](
 
     ``field`` names the form field, so the 422 lands on the section the user is editing
     instead of in a banner.
+
+    Bounded by :class:`~pydantic.BaseModel` rather than by :class:`ConfigBlob`, because
+    task 17's platform sections are plain models — the merge only ever reads a schema's
+    fields and validates against it, and requiring the versioned base would have meant
+    giving six settings sections a ``version`` field to satisfy a type parameter.
     """
     merged = _deep_merge(dict(stored or {}), dict(patch or {}))
     _reject_unknown(schema, merged, field=field)

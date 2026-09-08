@@ -692,6 +692,7 @@ async def directory() -> AsyncIterator[DirectoryHarness]:
             application.state.memory_preview = world.auth.preview
         application.state.monitoring_service = world.auth.monitoring
         application.state.support_access = world.auth.support_access
+        application.state.platform_service = world.platform.service
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield DirectoryHarness(app=application, client=http_client, world=world)

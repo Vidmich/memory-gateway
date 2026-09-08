@@ -3,6 +3,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   useDeleteDocument,
   useDocumentChunks,
+  useReindexConnector,
   useReindexDocument,
   useSearch,
   useUpdateConnector,
@@ -365,6 +366,7 @@ export function ChunkInspector({
 // ---------------------------------------------------------------------------
 
 export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
+  const reindex = useReindexConnector(connector.id)
   const [form, setForm] = useState<ChunkingForm>(() => chunkingForm(connector.chunking))
   const update = useUpdateConnector(connector.id)
   const { notify } = useToast()
@@ -451,6 +453,31 @@ export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
         <p className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
           {warning}
         </p>
+      ) : null}
+
+      {connector.reindex_required ? (
+        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <p>
+            The chunking has changed since these documents were indexed, so their chunks are
+            stale. Reindexing runs them through the pipeline again.
+          </p>
+          <button
+            type="button"
+            onClick={() =>
+              reindex.mutate(undefined, {
+                onSuccess: (result: { documents: number }) =>
+                  notify(
+                    `Reindexing ${result.documents} document${
+                      result.documents === 1 ? '' : 's'
+                    }.`,
+                  ),
+              })
+            }
+            className="mt-2 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-100"
+          >
+            {reindex.isPending ? 'Queueing…' : 'Reindex every document'}
+          </button>
+        </div>
       ) : null}
 
       <SubmitButton busy={update.isPending} disabled={!changed || problem !== null}>

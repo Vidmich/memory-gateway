@@ -16,6 +16,12 @@ from app.db.models.end_user import EndUser, MemoryFact
 from app.db.models.gateway import Gateway, GatewayTarget
 from app.db.models.invitation import Invitation
 from app.db.models.organization import Organization
+from app.db.models.platform import (
+    MaintenanceRun,
+    PlatformSetting,
+    ReindexRun,
+    ReindexTarget,
+)
 from app.db.models.request_log import RequestLog, Transcript
 from app.db.models.session import UserSession
 from app.db.models.upstream_model import UpstreamModel
@@ -32,8 +38,12 @@ __all__ = [
     "GatewayTarget",
     "Invitation",
     "JobDeadLetter",
+    "MaintenanceRun",
     "MemoryFact",
     "Organization",
+    "PlatformSetting",
+    "ReindexRun",
+    "ReindexTarget",
     "RequestLog",
     "Transcript",
     "UpstreamModel",

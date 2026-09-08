@@ -51,6 +51,11 @@ export const NAVIGATION: readonly NavEntry[] = [
     section: 'Platform',
     capabilities: ['platform:administer'],
   },
+  { to: '/platform/settings', label: 'Settings', capabilities: ['platform:administer'] },
+  // Maintenance rather than "Jobs": what an operator comes here for is the state of the
+  // data lifecycle — runway, what retention took, whether a reindex is running — and the
+  // fact that jobs produce it is an implementation detail of the answer.
+  { to: '/platform/maintenance', label: 'Maintenance', capabilities: ['platform:administer'] },
 ]
 
 export function visibleNavigation(

@@ -9,7 +9,7 @@ misconfigured, or the extractor decided the sentence was not durable. One button
 the real pass synchronously and reports what it did answers all three.
 
 **The settings are a partial merge, not a replace.** ``organizations.settings`` also holds
-the logging defaults and whatever task 17 adds, so this writes one key inside it and leaves
+the logging defaults, so this writes one key inside it and leaves
 the rest — through :func:`~app.schemas.config.merge_config`, which is strict about unknown
 keys for the same reason every other blob in this system is: a stored setting nothing reads
 is indistinguishable from a setting that does not work, and the second is what the operator

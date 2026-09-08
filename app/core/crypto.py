@@ -88,6 +88,41 @@ class SecretBox:
         return plaintext.decode("utf-8")
 
 
+def rewrap(blob: bytes, *, old: SecretBox, new: SecretBox) -> bytes:
+    """Re-encrypt a credential's data key under a new master key, leaving the payload alone.
+
+    This is what the envelope was for. Rotating ``ENCRYPTION_MASTER_KEY`` touches 48 bytes
+    per row rather than the credential itself, so the plaintext is never held longer than
+    the microseconds it takes to unwrap a key — and never at all, in fact: the payload
+    ciphertext and its nonce are copied across byte for byte.
+
+    Both layers authenticate the same constant AAD, so a blob that has been through this
+    is indistinguishable from one written by ``encrypt`` under the new key. That matters
+    more than it sounds: it means rotation leaves no second format to support, and a
+    half-finished rotation is a table with rows under two master keys rather than rows in
+    two shapes.
+    """
+    if len(blob) < _HEADER_BYTES:
+        raise DecryptionError("ciphertext is truncated")
+    if blob[0] != VERSION:
+        raise DecryptionError(f"unsupported ciphertext version {blob[0]}")
+
+    wrap_nonce = blob[1 : 1 + _NONCE_BYTES]
+    wrapped = blob[1 + _NONCE_BYTES : 1 + _NONCE_BYTES + _WRAPPED_KEY_BYTES]
+    remainder = blob[1 + _NONCE_BYTES + _WRAPPED_KEY_BYTES :]
+
+    try:
+        data_key = AESGCM(old.master_key).decrypt(wrap_nonce, wrapped, _AAD)
+    except InvalidTag as exc:
+        raise DecryptionError("could not decrypt credential") from exc
+
+    # A fresh nonce for the new wrap. Reusing the old one under a different key would be
+    # safe in AES-GCM's terms and is still the wrong habit to write down.
+    fresh_nonce = os.urandom(_NONCE_BYTES)
+    rewrapped = AESGCM(new.master_key).encrypt(fresh_nonce, data_key, _AAD)
+    return bytes([VERSION]) + fresh_nonce + rewrapped + remainder
+
+
 def secret_hint(plaintext: str) -> str:
     """A non-reversible display form, per SPEC §5.4: ``sk-...4f2a``.
 

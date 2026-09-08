@@ -223,3 +223,43 @@ async def test_a_dead_store_is_logged_loudly(
         await LoginThrottle(BrokenStore(), settings).check(ALICE)
 
     assert any("throttle unavailable" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# the unlock path (task 18)
+# ---------------------------------------------------------------------------
+
+
+async def test_unlocking_an_email_lets_the_next_attempt_through(settings: Settings) -> None:
+    """The documented way out of a lockout. It matters most during an incident, which is
+    exactly when an administrator is both mistyping their password and being attacked."""
+    throttle = LoginThrottle(MemoryThrottleStore(), settings)
+    attempt = Attempt(email="admin@example.com", ip=None)
+    for _ in range(settings.login_max_attempts):
+        await throttle.record_failure(attempt)
+    with pytest.raises(TooManyAttempts):
+        await throttle.check(attempt)
+
+    cleared = await throttle.unlock(attempt)
+
+    assert cleared == 1
+    await throttle.check(attempt)
+
+
+async def test_unlocking_reports_nothing_when_no_counter_was_set(settings: Settings) -> None:
+    """An unlock that reports zero means the lockout is somewhere else — a suspended
+    organization, say, which refuses login for a different reason with a different
+    message. Worth being able to tell apart at 3 a.m."""
+    throttle = LoginThrottle(MemoryThrottleStore(), settings)
+
+    assert await throttle.unlock(Attempt(email="nobody@example.com", ip=None)) == 0
+
+
+async def test_an_address_and_an_email_can_be_cleared_together(settings: Settings) -> None:
+    throttle = LoginThrottle(MemoryThrottleStore(), settings)
+    attempt = Attempt(email="admin@example.com", ip="203.0.113.9")
+    for _ in range(settings.login_max_attempts):
+        await throttle.record_failure(attempt)
+
+    assert await throttle.unlock(attempt) == 2
+    await throttle.check(attempt)

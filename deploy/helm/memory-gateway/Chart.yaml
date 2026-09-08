@@ -1,0 +1,22 @@
+apiVersion: v2
+name: memory-gateway
+description: >-
+  AI model gateway that augments requests with memory. Deploys the API and the ingestion
+  workers from one image; Postgres, Redis, Qdrant and object storage are external.
+type: application
+
+# The chart's own version, bumped when the templates change.
+version: 0.1.0
+# The application version this chart defaults to deploying. `image.tag` overrides it, and
+# a deployment that pins a digest sets `image.digest` instead.
+appVersion: "0.1.0"
+
+keywords:
+  - llm
+  - gateway
+  - rag
+  - openai
+
+annotations:
+  # Read by tooling that renders release notes from a chart repository.
+  artifacthub.io/containsSecurityUpdates: "false"

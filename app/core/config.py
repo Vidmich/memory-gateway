@@ -7,12 +7,15 @@ process immediately with a readable message rather than surfacing at the first r
 from __future__ import annotations
 
 import base64
+import ipaddress
 import sys
 import uuid
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.ssrf import UrlPolicy, build_policy
 
 Environment = Literal["dev", "test", "staging", "prod"]
 
@@ -202,6 +205,49 @@ class Settings(BaseSettings):
     #: which runs in a thread, so this is about provider concurrency rather than CPU.
     worker_max_jobs: int = Field(default=8, ge=1, le=128)
 
+    # -- outbound request guard (task 18, SPEC §8.4) -----------------------
+    #: What a tenant-supplied ``base_url`` may resolve to.
+    #:
+    #: ``auto`` blocks private, loopback and link-local addresses in production and allows
+    #: them everywhere else, which is the only default that is right in both places: a
+    #: developer pointing a model at ``http://localhost:11434`` is running Ollama, and a
+    #: customer doing the same in production is reading the pod's own metadata service.
+    #: ``block`` and ``allow`` say so explicitly and ignore the environment.
+    upstream_private_addresses: Literal["auto", "block", "allow"] = "auto"
+    #: Hostnames exempted from the guard — a self-hosted model on the cluster network.
+    #: Exact matches, lowercased; there is no wildcard, because a wildcard here is an
+    #: allowlist somebody reads as narrower than it is.
+    upstream_allowed_hosts: tuple[str, ...] = ()
+    #: Address ranges exempted from the guard, whatever name resolves into them.
+    upstream_allowed_cidrs: tuple[str, ...] = ()
+
+    # -- hardening (task 18) -----------------------------------------------
+    #: Ceiling on a request body outside the upload path, which streams and has its own
+    #: per-file cap. Generous for a chat completion: 1 MiB of JSON is on the order of a
+    #: quarter of a million tokens, which no context window accepts.
+    max_request_body_bytes: int = Field(default=4 * 1024 * 1024, ge=64 * 1024)
+    #: ``Strict-Transport-Security`` max-age, sent only in production. Sending it from a
+    #: deployment reachable over plain HTTP pins every browser that saw it to a scheme the
+    #: host does not serve, and the fix is on those machines rather than on this one.
+    hsts_max_age_seconds: int = Field(default=365 * 24 * 3600, ge=0)
+    #: Seconds to keep serving after ``SIGTERM`` before the server stops accepting.
+    #: Readiness fails immediately either way; this is the window in which the load
+    #: balancer notices. ``terminationGracePeriodSeconds`` has to exceed this plus the
+    #: longest upstream call, which is what the Helm chart computes.
+    shutdown_drain_seconds: float = Field(default=10.0, ge=0)
+
+    # -- tracing (SPEC §10.5) ----------------------------------------------
+    #: OTLP/HTTP endpoint of a collector, e.g. ``http://otel-collector:4318/v1/traces``.
+    #: Empty disables tracing entirely and leaves the OpenTelemetry no-op tracer in place.
+    otel_exporter_endpoint: str = ""
+    #: Falls back to ``service_name``. Set separately when the API and the worker should
+    #: appear as one service in the trace view rather than two.
+    otel_service_name: str = ""
+    #: Head sampling ratio. Errors are *not* handled here — the decision is taken before
+    #: anything has failed — but by the collector's tail sampler; see
+    #: ``deploy/otel/collector.yaml``.
+    otel_sample_ratio: float = Field(default=0.05, ge=0.0, le=1.0)
+
     # -- probes ------------------------------------------------------------
     readiness_timeout_seconds: float = Field(default=2.0, gt=0)
 
@@ -223,6 +269,16 @@ class Settings(BaseSettings):
             raise ValueError(f"must decode to exactly 32 bytes, got {len(raw)}")
         return value
 
+    @field_validator("upstream_allowed_cidrs")
+    @classmethod
+    def _require_cidrs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for entry in value:
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"{entry!r} is not a CIDR range") from exc
+        return value
+
     @field_validator("public_base_url", "s3_endpoint", "qdrant_url")
     @classmethod
     def _require_http_url(cls, value: str) -> str:
@@ -242,6 +298,25 @@ class Settings(BaseSettings):
                 "used in production; configure a real embedding model."
             )
         return self
+
+    @property
+    def upstream_url_policy(self) -> UrlPolicy:
+        """What a tenant-supplied URL is allowed to reach.
+
+        Built here rather than in ``create_app`` because two very different callers need
+        the same answer: the transport that dials the URL, and the catalog service that
+        refuses to store one. A policy assembled twice is a policy that can disagree with
+        itself, which for a security control means a URL refused on save and dialled at
+        request time, or the other way round.
+        """
+        return build_policy(
+            allow_private=(
+                self.upstream_private_addresses == "allow"
+                or (self.upstream_private_addresses == "auto" and not self.is_production)
+            ),
+            allowed_hosts=self.upstream_allowed_hosts,
+            allowed_cidrs=self.upstream_allowed_cidrs,
+        )
 
     @property
     def ui_base_url(self) -> str:

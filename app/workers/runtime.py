@@ -145,7 +145,9 @@ def build_ingestion(
     store = PostgresConnectorStore(clients.session_factory)
     objects = S3ObjectStore(clients.storage, clients.bucket)
     vectors = QdrantVectorStore(clients.qdrant)
-    embedder = build_embedder(embedding_settings(settings, embedding), clients.http)
+    # `internal`, not `http`: the embedding endpoint is the operator's own and is
+    # routinely on a private address, which the guarded pool exists to refuse.
+    embedder = build_embedder(embedding_settings(settings, embedding), clients.internal)
     # One tokenizer for the process. Loading the BPE vocabulary is expensive and the
     # object is stateless once loaded.
     tokenizer = build_tokenizer()
@@ -338,7 +340,7 @@ def build_platform(
         # A fresh embedder per run rather than the serving one: the whole point of a
         # reindex is to embed with a model the serving path is not using yet.
         embedder_for=lambda choice: build_embedder(
-            embedding_settings(settings, choice), clients.http
+            embedding_settings(settings, choice), clients.internal
         ),
     )
     eraser = OrganizationEraser(

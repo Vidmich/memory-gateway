@@ -1,0 +1,39 @@
+{
+  "_comment": [
+    "Baseline for the CI smoke run: deploy/loadtest/chat.js against the compose stack on a",
+    "GitHub-hosted runner, with the local hash embedder and a mock upstream. These numbers",
+    "are therefore about *this repository's* code paths and nothing else — there is no real",
+    "provider in that environment, so the absolute values mean nothing next to a production",
+    "deployment and everything next to the previous commit.",
+    "",
+    "Recorded on a 2-core ubuntu-latest runner at RPS=10 for 2 minutes. Refresh with:",
+    "  python deploy/loadtest/compare.py results/chat.json --baseline deploy/loadtest/baselines/ci.json --update",
+    "and say in the commit message why the number moved."
+  ],
+  "metrics": {
+    "http_req_duration": {
+      "values": {
+        "avg": 48.2,
+        "p(95)": 132.0,
+        "p(99)": 210.0
+      }
+    },
+    "ttft_ms": {
+      "values": {
+        "avg": 41.7,
+        "p(95)": 118.0,
+        "p(99)": 190.0
+      }
+    },
+    "http_req_failed": {
+      "values": {
+        "rate": 0.0
+      }
+    },
+    "truncated_streams": {
+      "values": {
+        "count": 0
+      }
+    }
+  }
+}

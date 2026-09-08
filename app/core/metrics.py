@@ -80,6 +80,28 @@ class JobMetrics:
 
 
 @dataclass(frozen=True)
+class ProxyMetrics:
+    """The data plane, as an operator sees it (task 18).
+
+    ``overhead`` is the one that matters. SPEC §4.2 promises the gateway adds under 150 ms
+    p95 over a bare upstream call, and this is that number measured on production traffic
+    rather than in a load test: total request time minus the time the provider had the
+    request. The load suite in ``deploy/loadtest`` measures the same quantity a second way,
+    against a direct-to-provider baseline, because a number the service computes about
+    itself should have an outside check.
+
+    Labelled by gateway, which is the one place in this file that accepts per-tenant
+    cardinality. It is bounded — a gateway is a configured object, not a user — and the
+    alternative is a "per-tenant traffic" dashboard that cannot name a tenant. ``model`` is
+    the *upstream* model that answered, so an A/B split shows as two series.
+    """
+
+    requests: Counter
+    duration: Histogram
+    overhead: Histogram
+
+
+@dataclass(frozen=True)
 class RetrievalMetrics:
     """Document retrieval, as three numbers (SPEC §6.3, task 10).
 
@@ -255,6 +277,7 @@ class Metrics:
     rate_limits: RateLimitMetrics
     audit: AuditMetrics
     maintenance: MaintenanceMetrics
+    proxy: ProxyMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -303,6 +326,39 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         rate_limits=build_rate_limit_metrics(registry),
         audit=build_audit_metrics(registry),
         maintenance=build_maintenance_metrics(registry),
+        proxy=build_proxy_metrics(registry),
+    )
+
+
+def build_proxy_metrics(registry: CollectorRegistry) -> ProxyMetrics:
+    """Split out like the others, so the data plane's counters can be built in a test."""
+    return ProxyMetrics(
+        requests=Counter(
+            "proxy_requests_total",
+            "Data-plane requests by gateway, upstream model and status code.",
+            labelnames=("gateway", "model", "status"),
+            registry=registry,
+        ),
+        duration=Histogram(
+            "proxy_request_duration_seconds",
+            "End-to-end data-plane request duration, by gateway.",
+            labelnames=("gateway",),
+            # A completion is seconds, not milliseconds, and a long one is tens of
+            # seconds; the default HTTP buckets would put most of them in the last bin.
+            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),
+            registry=registry,
+        ),
+        overhead=Histogram(
+            "gateway_overhead_seconds",
+            "Time added by the gateway: total request duration minus the upstream call.",
+            labelnames=("gateway",),
+            # Buckets chosen around the budget rather than around the observed spread:
+            # 0.15 is in the list so the SLO is a single `histogram_quantile` away, and
+            # so an alert can be written against a bucket boundary instead of an
+            # interpolation between two of them.
+            buckets=(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25, 0.5, 1.0, 2.5),
+            registry=registry,
+        ),
     )
 
 

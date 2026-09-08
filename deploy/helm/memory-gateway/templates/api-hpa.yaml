@@ -1,0 +1,50 @@
+{{- if .Values.api.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "memory-gateway.fullname" . }}-api
+  labels:
+    {{- include "memory-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "memory-gateway.fullname" . }}-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.autoscaling.targetCPUUtilizationPercentage }}
+    {{- if gt (int .Values.api.autoscaling.targetRequestsPerSecond) 0 }}
+    # Request rate as well as CPU, because the request path is I/O bound: a pod waiting on
+    # a provider sits at low CPU and is completely full, and CPU alone would never scale it
+    # out. Needs a metrics adapter publishing `http_requests_per_second` as a Pods metric.
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.api.autoscaling.targetRequestsPerSecond | quote }}
+    {{- end }}
+  behavior:
+    scaleDown:
+      # Slow down, fast up. A pod removed while it holds a 60-second stream costs a
+      # customer their response; a pod added unnecessarily costs a few cents.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+{{- end }}

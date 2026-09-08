@@ -1,0 +1,64 @@
+# Dependency updates (task 18).
+#
+# Weekly rather than daily, and grouped rather than one pull request per package. A repo
+# that opens twelve dependency pull requests every morning is a repo where nobody reads
+# any of them, which is the failure mode this is meant to prevent rather than cause.
+#
+# Security updates are the exception: GitHub raises those immediately and outside these
+# groups, which is the behaviour to want.
+
+version: 2
+
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Everything that is not a major bump, in one pull request. The suite is the review:
+      # 3200 checks and a strict type-checker say more about a patch bump than a human
+      # reading a changelog does.
+      python-minor:
+        update-types: [minor, patch]
+      # Majors on their own, because those are the ones that need reading.
+      python-major:
+        update-types: [major]
+    labels:
+      - dependencies
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      web-minor:
+        update-types: [minor, patch]
+      web-major:
+        update-types: [major]
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    labels:
+      - dependencies
+
+  # The base images. A Python or Node base image with a patched CVE is the most common
+  # reason the image scan in CI goes red, and this is what closes it.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - security

@@ -1,0 +1,148 @@
+{{- if .Values.prometheusRule.enabled }}
+{{- $runbook := .Values.prometheusRule.runbookBaseUrl -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "memory-gateway.fullname" . }}
+  labels:
+    {{- include "memory-gateway.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: memory-gateway.slo
+      rules:
+        # Every alert below carries a `runbook_url`, and every one of those runbooks
+        # exists — docs/runbooks/. An alert without a runbook is a page that starts with
+        # the responder reading source code at three in the morning.
+        - alert: GatewayErrorRateHigh
+          expr: |
+            sum(rate(proxy_requests_total{status=~"5.."}[5m]))
+              / clamp_min(sum(rate(proxy_requests_total[5m])), 0.001) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: More than 5% of data-plane requests are failing
+            description: >-
+              {{ `{{ $value | humanizePercentage }}` }} of gateway requests returned 5xx
+              over the last five minutes. This is the gateway's own failures plus
+              unrecoverable upstream ones; UpstreamFailureRateHigh separates the two.
+            runbook_url: {{ $runbook }}/upstream-outage.md
+
+        - alert: GatewayOverheadBudgetBreached
+          # SPEC §4.2: the gateway adds under 150 ms p95 over the bare upstream call.
+          # `gateway_overhead_seconds` is that quantity measured per request — total minus
+          # the time the provider had it — so this is the spec's number, not a proxy for it.
+          expr: |
+            histogram_quantile(
+              0.95, sum by (le) (rate(gateway_overhead_seconds_bucket[10m]))
+            ) > 0.15
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Gateway overhead p95 is above the 150 ms budget
+            description: >-
+              p95 added latency is {{ `{{ $value | humanizeDuration }}` }}. Retrieval is
+              the usual cause; the per-phase spans say which half.
+            runbook_url: {{ $runbook }}/latency-budget.md
+
+    - name: memory-gateway.upstreams
+      rules:
+        - alert: UpstreamFailureRateHigh
+          expr: |
+            sum by (model) (rate(routing_attempts_total{outcome="failed"}[10m]))
+              / clamp_min(sum by (model) (rate(routing_attempts_total[10m])), 0.001) > 0.2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Upstream {{ `{{ $labels.model }}` }} is failing one attempt in five
+            description: >-
+              A failover chain hides this from customers until the last target goes too,
+              which is why it is a warning on the model rather than an error on the request.
+            runbook_url: {{ $runbook }}/upstream-outage.md
+
+    - name: memory-gateway.subsystems
+      rules:
+        - alert: RequestLogsDropped
+          # The log queue sheds rather than blocking a request (task 07). Shedding is
+          # correct and still means somebody's monitoring screen is now incomplete.
+          expr: sum(rate(logs_dropped_total[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Request-log records are being dropped
+            description: >-
+              Dropping by {{ `{{ $labels.reason }}` }}. `queue_pressure` means the flusher
+              cannot keep up with the database; `redaction_budget` means bodies are too
+              large to store.
+            runbook_url: {{ $runbook }}/log-queue-drops.md
+
+        - alert: WorkerBacklogGrowing
+          expr: jobs_queue_depth > 500
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Ingestion queue depth is {{ `{{ $value }}` }}
+            description: >-
+              Documents are being enqueued faster than the workers finish them. Uploads
+              still succeed; they simply sit at `pending`.
+            runbook_url: {{ $runbook }}/worker-backlog.md
+
+        - alert: PartitionRunwayLow
+          # Task 17. This one is not a slow query when it fires — it is an INSERT that
+          # fails, so it pages rather than warns, with a week of margin to act in.
+          expr: min by (table) (partition_runway_days) < 7
+          for: 30m
+          labels:
+            severity: critical
+          annotations:
+            summary: Only {{ `{{ $value }}` }} days of partitions remain for {{ `{{ $labels.table }}` }}
+            description: >-
+              The nightly job creates thirty days ahead. If the runway is falling, that job
+              is not running — every request logged after the last partition fails to insert.
+            runbook_url: {{ $runbook }}/partition-runway.md
+
+        - alert: RateLimiterUnavailable
+          # Task 14 fails open: requests are served and this counter moves. The exposure
+          # while it is open is the operator's own upstream credential.
+          expr: sum(rate(rate_limit_unavailable_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Redis is unreachable and rate limiting is failing open
+            description: >-
+              Every gateway is currently unlimited. Login throttling is failing open too.
+            runbook_url: {{ $runbook }}/redis-outage.md
+
+        - alert: DistillationFailureRateHigh
+          expr: |
+            sum(rate(distillation_passes_total{outcome="failed"}[30m]))
+              / clamp_min(sum(rate(distillation_passes_total[30m])), 0.001) > 0.25
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: A quarter of memory write-back passes are failing
+            description: >-
+              Conversation memory stops learning while this holds. Nothing customer-facing
+              breaks, which is exactly why it needs an alert rather than a complaint.
+            runbook_url: {{ $runbook }}/distillation-failures.md
+
+        - alert: ApiDown
+          expr: |
+            sum(up{job=~".*{{ include "memory-gateway.fullname" . }}.*"}) == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: No API replica is being scraped
+            description: Either every replica is down, or the ServiceMonitor stopped matching.
+            runbook_url: {{ $runbook }}/api-down.md
+{{- end }}

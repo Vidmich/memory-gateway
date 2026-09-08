@@ -1,0 +1,304 @@
+# Default values for memory-gateway.
+#
+# Two rules this file follows, and neither is negotiable:
+#
+#   1. **No secrets here.** Not the database URL (it carries a password), not the master
+#      key, not a provider credential. Everything secret comes from a Kubernetes Secret
+#      the operator created, or from one an external-secrets operator writes — see
+#      `secrets.existingSecret` below. Chart values end up in the release's stored
+#      manifest, in `helm get values`, in CI logs and in whatever git repository holds the
+#      environment's overrides, and none of those is a place for a master key.
+#
+#   2. **api and worker are separate everything.** They scale on completely different
+#      signals — request rate against queue depth — and sharing a replica count means one
+#      of them is always wrong.
+
+image:
+  repository: ghcr.io/memory-gateway/memory-gateway
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Set to pin by content rather than by tag: `sha256:...`. Takes precedence over `tag`.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# configuration
+# ---------------------------------------------------------------------------
+# Rendered into a ConfigMap and mounted with `envFrom`, so a change to any of these rolls
+# the pods: the deployment carries a checksum annotation over this map.
+config:
+  environment: prod
+  logLevel: INFO
+  # Where clients reach the data plane. Used in the URLs the UI shows people to copy.
+  publicBaseUrl: ""
+  # Where the UI lives, if it is not this same origin. Empty is correct for the normal
+  # deployment, where this process serves the SPA.
+  appBaseUrl: ""
+  # Only for a split-origin deployment. Empty means no CORS middleware at all, which is
+  # what same-origin should have.
+  corsOrigins: []
+
+  qdrantUrl: ""
+  s3Endpoint: ""
+  s3Bucket: ""
+  s3Region: us-east-1
+
+  # SPEC §9.4. `hash` is the local lexical embedder and the application refuses to start
+  # with it when environment is `prod`, so this has to be set for any real deployment.
+  embedding:
+    provider: openai
+    model: text-embedding-3-small
+    dimension: 1536
+    baseUrl: https://api.openai.com/v1
+    batchSize: 96
+    maxConcurrency: 4
+
+  # Task 18's SSRF guard. `block` rather than `auto` even though `auto` would compute the
+  # same answer from `environment: prod` — this is a security control, and a security
+  # control that depends on another setting being right is one somebody turns off by
+  # accident while changing something else.
+  upstream:
+    privateAddresses: block
+    allowedHosts: []
+    allowedCidrs: []
+    maxConnections: 200
+    maxKeepaliveConnections: 50
+    # Ceiling on a whole routing chain. The termination grace period is checked against
+    # this: a pod cannot drain a request it is still allowed to be making.
+    routingDeadlineSeconds: 120
+
+  # Anything else, verbatim, as `NAME: value`. The escape hatch for a setting this chart
+  # has not grown a field for — which is most of them, because `Settings` has about sixty.
+  extra: {}
+
+# Non-secret env applied to every pod, e.g. from a downward API reference.
+extraEnv: []
+# Additional `envFrom` sources — an ExternalSecret's target, a second ConfigMap.
+extraEnvFrom: []
+
+secrets:
+  # A Secret whose *keys are the environment variable names*: DATABASE_URL, REDIS_URL,
+  # S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, ENCRYPTION_MASTER_KEY, JWT_SIGNING_KEY, and
+  # optionally QDRANT_API_KEY and EMBEDDING_API_KEY. Mounted with `envFrom`, so adding a
+  # variable to the Secret needs no chart change.
+  #
+  # The chart never creates this. Creating it would mean the values file holds the
+  # contents, which is rule 1.
+  existingSecret: ""
+
+# ---------------------------------------------------------------------------
+# the API
+# ---------------------------------------------------------------------------
+api:
+  replicaCount: 2
+
+  # How long the process keeps serving after SIGTERM before it stops accepting.
+  # Readiness fails immediately; this is the window in which the endpoint removal reaches
+  # every kube-proxy. See app/core/lifecycle.py.
+  drainSeconds: 10
+
+  # Must exceed drainSeconds + config.upstream.routingDeadlineSeconds, or a deploy kills
+  # completions that were still inside their own budget. The chart refuses to render if it
+  # does not — see templates/_helpers.tpl.
+  terminationGracePeriodSeconds: 180
+
+  # Sized from the load test in deploy/loadtest, not guessed. The request path is I/O
+  # bound apart from tokenization; the memory floor is the tiktoken vocabulary plus the
+  # connection pools.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      # No CPU limit on purpose: throttling a latency-sensitive process to smooth out a
+      # burst is how a p95 becomes a p99 nobody can explain. The HPA is what bounds cost.
+      memory: 1Gi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 12
+    targetCPUUtilizationPercentage: 70
+    # Requests per second per pod. Needs a metrics adapter that exposes
+    # `http_requests_per_second` as a Pods metric (prometheus-adapter, or KEDA); leave at
+    # 0 to autoscale on CPU alone.
+    targetRequestsPerSecond: 0
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  # Spread across nodes so a single node's loss is not the whole deployment. Soft rather
+  # than required: on a two-node cluster a required rule leaves pods unschedulable, which
+  # is a worse availability outcome than co-location.
+  antiAffinity: soft
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  # Set to override the chart's own affinity block entirely.
+  affinity: {}
+
+  probes:
+    # Liveness checks nothing but the process; a dependency outage must not restart the
+    # pod into the same outage.
+    liveness:
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 2
+    # Cold start is dominated by the tiktoken vocabulary fetch and the first connection to
+    # each backing service. 60 × 2s of budget before the liveness probe takes over.
+    startup:
+      periodSeconds: 2
+      failureThreshold: 60
+
+# ---------------------------------------------------------------------------
+# the workers
+# ---------------------------------------------------------------------------
+worker:
+  replicaCount: 2
+  # Jobs are long — a large PDF is minutes — and arq finishes the job in hand on SIGTERM.
+  terminationGracePeriodSeconds: 600
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    # Queue depth per pod, as an External metric named `jobs_queue_depth`. Needs
+    # prometheus-adapter or KEDA to publish it; without one, leave autoscaling off and
+    # size by hand — the queue depth alert is what tells you to.
+    queueDepthPerPod: 20
+    metricName: jobs_queue_depth
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  antiAffinity: soft
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# The second worker, reading the PDF and Office queue. Optional: with none deployed those
+# jobs wait, which is a visible backlog rather than a silent loss.
+heavyWorker:
+  enabled: true
+  replicaCount: 1
+  terminationGracePeriodSeconds: 900
+  resources:
+    requests:
+      cpu: 1000m
+      # Extraction runs in subprocesses with their own address-space limit; this is that
+      # limit times EXTRACTION_WORKERS plus the parent.
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ---------------------------------------------------------------------------
+# migrations
+# ---------------------------------------------------------------------------
+# A pre-upgrade hook, so the schema is in place before a single new pod starts — and a
+# pre-install hook, so a fresh install has one at all.
+#
+# **Migrations must be backward-compatible with the release that is still running.**
+# During a rolling deploy both versions serve at once. Expand in one release, contract in
+# a later one. CONTRIBUTING.md states the rule; this job is what makes breaking it visible
+# immediately rather than at the first request to an old pod.
+migrations:
+  enabled: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  podAnnotations: {}
+
+# ---------------------------------------------------------------------------
+# ingress
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+  annotations: {}
+  tls:
+    enabled: true
+    secretName: ""
+  # Enforced at the edge as well as in the application. The app caps ordinary bodies at
+  # MAX_REQUEST_BODY_BYTES and streams uploads with their own per-file ceiling; this is
+  # the number that keeps a hostile upload from reaching the process at all.
+  maxBodySize: 50m
+  # Uploads and long completions both need this above the default 60s.
+  proxyTimeoutSeconds: 300
+
+# ---------------------------------------------------------------------------
+# observability
+# ---------------------------------------------------------------------------
+tracing:
+  enabled: false
+  # OTLP/HTTP. The collector in deploy/otel/collector.yaml is where tail sampling happens.
+  endpoint: http://otel-collector:4318/v1/traces
+  sampleRatio: 0.05
+  serviceName: ""
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+prometheusRule:
+  enabled: false
+  labels: {}
+  # Every alert links to a runbook; this is where they live.
+  runbookBaseUrl: https://github.com/memory-gateway/memory-gateway/blob/main/docs/runbooks
+
+# ---------------------------------------------------------------------------
+# pod security
+# ---------------------------------------------------------------------------
+# Matches what the image supports: uid 10001, nothing written outside /tmp. The emptyDir
+# mounted at /tmp is what makes readOnlyRootFilesystem work — tiktoken caches its
+# vocabulary there, and Python writes nothing else.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL

@@ -1,0 +1,115 @@
+name: load test
+
+# Not on every pull request. The stack takes a couple of minutes to come up and the run
+# itself is two more, which is a poor trade against how often a latency regression is
+# actually introduced. It runs when something on the request path changes, on a schedule,
+# and on demand.
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "deploy/loadtest/**"
+      - "deploy/compose/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  schedule:
+    # 04:00 UTC, after nothing in particular — a nightly baseline is what makes a slow
+    # drift visible, which is the kind of regression a per-commit gate never catches.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: loadtest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: chat.js against the compose stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - run: uv sync --all-groups
+
+      - name: install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      # A stand-in provider, so the run costs nothing and has no rate limit. The absolute
+      # numbers mean nothing against it; the change between commits is the point.
+      - name: start the mock upstream
+        run: |
+          uv run python deploy/loadtest/mock_upstream.py --port 9099 --delay-ms 40 &
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:9099/healthz && break
+            sleep 1
+          done
+
+      - name: start the stack
+        run: |
+          docker compose -f deploy/compose/docker-compose.yml up -d --build api worker postgres redis qdrant minio minio-init
+          for _ in $(seq 1 60); do
+            curl -sf http://localhost:8000/readyz && break
+            sleep 2
+          done
+          curl -sf http://localhost:8000/readyz
+
+      # Seeds the superadmin, a model pointing at the mock, the demo gateway and a key.
+      # `host.docker.internal` because the mock runs on the runner and the API in a
+      # container; the compose file maps it on Linux runners via the extra host below.
+      - name: seed
+        id: seed
+        env:
+          OPENAI_BASE_URL: http://172.17.0.1:9099/v1
+          OPENAI_MODEL: mock
+        run: |
+          docker compose -f deploy/compose/docker-compose.yml exec -T \
+            -e OPENAI_BASE_URL="$OPENAI_BASE_URL" -e OPENAI_MODEL="$OPENAI_MODEL" \
+            api python -m app.cli seed --no-auth --rotate-key | tee seed.txt
+          key=$(grep -oE 'mg_[A-Za-z0-9_-]+' seed.txt | head -1)
+          test -n "$key" || { echo "no API key in the seed output" >&2; exit 1; }
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: run the suite
+        env:
+          GATEWAY_URL: http://localhost:8000
+          GATEWAY_SLUG: demo
+          GATEWAY_MODEL: demo
+          GATEWAY_API_KEY: ${{ steps.seed.outputs.key }}
+          RPS: "10"
+          DURATION: 2m
+        run: |
+          mkdir -p results
+          k6 run --summary-export=results/chat.json deploy/loadtest/chat.js
+
+      # The gate. Absolute numbers on a two-core shared runner are meaningless; a p95 that
+      # is 40% worse than the committed baseline is not.
+      - name: compare against the baseline
+        run: |
+          uv run python deploy/loadtest/compare.py results/chat.json \
+            --baseline deploy/loadtest/baselines/ci.json
+
+      - name: gateway logs on failure
+        if: failure()
+        run: docker compose -f deploy/compose/docker-compose.yml logs --tail=200 api worker
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loadtest-results
+          path: results/
+          retention-days: 14
+
+      - name: stop the stack
+        if: always()
+        run: docker compose -f deploy/compose/docker-compose.yml down -v

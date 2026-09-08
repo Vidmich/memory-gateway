@@ -1,0 +1,41 @@
+# The smallest set of overrides that renders: one API pod, one worker, no ingress, no
+# autoscaling, no alerts. What a staging namespace or a first look at the chart wants.
+#
+# `environment: staging` rather than `prod` is what makes the local embedder acceptable
+# here — the application refuses to start with `hash` in production, and the chart refuses
+# to render it, because retrieval quality degrades silently rather than failing.
+
+config:
+  environment: staging
+  logLevel: DEBUG
+  publicBaseUrl: http://localhost:8000
+  qdrantUrl: http://qdrant:6333
+  s3Endpoint: http://minio:9000
+  s3Bucket: memory-gateway
+  embedding:
+    provider: hash
+    model: hash-bow
+    dimension: 256
+    baseUrl: ""
+  upstream:
+    # Staging models often point at something on the cluster network. `auto` would allow
+    # it too — this says so out loud rather than depending on `environment`.
+    privateAddresses: allow
+
+api:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+
+worker:
+  replicaCount: 1
+  podDisruptionBudget:
+    enabled: false
+
+heavyWorker:
+  enabled: false
+
+secrets:
+  existingSecret: memory-gateway

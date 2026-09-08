@@ -17,6 +17,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+#: Set by :class:`app.core.tracing.TracingMiddleware` when a span is being recorded,
+#: so a log line can be taken to the trace it belongs to and back. Kept here, as a
+#: plain contextvar, rather than read from OpenTelemetry inside the formatter: logging
+#: has to work in a process with no tracing configured, and in one where the SDK is not
+#: installed at all.
+trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
 
 # Attributes LogRecord always carries; anything else was passed as `extra=` and is
 # promoted to a top-level field.
@@ -52,6 +58,10 @@ _RESERVED = frozenset(
 
 def get_request_id() -> str | None:
     return request_id_var.get()
+
+
+def get_trace_id() -> str | None:
+    return trace_id_var.get()
 
 
 @contextmanager
@@ -93,6 +103,10 @@ class JsonFormatter(logging.Formatter):
             "version": self.version,
             "request_id": request_id_var.get(),
         }
+        # Omitted rather than null when there is no trace: a field that is always
+        # present and almost always empty is a column every log query has to ignore.
+        if trace_id := trace_id_var.get():
+            payload["trace_id"] = trace_id
 
         for key, value in record.__dict__.items():
             if key not in _RESERVED and not key.startswith("_"):

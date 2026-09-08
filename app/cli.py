@@ -16,12 +16,18 @@ outage in which the worker was down while the debounce windows quietly expired. 
 idempotent because ``transcripts.distilled_at`` is — running it twice over the same range
 distils nothing the second time — and it is bounded by a date range because the alternative,
 "everything", is a bill nobody sized.
+
+``rotate-master-key`` and ``unlock-login`` are task 18's two operational procedures. Both
+are commands on the deployment host rather than endpoints, and deliberately: one holds two
+master keys at once, and the other is a way to clear a lockout that an attacker would like
+just as much as the locked-out administrator does.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import secrets
@@ -29,18 +35,20 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from redis.asyncio import Redis
 from sqlalchemy import ColumnExpressionArgument, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import keys
 from app.core.config import Settings, get_settings
-from app.core.crypto import SecretBox, secret_hint
+from app.core.crypto import DecryptionError, SecretBox, rewrap, secret_hint
 from app.core.ids import uuid7
 from app.core.passwords import Hasher, build_hasher
 from app.db.base import Base
 from app.db.models import ApiKey, Gateway, GatewayTarget, Organization, UpstreamModel, User
 from app.db.scoping import unscoped
 from app.db.session import create_engine, create_session_factory
+from app.services.login_throttle import Attempt, LoginThrottle, RedisThrottleStore
 
 DEMO_SLUG = "demo"
 DEMO_KEY_NAME = "demo"
@@ -147,9 +155,38 @@ def main(argv: list[str] | None = None) -> int:
         help="List what would be distilled and call no models",
     )
 
+    rotate = commands.add_parser(
+        "rotate-master-key",
+        help="Re-wrap stored credentials under a new ENCRYPTION_MASTER_KEY",
+    )
+    rotate.add_argument(
+        "--previous",
+        required=True,
+        help="The base64 master key the rows were written under. ENCRYPTION_MASTER_KEY "
+        "in the environment must already be the new one.",
+    )
+    rotate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be re-wrapped and write nothing",
+    )
+
+    unlock = commands.add_parser(
+        "unlock-login",
+        help="Clear login throttle counters for an email address or a client IP",
+    )
+    unlock.add_argument("--email", default=None, help="The account that is locked out")
+    unlock.add_argument("--ip", default=None, help="A client address that is locked out")
+
     args = parser.parse_args(argv)
     if args.command == "openapi":
         return dump_openapi()
+    if args.command == "rotate-master-key":
+        return asyncio.run(run_rotate(previous=args.previous, dry_run=args.dry_run))
+    if args.command == "unlock-login":
+        if not args.email and not args.ip:
+            raise SystemExit("give --email, --ip, or both")
+        return asyncio.run(run_unlock(email=args.email, ip=args.ip))
     if args.command == "distil-backfill":
         return asyncio.run(
             run_backfill(
@@ -181,6 +218,100 @@ def dump_openapi() -> int:
     from app.main import create_app
 
     print(json.dumps(create_app().openapi(), indent=2, sort_keys=True))
+    return 0
+
+
+async def run_rotate(*, previous: str, dry_run: bool) -> int:
+    """Re-wrap every stored credential from the previous master key to the current one.
+
+    The rotation procedure is: put the new key in ``ENCRYPTION_MASTER_KEY``, deploy, then
+    run this with the old one. Between those two steps the running service cannot read any
+    credential — which is why the deployment guide says to run it immediately, and why the
+    command exists rather than a documented ``UPDATE``.
+
+    **Resumable**, and that is the property that makes it safe to run against a live
+    table. Each row is tried against the *current* key first: a row that already reads is
+    left alone, so a run interrupted halfway can simply be run again, and a row written by
+    the application between the two runs is not disturbed. Committed in batches for the
+    same reason — a rotation should not hold one transaction over every credential the
+    platform has.
+    """
+    settings = get_settings()
+    current = SecretBox.from_settings(settings)
+    try:
+        old = SecretBox(master_key=base64.b64decode(previous, validate=True))
+    except Exception as exc:
+        raise SystemExit(f"--previous is not a base64 32-byte key: {exc}") from exc
+    if old.master_key == current.master_key:
+        raise SystemExit(
+            "--previous is the same key as ENCRYPTION_MASTER_KEY; set the new key in the "
+            "environment first, then run this with the old one."
+        )
+
+    engine = create_engine(settings)
+    rotated = already = failed = 0
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as session:
+            models = (
+                await session.execute(
+                    select(UpstreamModel)
+                    .where(UpstreamModel.credential_ciphertext.isnot(None))
+                    .execution_options(
+                        **unscoped("a rotation covers every organization's credentials")
+                    )
+                )
+            ).scalars()
+            for model in models:
+                blob = model.credential_ciphertext
+                if blob is None:  # pragma: no cover - the WHERE clause excludes these
+                    continue
+                try:
+                    current.decrypt(blob)
+                except DecryptionError:
+                    pass
+                else:
+                    # Already on the current key. Skipping it is what makes an interrupted
+                    # run safe to repeat, and what keeps a row the application wrote
+                    # between two runs from being disturbed.
+                    already += 1
+                    continue
+                try:
+                    rewrapped = rewrap(blob, old=old, new=current)
+                except DecryptionError:
+                    # Readable under neither key. Named rather than skipped silently: it
+                    # means a row from a third key, or a corrupted one, and either way
+                    # somebody has to decide what to do with it.
+                    failed += 1
+                    print(f"  ! {model.name} ({model.id}): readable under neither key")
+                    continue
+                if not dry_run:
+                    model.credential_ciphertext = rewrapped
+                rotated += 1
+            if not dry_run:
+                await session.commit()
+    finally:
+        await engine.dispose()
+
+    verb = "would re-wrap" if dry_run else "re-wrapped"
+    print(f"{verb} {rotated} credential(s); {already} already on the current key.")
+    if failed:
+        print(f"{failed} credential(s) could not be read under either key.")
+        return 1
+    return 0
+
+
+async def run_unlock(*, email: str | None, ip: str | None) -> int:
+    """Clear a login lockout (task 18's documented unlock path)."""
+    settings = get_settings()
+    redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        throttle = LoginThrottle(RedisThrottleStore(redis), settings)
+        cleared = await throttle.unlock(Attempt(email=email, ip=ip))
+    finally:
+        await redis.aclose()
+    target = " and ".join(part for part in (email, ip) if part)
+    print(f"cleared {cleared} throttle counter(s) for {target}.")
     return 0
 
 

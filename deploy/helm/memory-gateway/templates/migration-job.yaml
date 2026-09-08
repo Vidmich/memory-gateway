@@ -1,0 +1,66 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Named after the revision so consecutive upgrades do not collide on an immutable Job.
+  name: {{ include "memory-gateway.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "memory-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    # `pre-install` as well as `pre-upgrade`: a fresh install needs a schema too, and a
+    # chart that only migrates on upgrade produces a first deployment that crash-loops on
+    # a missing table.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    # The Job is kept when it fails. That is the whole reason to run migrations as a hook:
+    # a failed migration must stop the release *and* leave its logs behind, and a Job
+    # deleted on failure takes the only account of what went wrong with it.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "memory-gateway.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+      {{- with .Values.migrations.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "memory-gateway.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+        {{- include "memory-gateway.volumes" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "memory-gateway.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # One process, once. Two `alembic upgrade` runs racing each other is a good way
+          # to corrupt a schema, which is why no application pod ever runs migrations —
+          # RUN_MIGRATIONS exists for the compose stack and is never set in the chart.
+          args:
+            - alembic
+            - upgrade
+            - head
+          envFrom:
+            {{- include "memory-gateway.envFrom" . | nindent 12 }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- include "memory-gateway.volumeMounts" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+{{- end }}

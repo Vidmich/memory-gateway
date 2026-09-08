@@ -33,6 +33,7 @@ from app.api.proxy.errors import (
     UpstreamTimeout,
     UpstreamUnavailable,
 )
+from app.core.tracing import phase, record_error
 from app.schemas.openai import ChatRequest, ChatResponse, StreamFrame
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.params import Resolved, resolve_params
@@ -160,6 +161,19 @@ class ProxyService:
         request while this function runs once per routing attempt — searching again for
         the second target would double the cost of a failover for an identical result.
         """
+        with phase("gateway.assembly", **{"upstream.model": target.name}) as span:
+            prepared = self._assemble(request, gateway, target, recall)
+            if span.is_recording():
+                span.set_attribute("memory.tokens", prepared.memory_tokens)
+            return prepared
+
+    def _assemble(
+        self,
+        request: ChatRequest,
+        gateway: ResolvedGateway,
+        target: UpstreamTarget,
+        recall: Recall | None,
+    ) -> Prepared:
         memory = gateway.memory
         assembly = assemble(
             request.messages,
@@ -212,12 +226,19 @@ class ProxyService:
         adapter = _adapter_for(target)
         outbound = _outbound(adapter, prepared)
 
-        try:
-            response = await self._http.send(outbound)
-        except httpx.TimeoutException as exc:
-            raise _timeout(target, exc) from exc
-        except httpx.HTTPError as exc:
-            raise _unreachable(target, exc) from exc
+        # The span covers the send only, not the parse: it is the provider's time, and
+        # the whole point of the trace is to say how much of a slow request was theirs.
+        with phase("upstream.request", **_upstream_attributes(target, stream=False)) as span:
+            try:
+                response = await self._http.send(outbound)
+            except httpx.TimeoutException as exc:
+                record_error(span, exc)
+                raise _timeout(target, exc) from exc
+            except httpx.HTTPError as exc:
+                record_error(span, exc)
+                raise _unreachable(target, exc) from exc
+            if span.is_recording():
+                span.set_attribute("http.response.status_code", response.status_code)
 
         # A non-streaming send has already read and closed the body.
         _raise_for_upstream_status(response, target, adapter)
@@ -242,12 +263,21 @@ class ProxyService:
         adapter = _adapter_for(target)
         outbound = _outbound(adapter, prepared)
 
-        try:
-            response = await self._http.send(outbound, stream=True)
-        except httpx.TimeoutException as exc:
-            raise _timeout(target, exc) from exc
-        except httpx.HTTPError as exc:
-            raise _unreachable(target, exc) from exc
+        # Closed once the status is known, which is what this phase measures:
+        # time-to-first-byte. The frames that follow are relayed as they arrive and belong
+        # to no span — a span that stayed open for the whole generation would report the
+        # length of the answer rather than the latency of the provider.
+        with phase("upstream.stream", **_upstream_attributes(target, stream=True)) as span:
+            try:
+                response = await self._http.send(outbound, stream=True)
+            except httpx.TimeoutException as exc:
+                record_error(span, exc)
+                raise _timeout(target, exc) from exc
+            except httpx.HTTPError as exc:
+                record_error(span, exc)
+                raise _unreachable(target, exc) from exc
+            if span.is_recording():
+                span.set_attribute("http.response.status_code", response.status_code)
 
         if response.status_code >= 400:
             try:
@@ -336,6 +366,17 @@ class UpstreamStream:
             self._observer.done(error)
         except Exception:  # pragma: no cover - never at the client's expense
             logger.warning("stream observer failed at the end of a stream", exc_info=True)
+
+
+def _upstream_attributes(target: UpstreamTarget, *, stream: bool) -> dict[str, Any]:
+    """What a span may say about an upstream call.
+
+    The model, the dialect and whether it streamed. Deliberately not the base URL and
+    never a header: a trace is exported to a third-party backend, and SPEC §5.4's rule
+    that a credential never leaves this process does not stop being true because the
+    destination is an observability vendor.
+    """
+    return {"upstream.model": target.name, "upstream.dialect": target.dialect, "stream": stream}
 
 
 def _adapter_for(target: UpstreamTarget) -> UpstreamAdapter:

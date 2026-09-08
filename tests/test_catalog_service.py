@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.config import get_settings
 from app.core.errors import Conflict, Forbidden, NotFound, Validation
 from app.core.ids import uuid7
 from app.services.catalog import UNSET, ModelDraft, ModelPatch
@@ -21,6 +22,17 @@ from tests.gateway_support import make_gateway_row
 @pytest.fixture
 def world() -> World:
     return build_world()
+
+
+@pytest.fixture
+def guarded_world() -> World:
+    """A world whose deployment refuses tenant URLs pointing inside the network.
+
+    Built separately because the test environment is not production, where the guard is on
+    by default — and a fixture that turned it on everywhere would quietly change what every
+    other case in this file is asserting.
+    """
+    return build_world(settings=get_settings().model_copy(update={"environment": "prod"}))
 
 
 def draft(**overrides: object) -> ModelDraft:
@@ -494,3 +506,58 @@ async def test_an_undecryptable_credential_says_so(world: World) -> None:
         await world.catalog.test_model(world.actor(world.acme_admin), world.acme_model.id)
 
     assert "encryption key" in str(failure.value)
+
+
+# ---------------------------------------------------------------------------
+# SSRF (task 18)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_model_pointing_at_the_metadata_service_is_refused(guarded_world: World) -> None:
+    """The write-time half of the guard. It exists for the person typing rather than for
+    the attacker — the transport is the boundary — but a red message under the field beats
+    a probe that fails a second later for a reason nobody can read."""
+    with pytest.raises(Validation) as caught:
+        await guarded_world.catalog.create_model(
+            guarded_world.actor(guarded_world.acme_admin),
+            draft(base_url="http://169.254.169.254/latest/meta-data/"),
+        )
+
+    assert caught.value.param == "base_url"
+    assert "link-local" in caught.value.message
+
+
+async def test_a_model_cannot_be_edited_into_pointing_inside_the_network(
+    guarded_world: World,
+) -> None:
+    """The update path needs its own check: a model created with a public URL and then
+    patched to a private one would otherwise walk straight through."""
+    with pytest.raises(Validation) as caught:
+        await guarded_world.catalog.update_model(
+            guarded_world.actor(guarded_world.acme_admin),
+            guarded_world.acme_model.id,
+            ModelPatch(base_url="http://10.0.0.5:8080/v1"),
+        )
+
+    assert caught.value.param == "base_url"
+
+
+async def test_an_unsaved_draft_cannot_be_probed_at_a_private_address(
+    guarded_world: World,
+) -> None:
+    """ "Test connection" on an unsaved draft is the same capability as saving one — it
+    makes the server fetch a URL the caller chose — so it takes the same check."""
+    with pytest.raises(Validation):
+        await guarded_world.catalog.test_draft(
+            guarded_world.actor(guarded_world.acme_admin),
+            draft(base_url="http://localhost:8080/v1"),
+        )
+
+
+async def test_a_public_url_is_still_accepted_under_the_guard(guarded_world: World) -> None:
+    view = await guarded_world.catalog.create_model(
+        guarded_world.actor(guarded_world.acme_admin),
+        draft(name="public-model", base_url="https://api.openai.com/v1"),
+    )
+
+    assert view.model.base_url == "https://api.openai.com/v1"

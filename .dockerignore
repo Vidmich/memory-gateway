@@ -12,7 +12,16 @@ web/node_modules
 web/dist
 web/playwright-report
 web/test-results
+# Everything under deploy/ except the entrypoint the image copies: the chart, the
+# dashboards, the collector config, the load scenarios and the operational scripts are all
+# things that act *on* a deployment rather than run inside one.
 deploy/compose/*.yml
+deploy/helm
+deploy/grafana
+deploy/otel
+deploy/loadtest
+deploy/ops
 docs
+CONTRIBUTING.md
 SPEC.md
 tasks

@@ -19,7 +19,7 @@ from typing import Any
 from prometheus_client import CollectorRegistry
 
 from app.core.ids import uuid7
-from app.core.metrics import LogMetrics, build_log_metrics
+from app.core.metrics import LogMetrics, ProxyMetrics, build_log_metrics, build_proxy_metrics
 from app.db.models import EndUser, Organization, RequestLog, Transcript
 from app.services.log_store import MemoryLogWriter
 from app.services.memory_db import MemoryDatabase
@@ -43,6 +43,10 @@ class LogFixture:
     writer: MemoryLogWriter
     database: MemoryDatabase
     metrics: LogMetrics
+    #: Task 18's data-plane counters, on the same registry, so a test can assert on the
+    #: overhead histogram — SPEC §4.2's budget, measured per request — without a whole
+    #: application around it.
+    proxy: ProxyMetrics
     registry: CollectorRegistry
 
     async def flush(self) -> int:
@@ -79,6 +83,7 @@ def build_logs(
     """
     registry = CollectorRegistry()
     metrics = build_log_metrics(registry)
+    proxy = build_proxy_metrics(registry)
     writer = MemoryLogWriter(database or MemoryDatabase())
     queue = LogQueue(metrics=metrics, maxsize=maxsize, shed_fraction=shed_fraction)
     flusher = LogFlusher(
@@ -89,12 +94,13 @@ def build_logs(
         subscriber=subscriber,
     )
     return LogFixture(
-        service=RequestLogService(queue, flusher),
+        service=RequestLogService(queue, flusher, metrics=proxy),
         queue=queue,
         flusher=flusher,
         writer=writer,
         database=writer.database,
         metrics=metrics,
+        proxy=proxy,
         registry=registry,
     )
 

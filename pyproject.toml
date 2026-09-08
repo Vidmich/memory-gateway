@@ -41,6 +41,19 @@ dependencies = [
     "python-docx>=1.1.2",
     "python-pptx>=1.0.2",
     "openpyxl>=3.1.5",
+    # Task 18. The API and the SDK are separate packages on purpose: instrumentation
+    # code depends only on the API, so a process with no exporter configured pays for a
+    # no-op tracer rather than for a pipeline. The OTLP exporter is the HTTP one rather
+    # than gRPC — one fewer native wheel, and the collector accepts both.
+    #
+    # No `opentelemetry-instrumentation-*` packages. The spans SPEC §10.5 asks for are
+    # named phases of one request, which auto-instrumentation does not produce; what it
+    # would add is a span per SQL statement, per Redis call and per outbound request,
+    # which is a different picture and five more dependencies that monkeypatch libraries
+    # this service is otherwise explicit about.
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
 
 [dependency-groups]
@@ -66,6 +79,13 @@ dev = [
     # known position is something a reviewer can read the source of, and a checked-in
     # binary is not. Test-time only — nothing in `app/` writes a PDF.
     "reportlab>=4.2",
+    # Task 18. The chart, the alert rules and the collector config are YAML, and the tests
+    # that join them to the application — every PromQL expression against the real metric
+    # registry, every alert against the runbook it links to — have to parse them. Declared
+    # rather than inherited: it arrives transitively today, and a test suite that stops
+    # running because a dependency dropped it would be a strange way to find out.
+    "pyyaml>=6.0",
+    "types-PyYAML>=6.0",
 ]
 
 [tool.uv]

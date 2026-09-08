@@ -1,0 +1,91 @@
+{{- include "memory-gateway.validate" . -}}
+{{- $components := list (dict "name" "worker" "settings" "app.workers.main.WorkerSettings" "values" .Values.worker "enabled" true) -}}
+{{- $components = append $components (dict "name" "heavy-worker" "settings" "app.workers.main.HeavyWorkerSettings" "values" .Values.heavyWorker "enabled" .Values.heavyWorker.enabled) -}}
+{{- range $component := $components }}
+{{- if $component.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "memory-gateway.fullname" $ }}-{{ $component.name }}
+  labels:
+    {{- include "memory-gateway.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component.name }}
+spec:
+  {{- if not (and (eq $component.name "worker") $.Values.worker.autoscaling.enabled) }}
+  replicas: {{ $component.values.replicaCount }}
+  {{- end }}
+  strategy:
+    # Recreate would stop every worker at once and leave the queue unattended for the
+    # length of a rollout; rolling keeps at least one reading it. Workers have no
+    # readiness to wait on — they pull rather than receive — so a surge is enough.
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "memory-gateway.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $component.name }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+        {{- with $component.values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "memory-gateway.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $component.name }}
+    spec:
+      serviceAccountName: {{ include "memory-gateway.serviceAccountName" $ }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      # Generous, and for a different reason than the API's. arq finishes the job in hand
+      # on SIGTERM and stops claiming new ones, so this is the length of the longest job
+      # rather than of the longest request — a 300-page PDF, not a completion. A job cut
+      # short is not lost (it is retried, and a reindex resumes from its cursor), but it is
+      # work done twice, and the heavy queue is where that is expensive.
+      terminationGracePeriodSeconds: {{ $component.values.terminationGracePeriodSeconds }}
+      {{- with (include "memory-gateway.affinity" (dict "root" $ "values" $component.values "component" $component.name)) }}
+      affinity:
+        {{- . | nindent 8 }}
+      {{- end }}
+      {{- with $component.values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $component.values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        {{- include "memory-gateway.volumes" $ | nindent 8 }}
+      containers:
+        - name: {{ $component.name }}
+          image: {{ include "memory-gateway.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+          args:
+            - arq
+            - {{ $component.settings }}
+          envFrom:
+            {{- include "memory-gateway.envFrom" $ | nindent 12 }}
+          {{- with $.Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- include "memory-gateway.volumeMounts" $ | nindent 12 }}
+          # No probes. A worker serves no port, and the only liveness question worth
+          # asking about one — is it still claiming jobs — is answered by the queue-depth
+          # alert rather than by anything this pod could say about itself.
+          resources:
+            {{- toYaml $component.values.resources | nindent 12 }}
+{{- end }}
+{{- end }}

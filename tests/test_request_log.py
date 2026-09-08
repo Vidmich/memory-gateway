@@ -29,7 +29,7 @@ from app.services.request_log import (
     StreamTee,
     as_json,
 )
-from tests.monitoring_support import build_logs
+from tests.monitoring_support import LogFixture, build_logs
 from tests.support import chunk, completion, make_target
 
 
@@ -511,3 +511,88 @@ def test_an_unserialisable_body_does_not_poison_the_batch() -> None:
 @pytest.mark.parametrize("value", [None, [{"role": "user", "content": "hi"}]])
 def test_a_serialisable_body_passes_through(value: object) -> None:
     assert as_json(value) == value
+
+
+# ---------------------------------------------------------------------------
+# the data-plane counters (task 18)
+# ---------------------------------------------------------------------------
+
+
+def _sample(logs: LogFixture, name: str, labels: dict[str, str]) -> float:
+    return logs.registry.get_sample_value(name, labels) or 0.0
+
+
+async def test_a_submitted_record_counts_the_request() -> None:
+    logs = build_logs()
+    recorder = logs.service.begin(
+        organization_id=uuid7(),
+        gateway_id=uuid7(),
+        policy=LogPolicy(),
+        gateway_slug="acme-support",
+    )
+    recorder.record.model_name = "gpt-4o-mini"
+    recorder.record.status_code = 200
+    recorder.submit()
+
+    assert (
+        _sample(
+            logs,
+            "proxy_requests_total",
+            {"gateway": "acme-support", "model": "gpt-4o-mini", "status": "200"},
+        )
+        == 1.0
+    )
+
+
+async def test_the_overhead_recorded_is_the_time_the_gateway_added() -> None:
+    """SPEC §4.2's budget, measured on every request rather than only in a load test:
+    total duration minus the time the provider had it."""
+    logs = build_logs()
+    recorder = logs.service.begin(
+        organization_id=uuid7(), gateway_id=uuid7(), policy=LogPolicy(), gateway_slug="acme"
+    )
+    recorder.record.latency_upstream_ms = 800
+    recorder.submit()
+    # `submit` sets the total from the wall clock, so the overhead is whatever elapsed
+    # minus 800 ms — which is negative here, and clamped at zero rather than recorded as a
+    # negative observation.
+    recorder.record.latency_total_ms = 950
+
+    observed = _sample(logs, "gateway_overhead_seconds_count", {"gateway": "acme"})
+    assert observed == 1.0
+
+
+async def test_overhead_is_not_recorded_when_no_upstream_call_happened() -> None:
+    """A request refused by the rate limiter never reached a provider. Folding those in as
+    pure overhead would make throttling look like a latency regression — and throttling is
+    the cheapest thing this service does."""
+    logs = build_logs()
+    recorder = logs.service.begin(
+        organization_id=uuid7(), gateway_id=uuid7(), policy=LogPolicy(), gateway_slug="acme"
+    )
+    recorder.record.status_code = 429
+    recorder.throttled()
+    recorder.submit()
+
+    assert _sample(logs, "gateway_overhead_seconds_count", {"gateway": "acme"}) == 0.0
+    assert (
+        _sample(logs, "proxy_requests_total", {"gateway": "acme", "model": "none", "status": "429"})
+        == 1.0
+    )
+
+
+async def test_submitting_twice_counts_once() -> None:
+    """The streaming path submits from the observer and the error path submits again on the
+    way out; a counter that moved twice would double every streamed request."""
+    logs = build_logs()
+    recorder = logs.service.begin(
+        organization_id=uuid7(), gateway_id=uuid7(), policy=LogPolicy(), gateway_slug="acme"
+    )
+    recorder.record.status_code = 200
+    recorder.submit()
+    recorder.submit()
+
+    assert (
+        _sample(logs, "proxy_requests_total", {"gateway": "acme", "model": "none", "status": "200"})
+        == 1.0
+    )

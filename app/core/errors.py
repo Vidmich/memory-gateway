@@ -74,6 +74,18 @@ class Unauthorized(AppError):
     code = "unauthorized"
 
 
+class PayloadTooLarge(AppError):
+    """The request body went past the configured ceiling.
+
+    Raised from :class:`app.core.hardening.BodySizeLimitMiddleware` while the body is
+    still arriving, which is the only moment a chunked upload can be refused — there is
+    no length to check up front, so the cap is enforced by counting.
+    """
+
+    status_code = 413
+    code = "payload_too_large"
+
+
 class Validation(AppError):
     status_code = 422
     code = "validation_error"

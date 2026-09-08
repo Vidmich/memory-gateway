@@ -1,0 +1,61 @@
+{{- include "memory-gateway.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "memory-gateway.fullname" . }}
+  labels:
+    {{- include "memory-gateway.labels" . | nindent 4 }}
+data:
+  # Everything here is non-secret by construction: the deployments mount this map and the
+  # operator's Secret side by side, and a value that belongs in the Secret must not be
+  # duplicated into values.yaml to reach a pod.
+  ENVIRONMENT: {{ .Values.config.environment | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  PUBLIC_BASE_URL: {{ required "config.publicBaseUrl is required: it is the URL customers point their SDK at." .Values.config.publicBaseUrl | quote }}
+  {{- with .Values.config.appBaseUrl }}
+  APP_BASE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.corsOrigins }}
+  # A JSON list, which is how pydantic-settings reads a tuple from the environment.
+  CORS_ORIGINS: {{ toJson . | quote }}
+  {{- end }}
+
+  QDRANT_URL: {{ required "config.qdrantUrl is required." .Values.config.qdrantUrl | quote }}
+  S3_ENDPOINT: {{ required "config.s3Endpoint is required." .Values.config.s3Endpoint | quote }}
+  S3_BUCKET: {{ required "config.s3Bucket is required." .Values.config.s3Bucket | quote }}
+  S3_REGION: {{ .Values.config.s3Region | quote }}
+
+  EMBEDDING_PROVIDER: {{ .Values.config.embedding.provider | quote }}
+  EMBEDDING_MODEL: {{ .Values.config.embedding.model | quote }}
+  EMBEDDING_DIMENSION: {{ .Values.config.embedding.dimension | quote }}
+  EMBEDDING_BASE_URL: {{ .Values.config.embedding.baseUrl | quote }}
+  EMBEDDING_BATCH_SIZE: {{ .Values.config.embedding.batchSize | quote }}
+  EMBEDDING_MAX_CONCURRENCY: {{ .Values.config.embedding.maxConcurrency | quote }}
+
+  UPSTREAM_PRIVATE_ADDRESSES: {{ .Values.config.upstream.privateAddresses | quote }}
+  {{- with .Values.config.upstream.allowedHosts }}
+  UPSTREAM_ALLOWED_HOSTS: {{ toJson . | quote }}
+  {{- end }}
+  {{- with .Values.config.upstream.allowedCidrs }}
+  UPSTREAM_ALLOWED_CIDRS: {{ toJson . | quote }}
+  {{- end }}
+  UPSTREAM_MAX_CONNECTIONS: {{ .Values.config.upstream.maxConnections | quote }}
+  UPSTREAM_MAX_KEEPALIVE_CONNECTIONS: {{ .Values.config.upstream.maxKeepaliveConnections | quote }}
+  ROUTING_DEADLINE_SECONDS: {{ .Values.config.upstream.routingDeadlineSeconds | quote }}
+
+  # Read by app/core/lifecycle.py. The chart has already checked this against the
+  # termination grace period; passing it as configuration rather than hard-coding it is
+  # what lets the two stay in step.
+  SHUTDOWN_DRAIN_SECONDS: {{ .Values.api.drainSeconds | quote }}
+
+  {{- if .Values.tracing.enabled }}
+  OTEL_EXPORTER_ENDPOINT: {{ .Values.tracing.endpoint | quote }}
+  OTEL_SAMPLE_RATIO: {{ .Values.tracing.sampleRatio | quote }}
+  {{- with .Values.tracing.serviceName }}
+  OTEL_SERVICE_NAME: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+
+  {{- range $name, $value := .Values.config.extra }}
+  {{ $name }}: {{ $value | quote }}
+  {{- end }}

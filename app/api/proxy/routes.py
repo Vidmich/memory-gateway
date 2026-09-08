@@ -36,6 +36,7 @@ from app.api.proxy.errors import (
 from app.core import background, keys
 from app.core.errors import AppError, RateLimited
 from app.core.logging import get_request_id
+from app.core.tracing import phase
 from app.schemas.openai import ChatRequest, ModelCard, ModelList
 from app.services.api_keys import AuthenticatedKey, KeyAuthenticator
 from app.services.end_user import EndUserIdentity, resolve_identity, session_key
@@ -99,7 +100,11 @@ async def chat_completions(
     proxy: Proxy,
 ) -> Response:
     """Forward a chat completion, streaming or not."""
-    key, gateway = await _authorize(request, slug, resolver, authenticator)
+    # SPEC §10.5's trace, phase by phase. The spans are opened here rather than deeper
+    # down because these are steps of *this* request path, not of the objects that carry
+    # them out — a span inside `RateLimiter` would also cover the control plane's use of it.
+    with phase("gateway.auth", **{"gateway.slug": slug}):
+        key, gateway = await _authorize(request, slug, resolver, authenticator)
 
     # Recording starts here, once the tenant is known, and covers everything after it —
     # including the 400s. Failures *before* this point are authentication failures, which
@@ -111,6 +116,9 @@ async def chat_completions(
         policy=gateway.log_policy,
         api_key_id=key.id,
         request_id=get_request_id(),
+        # For the Prometheus label only. The row identifies the gateway by id, which is
+        # what survives a rename; a dashboard needs the name somebody would recognise.
+        gateway_slug=gateway.slug,
     )
 
     attempts = Attempts(on_prepared=_record_prompt(recorder))
@@ -155,7 +163,8 @@ async def chat_completions(
             end_user_id=who.id if who is not None else None,
             holder=recorder.record.id.hex,
         )
-        await limits.requests()
+        with phase("gateway.rate_limit"):
+            await limits.requests()
 
         # Which upstream, and what happens when it does not answer (SPEC §8.1). Resolved
         # before any time is spent so that a misconfigured gateway fails identically in
@@ -168,7 +177,13 @@ async def chat_completions(
 
         # Memory, once for the whole request — before routing, because every attempt in a
         # failover chain assembles the same retrieved documents into a different prompt.
-        recall = await _recall(memory, gateway, chat, request.headers, who=who, identity=identity)
+        with phase("gateway.retrieval") as span:
+            recall = await _recall(
+                memory, gateway, chat, request.headers, who=who, identity=identity
+            )
+            if span.is_recording():
+                span.set_attribute("memory.chunks", len(recall.documents.chunks))
+                span.set_attribute("memory.facts", len(recall.facts))
         recorder.retrieval(latency_ms=recall.latency_ms if recall.attempted else None)
         # SPEC §6.3. Raised here rather than inside the retriever so the editor can render
         # the same failure as a diagnostic instead of a 503.

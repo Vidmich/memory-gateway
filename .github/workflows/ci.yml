@@ -154,17 +154,83 @@ jobs:
         run: make openapi-check
 
   docker:
-    name: image builds
+    name: image builds & scans clean
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
+      # `load: true` rather than discarding it: the scan below needs the image in the
+      # local daemon, and building it twice would double the slowest job here.
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: false
-          load: false
+          load: true
+          tags: memory-gateway:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Task 18: fail on high severity. Not on every severity — a base image always has a
+      # handful of unfixable lows, and a gate that is always red is a gate somebody
+      # disables. `ignore-unfixed` for the same reason: a CVE with no patch available is
+      # not something this pipeline can act on, and it would block every build until the
+      # distribution catches up.
+      - name: trivy (image)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: memory-gateway:ci
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library
+
+      # A separate, non-blocking pass over the source tree, so a vulnerable dependency is
+      # visible in the log even when it is not yet fixable.
+      - name: trivy (dependencies, informational)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          exit-code: "0"
+          severity: HIGH,CRITICAL
+
+  chart:
+    name: helm chart renders
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - run: uv sync --all-groups
+
+      # The chart tests skip without `helm` on a laptop and must not skip here: they are
+      # what turns "the grace period must exceed the routing deadline" from a comment into
+      # a failed render.
+      - name: chart rendering and lint
+        run: uv run pytest tests/test_deploy_assets.py -q
+
+      # Rendered manifests validated against the cluster's own schemas, which catches the
+      # kind of mistake a template test cannot — a misspelled field name that is perfectly
+      # good YAML.
+      - name: kubeconform
+        env:
+          KUBECONFORM: https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+        run: |
+          curl -fsSL -o kubeconform.tar.gz "$KUBECONFORM"
+          tar xzf kubeconform.tar.gz kubeconform
+          for values in deploy/helm/examples/*.yaml; do
+            echo "== $values"
+            helm template release deploy/helm/memory-gateway -f "$values" > rendered.yaml
+            ./kubeconform -strict -summary -ignore-missing-schemas rendered.yaml
+          done

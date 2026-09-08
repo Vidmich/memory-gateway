@@ -1,0 +1,50 @@
+{{- if .Values.ingress.enabled }}
+{{- $host := required "ingress.host is required when the ingress is enabled." .Values.ingress.host -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "memory-gateway.fullname" . }}
+  labels:
+    {{- include "memory-gateway.labels" . | nindent 4 }}
+  annotations:
+    {{- if eq .Values.ingress.className "nginx" }}
+    # The upload route streams to object storage and a completion can hold a connection
+    # for minutes; both are past ingress-nginx defaults, and both fail in ways that look
+    # like the application rather than the edge.
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.maxBodySize | quote }}
+    nginx.ingress.kubernetes.io/proxy-read-timeout: {{ .Values.ingress.proxyTimeoutSeconds | quote }}
+    nginx.ingress.kubernetes.io/proxy-send-timeout: {{ .Values.ingress.proxyTimeoutSeconds | quote }}
+    # Server-sent events must not be buffered: with buffering on, a client gets the whole
+    # completion in one lump at the end and streaming becomes a feature nobody receives.
+    # The application also sets `X-Accel-Buffering: no` on the response; this is the belt.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    {{- if .Values.ingress.tls.enabled }}
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    {{- end }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ default (printf "%s-tls" (include "memory-gateway.fullname" .)) .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          # One rule for both planes. They are one process serving one origin — which is
+          # what lets the refresh cookie stay SameSite=Lax and keeps CORS out of the login
+          # path — and splitting them at the edge would be splitting one application.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "memory-gateway.fullname" . }}
+                port:
+                  number: {{ .Values.api.service.port }}
+{{- end }}

@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from app.core.crypto import DecryptionError, SecretBox, secret_hint
+from app.core.crypto import VERSION, DecryptionError, SecretBox, rewrap, secret_hint
 
 
 @pytest.fixture
@@ -93,3 +93,78 @@ def settings_master_key() -> str:
 )
 def test_hint_reveals_only_the_edges(secret: str, expected: str) -> None:
     assert secret_hint(secret) == expected
+
+
+# ---------------------------------------------------------------------------
+# master-key rotation (task 18)
+# ---------------------------------------------------------------------------
+
+
+def test_rewrapping_keeps_the_plaintext_readable_under_the_new_key() -> None:
+    """What the envelope was for. Rotation touches 48 bytes per row rather than the
+    credential, so the plaintext is never re-encrypted and never leaves this function."""
+    old = SecretBox(master_key=b"o" * 32)
+    new = SecretBox(master_key=b"n" * 32)
+    blob = old.encrypt("sk-rotate-me")
+
+    rewrapped = rewrap(blob, old=old, new=new)
+
+    assert new.decrypt(rewrapped) == "sk-rotate-me"
+
+
+def test_the_payload_is_copied_across_byte_for_byte() -> None:
+    """The property that makes rotation cheap and makes it safe: only the wrapped data key
+    changes, so a rotation over a large table is a fixed cost per row rather than one
+    proportional to what the rows hold."""
+    old = SecretBox(master_key=b"o" * 32)
+    new = SecretBox(master_key=b"n" * 32)
+    blob = old.encrypt("sk-rotate-me")
+
+    rewrapped = rewrap(blob, old=old, new=new)
+
+    # version(1) + wrap_nonce(12) + wrapped key(48) is the header; everything after it is
+    # the payload nonce and the ciphertext.
+    assert rewrapped[61:] == blob[61:]
+    assert rewrapped[1:61] != blob[1:61]
+
+
+def test_a_rewrapped_blob_is_indistinguishable_from_a_freshly_written_one() -> None:
+    """Which is what keeps a half-finished rotation from being a second format to support:
+    the table ends up with rows under two master keys, not rows in two shapes."""
+    old = SecretBox(master_key=b"o" * 32)
+    new = SecretBox(master_key=b"n" * 32)
+
+    rewrapped = rewrap(old.encrypt("sk-value"), old=old, new=new)
+    fresh = new.encrypt("sk-value")
+
+    assert len(rewrapped) == len(fresh)
+    assert rewrapped[0] == fresh[0] == VERSION
+
+
+def test_the_old_key_can_no_longer_read_it() -> None:
+    old = SecretBox(master_key=b"o" * 32)
+    new = SecretBox(master_key=b"n" * 32)
+
+    rewrapped = rewrap(old.encrypt("sk-value"), old=old, new=new)
+
+    with pytest.raises(DecryptionError):
+        old.decrypt(rewrapped)
+
+
+def test_rewrapping_with_the_wrong_previous_key_is_refused() -> None:
+    """The rotation command relies on this to tell "already rotated" from "corrupt": it
+    tries the current key first and only re-wraps what that cannot read."""
+    old = SecretBox(master_key=b"o" * 32)
+    wrong = SecretBox(master_key=b"w" * 32)
+    new = SecretBox(master_key=b"n" * 32)
+
+    with pytest.raises(DecryptionError):
+        rewrap(old.encrypt("sk-value"), old=wrong, new=new)
+
+
+def test_a_truncated_blob_is_refused_rather_than_producing_a_shorter_one() -> None:
+    old = SecretBox(master_key=b"o" * 32)
+    new = SecretBox(master_key=b"n" * 32)
+
+    with pytest.raises(DecryptionError):
+        rewrap(old.encrypt("sk-value")[:20], old=old, new=new)

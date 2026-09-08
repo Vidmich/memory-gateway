@@ -1,0 +1,32 @@
+{{- if .Values.worker.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "memory-gateway.fullname" . }}-worker
+  labels:
+    {{- include "memory-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "memory-gateway.fullname" . }}-worker
+  minReplicas: {{ .Values.worker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.worker.autoscaling.maxReplicas }}
+  metrics:
+    # Queue depth, not CPU. A worker waiting on an embedding call uses no CPU and is
+    # nonetheless the reason a backlog is growing — which is the signal the API does not
+    # have, and the reason these two are separate Deployments rather than one.
+    - type: External
+      external:
+        metric:
+          name: {{ .Values.worker.autoscaling.metricName }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.worker.autoscaling.queueDepthPerPod | quote }}
+  behavior:
+    scaleDown:
+      # Fifteen minutes. A worker removed mid-job costs that job its progress — ingestion
+      # resumes, but from the start of whatever document it was reading.
+      stabilizationWindowSeconds: 900
+{{- end }}

@@ -1,0 +1,98 @@
+# OpenTelemetry Collector, and the only reason it is in this repository is the sampling.
+#
+# The application samples 5% of traces at the first span (OTEL_SAMPLE_RATIO). It cannot do
+# better: the decision has to be made when the trace id is minted, which is several hundred
+# milliseconds before anybody knows the request failed. "Keep every trace that errored" is
+# therefore not a decision the service can take — it is a decision that can only be taken
+# once the trace is complete, which is here.
+#
+# So: the service sends *everything* to this collector when tail sampling is in use
+# (OTEL_SAMPLE_RATIO=1.0), and the policies below decide what is kept. If you would rather
+# not pay for that volume on the wire, leave the ratio at 0.05 and accept that a failed
+# request is kept only 5% of the time — the request log has the row either way, and the
+# trace is the thing you lose.
+#
+#   helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
+#     --set mode=deployment --set-file config=deploy/otel/collector.yaml
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Tail sampling needs whole traces, so it needs every span of a trace to reach the same
+  # collector instance. With more than one replica, put a `loadbalancing` exporter in front
+  # keyed on traceID — otherwise a trace split across two collectors is sampled twice on
+  # half the evidence each time.
+  tail_sampling:
+    decision_wait: 30s
+    num_traces: 100000
+    expected_new_traces_per_sec: 1000
+    policies:
+      # Everything that failed, in full. This is the policy the whole file exists for.
+      - name: errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+
+      # Anything slower than four seconds, whether or not it failed. A slow completion is
+      # not an error and is the other thing somebody goes looking for a trace of.
+      - name: slow
+        type: latency
+        latency:
+          threshold_ms: 4000
+
+      # Everything on a gateway that has been explicitly marked for investigation. Set
+      # `gateway.slug` on a span and this keeps every trace touching it — the switch to
+      # flip while debugging one customer without raising the ratio for everybody.
+      - name: watched-gateways
+        type: string_attribute
+        string_attribute:
+          key: gateway.slug
+          values: []
+          enabled_regex_matching: false
+
+      # And a thin sample of everything else, so the ordinary case still has a baseline to
+      # compare the slow one against.
+      - name: baseline
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 5
+
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+  # Drops spans from a service that is not this one, in a collector shared with other
+  # workloads. Harmless when it is not shared.
+  filter/service:
+    error_mode: ignore
+    traces:
+      span:
+        - 'resource.attributes["service.name"] == nil'
+
+exporters:
+  # Replace with whatever the tracing backend is. Jaeger, Tempo and every commercial
+  # vendor speak OTLP; the pipeline below does not change.
+  otlp/backend:
+    endpoint: tempo.observability.svc.cluster.local:4317
+    tls:
+      insecure: true
+
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      # Order matters: tail sampling has to see whole traces, so it comes before batching.
+      processors: [filter/service, tail_sampling, batch]
+      exporters: [otlp/backend]
+  telemetry:
+    logs:
+      level: info

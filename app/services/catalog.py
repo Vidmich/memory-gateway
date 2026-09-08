@@ -49,6 +49,7 @@ from app.core.config import Settings, get_settings
 from app.core.crypto import DecryptionError, SecretBox, secret_hint
 from app.core.errors import Conflict, Forbidden, NotFound, Validation
 from app.core.ids import uuid7
+from app.core.ssrf import check_url
 from app.core.tenancy import Actor
 from app.db.models import UpstreamModel
 from app.db.models.upstream_model import DEFAULT_TIMEOUT_SECONDS
@@ -232,6 +233,7 @@ class CatalogService:
             # write into the platform's catalog.
             raise Forbidden("Only a platform administrator can add a model to the global catalog.")
 
+        self._check_base_url(draft.base_url)
         self._check_dialect(draft.dialect)
         self._check_auth(draft.auth_type, draft.credential)
         headers = _check_headers(draft.extra_headers)
@@ -281,6 +283,8 @@ class CatalogService:
     async def update_model(self, actor: Actor, model_id: uuid.UUID, patch: ModelPatch) -> ModelView:
         if not isinstance(patch.dialect, _Unset):
             self._check_dialect(patch.dialect)
+        if not isinstance(patch.base_url, _Unset) and patch.base_url is not None:
+            self._check_base_url(patch.base_url)
 
         async with self._store.begin(actor.scope) as transaction:
             model = await self._writable(transaction, model_id)
@@ -402,6 +406,7 @@ class CatalogService:
         """
         await self._rate_limit(actor)
 
+        self._check_base_url(draft.base_url)
         self._check_dialect(draft.dialect)
         _check_headers(draft.extra_headers)
 
@@ -461,6 +466,20 @@ class CatalogService:
         if taken:
             where = "the global catalog" if is_global else "this organization"
             raise Conflict(f"A model called '{wanted}' already exists in {where}.", param="name")
+
+    def _check_base_url(self, base_url: str) -> None:
+        """Refuse a URL that points back inside this network (task 18).
+
+        The immediate half of the SSRF guard: it exists so somebody typing a base URL gets
+        a message under the field, not so an attacker is stopped — the transport is what
+        stops an attacker, because a name that resolves somewhere harmless today can
+        resolve somewhere else at the moment the request is made. Both read the same policy
+        off ``Settings``, so what is refused here is exactly what would be refused there.
+        """
+        try:
+            check_url(base_url, self._settings.upstream_url_policy)
+        except ValueError as exc:
+            raise Validation(f"base_url {exc}", param="base_url") from exc
 
     def _check_dialect(self, dialect: str) -> None:
         if dialect in known_dialects():

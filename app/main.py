@@ -11,7 +11,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from starlette.middleware.cors import CORSMiddleware
 
 from app.api.control.router import build_control_router
 from app.api.health import router as health_router
@@ -22,6 +21,12 @@ from app.core.clients import Clients
 from app.core.config import Settings, get_settings
 from app.core.crypto import SecretBox
 from app.core.errors import register_exception_handlers
+from app.core.hardening import (
+    BodySizeLimitMiddleware,
+    ControlPlaneCORSMiddleware,
+    SecurityHeadersMiddleware,
+)
+from app.core.lifecycle import Lifecycle
 from app.core.logging import configure_logging
 from app.core.metrics import build_metrics
 from app.core.middleware import (
@@ -30,6 +35,7 @@ from app.core.middleware import (
     RequestIdMiddleware,
 )
 from app.core.passwords import build_hasher
+from app.core.tracing import TracingMiddleware, configure_tracing, shutdown_tracing
 from app.services.api_keys import KeyAuthenticator, LastUsedRecorder
 from app.services.audit import count_audit_failures_with
 from app.services.audit_service import AuditService
@@ -96,6 +102,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Before anything else: the exporter has to exist before the first span is opened,
+        # and startup itself is worth tracing when it is what went wrong.
+        tracing = configure_tracing(settings)
+        # Takes over SIGTERM, remembering uvicorn's handler to call once the drain window
+        # is over. Installed inside the lifespan so a process that never starts the server
+        # — a test building an app, `python -m app.cli` — never touches the signals.
+        lifecycle = Lifecycle(drain_seconds=settings.shutdown_drain_seconds)
+        lifecycle.install()
+        app.state.lifecycle = lifecycle
+
         clients = Clients.create(settings)
         app.state.clients = clients
 
@@ -190,7 +206,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log_queue = LogQueue(metrics=metrics.logs)
         request_logs = RequestLogService(
             log_queue,
-            LogFlusher(
+            # SPEC §4.2's budget, measured on every request that goes through: the recorder
+            # already knows the total and the upstream half, and their difference is what
+            # the number in the spec actually refers to.
+            metrics=metrics.proxy,
+            flusher=LogFlusher(
                 log_queue,
                 PostgresLogWriter(clients.session_factory),
                 metrics=metrics.logs,
@@ -375,6 +395,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # a process: leaving it behind on a rolling restart leaks one per replica.
             await ingestion.aclose()
             await clients.aclose()
+            # Last, and after the log flush: the spans from the final seconds before a
+            # deploy are the ones somebody reads when the deploy is what broke.
+            shutdown_tracing(tracing)
+            lifecycle.restore()
             logger.info("service stopped")
 
     app = FastAPI(
@@ -389,18 +413,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.metrics = metrics
 
-    # Middleware runs bottom-up: the request id is bound first so every other layer,
-    # including the exception handlers, can log it.
+    # Middleware runs bottom-up: the last one added is the outermost, so the request id
+    # is bound first and every other layer — the exception handlers included — can log it.
+    app.add_middleware(BodySizeLimitMiddleware, limit_bytes=settings.max_request_body_bytes)
     app.add_middleware(MetricsMiddleware, metrics=metrics)
     app.add_middleware(AccessLogMiddleware)
+    # Outside the access log so the log line it writes carries the trace id, and inside the
+    # request id so the span can be labelled with it.
+    app.add_middleware(TracingMiddleware)
     app.add_middleware(RequestIdMiddleware)
 
     if settings.cors_origins:
         # Only for a split-origin deployment (the Vite dev server on another port).
         # In production the SPA is served from this process, so the list is empty and
         # the middleware is never added.
+        #
+        # Scoped to `/api/`: the data plane is called server-to-server with a key and is
+        # open to any origin by design, but it must never answer a browser preflight with
+        # `Allow-Credentials` — see `ControlPlaneCORSMiddleware`.
         app.add_middleware(
-            CORSMiddleware,
+            ControlPlaneCORSMiddleware,
             allow_origins=list(settings.cors_origins),
             allow_credentials=True,  # the refresh cookie
             allow_methods=["*"],
@@ -415,6 +447,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "retry-after",
             ],
         )
+
+    # Outermost of all, so the headers are on every response this process can produce —
+    # including the ones written by middleware above the exception handlers, and including
+    # a 413 refused before the application ran at all.
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        # Only in production: a browser told to force HTTPS by a host that also answers on
+        # plain HTTP is a browser that cannot reach a dev deployment until its site data is
+        # cleared, on every machine that saw the header.
+        hsts_max_age_seconds=settings.hsts_max_age_seconds if settings.is_production else None,
+    )
 
     register_exception_handlers(app)
 

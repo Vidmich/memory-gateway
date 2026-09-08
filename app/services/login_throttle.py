@@ -181,6 +181,24 @@ class LoginThrottle:
             # worst case is one user having to wait out a window they already cleared.
             self._unavailable("clearing a counter")
 
+    async def unlock(self, attempt: Attempt) -> int:
+        """Clear the counters for an email, an address, or both. Returns how many were set.
+
+        The documented unlock path (task 18): a locked-out administrator otherwise waits
+        out ``LOGIN_LOCKOUT_SECONDS``, which during an incident is the wrong answer —
+        they are locked out precisely because somebody has been attacking the account they
+        now need. Reached through ``python -m app.cli unlock-login``, which is a shell on
+        the deployment host rather than an endpoint: an unlock endpoint is a way to reset
+        the counter that the attacker also has.
+        """
+        cleared = 0
+        for key in self._keys(attempt):
+            count, _ = await self._store.peek(key)
+            if count:
+                cleared += 1
+            await self._store.delete(key)
+        return cleared
+
     def _unavailable(self, during: str) -> None:
         """The store is down. See the module docstring for why this is not fatal.
 

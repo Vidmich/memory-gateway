@@ -82,7 +82,11 @@ services:
       minio-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      # The interpreter that is already here. The image carries no curl on purpose
+      # (see the Dockerfile): a tool that fetches URLs is the last thing an image whose
+      # threat model is about fetching URLs needs to ship.
+      test:
+        ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status == 200 else 1)"]
       interval: 10s
       timeout: 3s
       retries: 5

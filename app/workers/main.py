@@ -23,6 +23,7 @@ from app.core.clients import Clients
 from app.core.config import Settings, get_settings
 from app.core.logging import bind_request_id, configure_logging
 from app.core.metrics import build_metrics
+from app.core.tracing import configure_tracing, shutdown_tracing
 from app.services.job_queue import ARQ_FUNCTION, ARQ_HEAVY_QUEUE_KEY, ArqJobQueue, from_payload
 from app.services.jobs import JobRunner
 from app.workers.runtime import (
@@ -56,6 +57,13 @@ async def startup(context: dict[str, Any]) -> None:
         service_name=f"{settings.service_name}-worker",
         version=settings.version,
     )
+    # A job's spans hang off nothing — there is no inbound request — so a worker's
+    # traces are their own roots, joined to the control-plane request that enqueued them
+    # by `request_id` rather than by a parent span. Carrying the trace context through
+    # Redis would join them properly and is deliberately not done yet: it makes a job
+    # payload carry a header format, and the request id already answers the question
+    # anybody actually asks.
+    context["tracing"] = configure_tracing(settings)
     clients = Clients.create(settings)
     metrics = build_metrics(
         service_name=f"{settings.service_name}-worker", version=settings.version
@@ -147,6 +155,7 @@ async def shutdown(context: dict[str, Any]) -> None:
     clients: Clients | None = context.get("clients")
     if clients is not None:
         await clients.aclose()
+    shutdown_tracing(context.get("tracing"))
     logger.info("worker stopped")
 
 

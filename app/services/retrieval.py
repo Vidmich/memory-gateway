@@ -48,6 +48,7 @@ from typing import Any
 
 from app.api.proxy.errors import GatewayUnavailable
 from app.core.metrics import RetrievalMetrics
+from app.core.tracing import phase
 from app.schemas.gateway_config import MemoryConfig
 from app.schemas.openai import ChatMessage
 from app.services.embeddings import Embedder
@@ -620,19 +621,38 @@ class MemoryService:
         identity_reason: str = NO_IDENTITY,
     ) -> Recall:
         query = build_query(messages, config)
-        documents, memory = await asyncio.gather(
-            self._retriever.documents(
-                organization_id=organization_id, config=config, messages=messages
-            ),
-            self._facts(
-                organization_id=organization_id,
-                config=config,
-                query=query,
-                end_user_id=end_user_id,
-                identity_reason=identity_reason,
-            ),
-        )
-        return Recall(documents=documents, memory=memory)
+
+        # A span each, rather than one for the pair. The whole claim of this method is
+        # that the two run concurrently, and two sibling spans that overlap on the
+        # timeline are what makes that visible — one span covering both would look
+        # identical whether they ran together or one after the other. `gather` copies the
+        # current context into each task, so both are children of the caller's span.
+        async def documents() -> Retrieval:
+            with phase("memory.documents") as span:
+                result = await self._retriever.documents(
+                    organization_id=organization_id, config=config, messages=messages
+                )
+                if span.is_recording():
+                    span.set_attribute("memory.outcome", result.outcome)
+                    span.set_attribute("memory.chunks", len(result.chunks))
+                return result
+
+        async def facts() -> FactRecall:
+            with phase("memory.facts") as span:
+                result = await self._facts(
+                    organization_id=organization_id,
+                    config=config,
+                    query=query,
+                    end_user_id=end_user_id,
+                    identity_reason=identity_reason,
+                )
+                if span.is_recording():
+                    span.set_attribute("memory.outcome", result.outcome)
+                    span.set_attribute("memory.facts", len(result.facts))
+                return result
+
+        retrieved, memory = await asyncio.gather(documents(), facts())
+        return Recall(documents=retrieved, memory=memory)
 
     async def _facts(
         self,

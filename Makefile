@@ -2,6 +2,8 @@
 SHELL := /bin/sh
 
 COMPOSE := docker compose -f deploy/compose/docker-compose.yml
+# The four values the chart requires, so `helm lint` has something to render.
+CHART_VALUES := --set config.publicBaseUrl=https://gw.example.com --set config.qdrantUrl=http://qdrant:6333 --set config.s3Endpoint=http://minio:9000 --set config.s3Bucket=bucket --set secrets.existingSecret=memory-gateway
 UV := uv
 
 NPM := npm --prefix web
@@ -77,6 +79,21 @@ e2e: ## Playwright end-to-end tests (needs the stack up and E2E_PASSWORD set)
 check: lint typecheck test check-web ## Everything CI runs
 
 check-web: lint-web typecheck-web test-web openapi-check build-web ## Frontend CI
+
+chart: ## Lint the Helm chart and render it for every example values file
+	helm lint deploy/helm/memory-gateway $(CHART_VALUES)
+	@for values in deploy/helm/examples/*.yaml; do echo "== $$values"; helm template release deploy/helm/memory-gateway -f $$values > /dev/null; done
+	$(UV) run pytest tests/test_deploy_assets.py -q
+
+mock-upstream: ## A stand-in provider on :9099, so the load suite costs nothing
+	$(UV) run python deploy/loadtest/mock_upstream.py --port 9099
+
+loadtest: ## Mixed streaming and non-streaming traffic (needs k6 and GATEWAY_API_KEY)
+	k6 run --summary-export=results/chat.json deploy/loadtest/chat.js
+
+overhead: ## The SPEC 4.2 measurement: the gateway against a direct-to-provider baseline
+	@test -n "$(UPSTREAM_KEY)" || (echo "set UPSTREAM_URL and UPSTREAM_KEY; without the baseline this measures nothing" && exit 1)
+	k6 run deploy/loadtest/overhead.js
 
 migrate: ## Apply migrations up to head
 	$(UV) run alembic upgrade head

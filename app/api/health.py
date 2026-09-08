@@ -10,6 +10,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.core.clients import Clients
 from app.core.config import Settings
+from app.core.lifecycle import Lifecycle
 from app.core.metrics import Metrics
 from app.services.health import is_ready, run_readiness_checks
 from app.workers.runtime import Ingestion
@@ -29,9 +30,22 @@ async def healthz(request: Request) -> dict[str, str]:
 
 @router.get("/readyz")
 async def readyz(request: Request, response: Response) -> dict[str, Any]:
-    """Readiness: this instance can serve traffic right now."""
+    """Readiness: this instance can serve traffic right now.
+
+    A draining pod answers 503 here *before* it stops accepting, which is the whole
+    mechanism in :mod:`app.core.lifecycle`: the load balancer watches this endpoint, and
+    the seconds between a ``SIGTERM`` and the removal of the pod's endpoint are seconds in
+    which new requests are still routed here. Answered without probing anything, because
+    the answer does not depend on Postgres being up and because a shutdown is not the
+    moment to add four network calls to a probe that runs every couple of seconds.
+    """
     settings: Settings = request.app.state.settings
     clients: Clients = request.app.state.clients
+
+    lifecycle: Lifecycle | None = getattr(request.app.state, "lifecycle", None)
+    if lifecycle is not None and lifecycle.draining:
+        response.status_code = 503
+        return {"status": "draining"}
 
     results = await run_readiness_checks(
         clients, timeout_seconds=settings.readiness_timeout_seconds

@@ -1,0 +1,43 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} is installed as {{ .Release.Name }}.
+
+  API:            {{ include "memory-gateway.fullname" . }} ({{ .Values.api.replicaCount }} replica(s){{ if .Values.api.autoscaling.enabled }}, autoscaling {{ .Values.api.autoscaling.minReplicas }}–{{ .Values.api.autoscaling.maxReplicas }}{{ end }})
+  Workers:        {{ .Values.worker.replicaCount }} default{{ if .Values.heavyWorker.enabled }}, {{ .Values.heavyWorker.replicaCount }} heavy (PDF and Office){{ else }}, no heavy worker — PDF and Office jobs will wait{{ end }}
+  Image:          {{ include "memory-gateway.image" . }}
+{{- if .Values.ingress.enabled }}
+  URL:            http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+  No ingress. Reach it with:
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "memory-gateway.fullname" . }} 8000:{{ .Values.api.service.port }}
+{{- end }}
+
+Check it is serving:
+
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=api --tail=20
+
+{{- if not .Values.secrets.existingSecret }}
+
+⚠  secrets.existingSecret is not set, so the pods have no DATABASE_URL, REDIS_URL, S3
+   credentials, ENCRYPTION_MASTER_KEY or JWT_SIGNING_KEY, and will exit at startup with a
+   configuration error naming the first one missing. Create a Secret whose keys are those
+   variable names and set secrets.existingSecret to it. The chart will never create it for
+   you: chart values are stored in the release and printed by `helm get values`, which is
+   not a place for a master key.
+{{- end }}
+
+{{- if not .Values.prometheusRule.enabled }}
+
+Note: prometheusRule.enabled is false, so nothing will page anybody. The alert that
+matters most is PartitionRunwayLow — when it fires unattended, request logging stops
+inserting rows.
+{{- end }}
+
+The first sign-in needs a superadmin, which is the one thing the UI cannot create:
+
+  kubectl -n {{ .Release.Namespace }} run mg-seed --rm -it --restart=Never \
+    --image={{ include "memory-gateway.image" . }} \
+    --overrides='{"spec":{"containers":[{"name":"mg-seed","image":"{{ include "memory-gateway.image" . }}","args":["python","-m","app.cli","seed"],"envFrom":[{"configMapRef":{"name":"{{ include "memory-gateway.fullname" . }}"}}{{ if .Values.secrets.existingSecret }},{"secretRef":{"name":"{{ .Values.secrets.existingSecret }}"}}{{ end }}]}]}}'
+
+Before the first real deploy, read docs/deployment.md — in particular the expand/contract
+rule for migrations, which is what keeps a rolling upgrade from breaking the replicas that
+are still serving the previous release.

@@ -8,7 +8,7 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 17 complete**. An organization goes from empty to a working
+Current state: **task 18 complete**. An organization goes from empty to a working
 OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream model,
 create a gateway, copy its URL, mint a key, call it — and every request through it is
 recorded and inspectable. **Connectors** ingest the documents customers actually have —
@@ -43,7 +43,13 @@ than by settings nothing honours: retention prunes bodies to the day, per gatewa
 partitions logging writes into are created a month ahead and alerted on before they run
 out; expired memory facts leave Qdrant as well as PostgreSQL; and changing the platform
 embedding model rebuilds every collection beside the live one and swaps the aliases, with a
-search loop running throughout that never comes back empty.
+search loop running throughout that never comes back empty. And it now **deploys**: a Helm
+chart with the API and the workers as separate deployments scaling on separate signals, a
+shutdown that fails readiness first and finishes the streams it is already carrying, traces
+that break one request into auth, retrieval, assembly and upstream, dashboards and alerts
+that each link to a runbook that exists, and a guard that refuses to let a customer point an
+upstream model at your own network — including through a DNS answer that changes between
+the check and the connection.
 
 ## Quick start (Docker)
 
@@ -1091,6 +1097,153 @@ in the API and not only in the form. Audit events are the one thing that deliber
 survives: "who deleted this organization, and when" is the question a deletion record exists
 to answer, so it is written into the *platform's* log rather than the one going with them.
 
+## Running it in production
+
+The chart is [deploy/helm/memory-gateway](deploy/helm/memory-gateway); the guide is
+[docs/deployment.md](docs/deployment.md). What follows is the reasoning, not the steps.
+
+### Two deployments, because they scale on different things
+
+The API and the workers run the same image and the same code. They are separate
+`Deployment`s anyway, because the signal that says "add a replica" is request rate for one
+and queue depth for the other — and a worker waiting on an embedding call uses no CPU while
+being completely full. A shared replica count means one of them is always wrong.
+
+The heavy worker is a third, reading the PDF and Office queue, so a folder of notes dropped
+alongside a 300-page manual does not sit behind it. Deleting it is supported: those jobs
+then wait, which is a visible backlog rather than a silent loss.
+
+### The deploy that does not truncate a stream
+
+This is the failure the whole shutdown path exists to prevent, and it happens on every
+deploy until the numbers are right. Kubernetes removes a pod from its Service and sends
+`SIGTERM` at the same moment, and neither the removal nor its propagation is instant, so a
+server that stops accepting when signalled refuses requests that were routed to it
+milliseconds earlier.
+
+So `SIGTERM` starts a **drain**:
+
+1. `/readyz` answers 503 immediately — the fastest thing the process can do, and the signal
+   the load balancer is actually watching;
+2. it keeps serving for `SHUTDOWN_DRAIN_SECONDS`, the window in which endpoints propagate;
+3. only then does uvicorn stop accepting and wait for in-flight requests — a 120-second
+   completion included — to finish on their own.
+
+`/healthz` stays healthy throughout: a draining pod is not an unhealthy one, and a liveness
+probe that failed here would get it killed mid-stream by the very mechanism meant to protect
+it.
+
+`terminationGracePeriodSeconds` has to cover steps 2 and 3, and **the chart refuses to
+render if it does not**. That is the one number the task file calls out as easy to get wrong
+and expensive to discover, and a `helm template` that fails is a much better place to
+discover it than a support ticket.
+
+### SSRF: the guard on `base_url`
+
+An organization user can point an upstream model at any URL. Without a guard that makes the
+gateway an authenticated request forwarder with a position inside your network — a
+`base_url` of `http://169.254.169.254/latest/meta-data/iam/` turns "Test connection" into a
+credential read, and one of `http://postgres.internal:5432` turns it into a port scanner
+that reports back through the error message. This product's core feature is fetching a URL
+somebody else chose, so it is not hypothetical.
+
+Two checks, deliberately not one.
+
+**When a model is saved**, the scheme has to be http(s) and a literal address has to be
+globally routable. This one is for the person typing: a red message under the field instead
+of a probe that fails a second later for a reason nobody can read.
+
+**When the request is made**, in the transport: the hostname is resolved *there*, every
+address it answers with is validated, and the connection is then **pinned to the address
+that was checked**. That ordering is the whole thing. Validating a name and then handing the
+name to the socket layer checks one DNS answer and connects on a second one, which is
+exactly the rebinding attack — first lookup public, second lookup `127.0.0.1`. Here there is
+no second lookup to poison.
+
+Pinning costs one thing worth naming: the connection is opened to an IP, so the original
+hostname is put back for SNI and certificate verification. That is why the guard does not
+quietly disable certificate checking the way a naive rewrite would.
+
+The rule is `is_global` — allow what is routable on the public internet — rather than a list
+of blocked ranges, because a blocklist is a list somebody has to keep current and was
+missing `100.64.0.0/10` before carrier-grade NAT existed.
+
+What is *not* guarded is the operator's own endpoints. Qdrant, MinIO and the embedding
+provider legitimately live on private addresses; they come from the environment rather than
+from a tenant, and they go through a **separate connection pool** with no guard on it. The
+boundary is "did a tenant choose this URL", not "is this address private". Splitting the
+clients rather than exempting hosts inside one guard keeps that distinction at the seam where
+it is decided, and gives embedding calls their own pool as a side benefit.
+
+In development the guard is off, because somebody pointing a model at
+`http://localhost:11434` is running Ollama. `UPSTREAM_PRIVATE_ADDRESSES` is `auto` by
+default — block in production, allow elsewhere — and the chart refuses to render `allow`
+alongside `ENVIRONMENT=prod`.
+
+### Traces, and where the sampling decision belongs
+
+Spans for the phases SPEC §10.5 names: `gateway.auth`, `gateway.rate_limit`,
+`gateway.retrieval` — with `memory.documents` and `memory.facts` as *concurrent children*,
+so the trace shows they overlapped rather than merely that both happened —
+`gateway.assembly`, and `upstream.request`. Each carries `gateway.request_id`, which is also
+`X-Gateway-Request-Id` on the response and `trace_id` in every log line the request writes.
+
+They are written by hand rather than by auto-instrumentation, because those phases are not
+library boundaries: no instrumentation package produces them, and what it would produce is a
+span per SQL statement and per Redis call, which is a different and much noisier picture.
+
+**Sampling is head-based here and tail-based in the collector**, and that split is forced.
+A ratio sampler decides at the first span, several hundred milliseconds before anybody knows
+the request failed — so "keep every trace that errored" is not a decision this process can
+make. [deploy/otel/collector.yaml](deploy/otel/collector.yaml) keeps every trace carrying an
+error, every trace over four seconds, and a thin sample of the rest.
+
+### The number the design rests on
+
+SPEC §4.2 promises the gateway adds under 150 ms p95 over a bare upstream call. It is
+measured twice, on purpose.
+
+`gateway_overhead_seconds` computes it on **every production request** — total duration
+minus the time the provider had it — so it is a histogram with the budget on a bucket
+boundary and an alert written against it.
+
+[deploy/loadtest/overhead.js](deploy/loadtest/overhead.js) measures it from outside, as a
+difference between two populations: half the iterations through the gateway, half straight
+to the provider, same prompts, same concurrency, **at the same moment**. That last part is
+what makes it honest — absolute latency through a gateway is mostly the provider's latency,
+and a baseline captured an hour earlier measures the weather.
+
+A number a service reports about itself should have an outside check.
+
+### Alerts that each have a runbook
+
+Eight of them, in the chart, from error rate and the latency budget through log-queue drops
+and worker backlog to partition runway and Redis unavailability. Every one carries a
+`runbook_url`, every runbook is in [docs/runbooks](docs/runbooks), and a test fails the
+build if an alert links to a file nobody wrote. Another test checks every PromQL expression
+in the alerts and the four dashboards against the **real metric registry**, so renaming a
+metric fails the build instead of silently disabling an alert for ever.
+
+The one to make sure reaches somebody is `PartitionRunwayLow`. It is the only alert here
+where the failure is an `INSERT` that errors rather than a query that is slow.
+
+### Everything else that hardening means
+
+Security headers and a CSP with **no `script-src 'unsafe-inline'`** — a test asserts the
+built `index.html` still contains no inline script, because the failure mode is a white page
+in production and a green suite everywhere else. CORS scoped to `/api/` so the data plane
+never answers a browser preflight with `Allow-Credentials`; it is called server-to-server
+with a key and has no session to protect, and an app-wide CORS middleware would offer one
+anyway. Request bodies capped, with `Content-Length` refused before the application runs and
+chunked bodies counted as they arrive. HSTS in production only, because a development host
+that pins itself to HTTPS is one nobody can reach until they clear site data. An image with
+no package manager and no `curl`, running as uid 10001 on a read-only root filesystem —
+whose only writable mount is `/tmp`, where tiktoken caches its vocabulary.
+
+And a **master-key rotation** that re-wraps 48 bytes per row rather than re-encrypting a
+single credential, which is what the envelope was for. It is resumable: each row is tried
+against the current key first, so an interrupted run can simply be run again.
+
 ## Try the proxy
 
 Create a gateway and a key in the UI, or let `make seed` wire a demo one up. With
@@ -1220,9 +1373,13 @@ app/
               because they are not dialect questions), openai (passthrough),
               anthropic (the Messages API translation, both directions)
   core/       config, logging, errors, ids, metrics, middleware, clients,
-              crypto (envelope encryption), keys (API key format), passwords
-              (Argon2id), patterns (regex safety), tokens (JWT + refresh),
-              tenancy (TenantScope), background
+              crypto (envelope encryption and master-key re-wrapping), keys (API
+              key format), passwords (Argon2id), patterns (regex safety), tokens
+              (JWT + refresh), tenancy (TenantScope), background, and task 18's
+              production layer: ssrf (the resolve-validate-pin transport and the
+              write-time check), hardening (security headers, the CSP, path-scoped
+              CORS, the body ceiling), lifecycle (the SIGTERM drain), tracing
+              (the phase spans and the server span)
   db/         engine, session, declarative base, models, scoping (ScopedRepository
               and the unscoped-query guard), repositories
   schemas/    the OpenAI wire format, the slice of Anthropic's the gateway reads,
@@ -1272,9 +1429,15 @@ app/
               maintenance cron, and the composition root they and the API both
               build their stack from
   cli.py      operator commands — `python -m app.cli seed | openapi |
-              distil-backfill`
+              distil-backfill | rotate-master-key | unlock-login`
 migrations/   alembic
-deploy/       compose now, helm from task 18
+deploy/       compose/ (the dev stack), helm/ (the chart, and example values for
+              production and for a minimal staging namespace), grafana/ (four
+              dashboards), otel/ (the collector, where tail sampling happens),
+              loadtest/ (k6 scenarios, the mock upstream, the baseline comparison),
+              ops/ (backup, restore, and the verification that makes a restore
+              more than a hypothesis)
+docs/         deployment.md, integration.md (the customer-facing one), runbooks/
 web/          the React SPA
   src/api/      the fetch client and the generated schema types
   src/auth/     auth context, reducer, protected routes
@@ -1303,7 +1466,15 @@ web/          the React SPA
 
 Everything is an environment variable, validated at import time: a missing or malformed
 value stops the process immediately and names the variable, rather than surfacing on the
-first request. See [.env.example](.env.example) for the full list.
+first request. See [.env.example](.env.example) for the full list, and
+[docs/deployment.md](docs/deployment.md) for what a cluster needs.
+
+Settings that are **operator policy** rather than deployment topology — retention ceilings,
+rate-limit ceilings, storage caps, the distillation default, the embedding model — live in
+the database since task 17 and are edited on **Platform → Settings**, with an audit trail.
+The environment values are the bootstrap a fresh database starts from. A base URL is
+topology and an API key is a secret, and neither belongs in a table an operator reads on a
+screen.
 
 ## Operations
 
@@ -1374,7 +1545,7 @@ first request. See [.env.example](.env.example) for the full list.
 | `POST /api/v1/platform/organizations/purge` | Run the destructive pass for everything past its grace period. Needs `confirm=purge`. |
 | `GET /api/v1/retention-ceilings` | Readable inside an organization: the platform maxima, which is what explains a capped retention. |
 | `GET /healthz` | Liveness. Checks nothing else — a dependency outage must not get the pod restarted into the same outage. |
-| `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. |
+| `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. Answers `{"status": "draining"}` with a 503, and probes nothing, once `SIGTERM` has arrived. |
 | `GET /metrics` | Prometheus. Request counts and latency labelled by route template. |
 
 Data-plane errors use the **OpenAI** error envelope so client SDKs raise a useful typed
@@ -1383,7 +1554,15 @@ id. Unsupported fields (`tools`, `tool_choice`, `functions`, `function_call`, `l
 are refused with a 400 naming the field rather than silently dropped.
 
 Every log line is one JSON object carrying `request_id`, which is also returned as
-`X-Gateway-Request-Id` and honoured on the way in for cross-system correlation.
+`X-Gateway-Request-Id` and honoured on the way in for cross-system correlation. With
+tracing configured it carries `trace_id` as well, and the server span carries the request
+id — so a log line, a trace and a request-log row all lead to each other.
+
+Two operator commands run on the deployment host rather than as endpoints, deliberately:
+`python -m app.cli rotate-master-key --previous <old key>` re-wraps every stored credential
+under a new `ENCRYPTION_MASTER_KEY` (resumable, and it never decrypts a payload), and
+`python -m app.cli unlock-login --email someone@example.com` clears a login lockout. An
+unlock endpoint is a way to reset the counter that an attacker also has.
 
 Control-plane routes are **authenticated by default**: they hang off a router that
 carries the `CurrentUser` dependency, so an endpoint added by a later task is protected

@@ -55,7 +55,7 @@ from typing import Any, Protocol
 from app.adapters.base import UpstreamTarget, get_adapter
 from app.core.errors import AppError
 from app.core.ids import uuid7
-from app.core.metrics import LogMetrics
+from app.core.metrics import LogMetrics, ProxyMetrics
 from app.schemas.gateway_config import LoggingConfig
 from app.schemas.openai import ChatMessage, ChatRequest, ChatResponse, StreamFrame, Usage
 from app.services.redaction import DEFAULT_BUDGET_SECONDS, Redactor
@@ -215,9 +215,22 @@ class RequestRecorder:
     successful completion into a 500. Anything that goes wrong here costs the log line.
     """
 
-    def __init__(self, record: RequestRecord, sink: LogSink) -> None:
+    def __init__(
+        self,
+        record: RequestRecord,
+        sink: LogSink,
+        *,
+        metrics: ProxyMetrics | None = None,
+        gateway: str = "",
+    ) -> None:
         self._record = record
         self._sink = sink
+        #: Prometheus, alongside the row. The row is per request and queryable for a day
+        #: or two; these are aggregates that survive retention and are what an alert reads.
+        #: ``gateway`` is the slug rather than the id because the label is read by a human
+        #: on a dashboard, and the id is on the row for anyone who needs to join.
+        self._metrics = metrics
+        self._gateway = gateway or "unknown"
         self._started = time.perf_counter()
         self._upstream_started: float | None = None
         self._submitted = False
@@ -392,10 +405,40 @@ class RequestRecorder:
             return
         self._submitted = True
         self._record.latency_total_ms = self._elapsed_ms()
+        self._observe()
         try:
             self._sink.submit(self._record)
         except Exception:  # pragma: no cover - a sink that raises is a bug, not a 500
             logger.warning("could not submit a request log record", exc_info=True)
+
+    def _observe(self) -> None:
+        """Count the request, and record what the gateway itself cost.
+
+        The overhead is total minus upstream, which is SPEC §4.2's budget measured on real
+        traffic. It is only recorded when an upstream call actually happened: a request
+        refused by the rate limiter never had one, and folding those in as pure overhead
+        would make throttling look like a latency regression.
+
+        Guarded like everything else on this class — a labelling mistake must not turn a
+        served completion into a 500.
+        """
+        if self._metrics is None:
+            return
+        record = self._record
+        try:
+            self._metrics.requests.labels(
+                gateway=self._gateway,
+                model=record.model_name or "none",
+                status=str(record.status_code),
+            ).inc()
+            self._metrics.duration.labels(gateway=self._gateway).observe(
+                record.latency_total_ms / 1000
+            )
+            if record.latency_upstream_ms is not None:
+                overhead = max(0, record.latency_total_ms - record.latency_upstream_ms)
+                self._metrics.overhead.labels(gateway=self._gateway).observe(overhead / 1000)
+        except Exception:  # pragma: no cover - a metrics failure is not a request failure
+            logger.warning("could not record proxy metrics", exc_info=True)
 
     def _close_upstream(self) -> None:
         if self._upstream_started is not None and self._record.latency_upstream_ms is None:
@@ -791,9 +834,12 @@ class StreamRecorder:
 class RequestLogService:
     """What the data plane holds: a policy source, a sink, and a way to start a record."""
 
-    def __init__(self, queue: LogQueue, flusher: LogFlusher) -> None:
+    def __init__(
+        self, queue: LogQueue, flusher: LogFlusher, *, metrics: ProxyMetrics | None = None
+    ) -> None:
         self._queue = queue
         self._flusher = flusher
+        self._metrics = metrics
 
     @property
     def sink(self) -> LogSink:
@@ -816,6 +862,7 @@ class RequestLogService:
         policy: LogPolicy,
         api_key_id: uuid.UUID | None = None,
         request_id: str | None = None,
+        gateway_slug: str = "",
     ) -> RequestRecorder:
         return RequestRecorder(
             RequestRecord(
@@ -826,6 +873,10 @@ class RequestLogService:
                 policy=policy,
             ),
             self._queue,
+            metrics=self._metrics,
+            # Not stored on the record — the row already carries the id, and a slug can be
+            # renamed while a row cannot. It exists here only as a metric label.
+            gateway=gateway_slug,
         )
 
 

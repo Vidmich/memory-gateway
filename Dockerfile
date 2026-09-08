@@ -27,7 +27,7 @@ RUN npm run build
 
 # ---------------------------------------------------------------------------
 
-FROM ghcr.io/astral-sh/uv:0.5-python3.12-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:0.9-python3.12-bookworm-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \

@@ -18,12 +18,16 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
+from prometheus_client import CollectorRegistry
 
+from app.core.metrics import build_extraction_metrics
 from app.services.embeddings import EmbeddingError
+from app.services.filetypes import format_label
 from app.services.ingestion import IngestionSettings
 from app.services.jobs import PermanentJobError
 from tests.auth_support import make_organization
 from tests.connector_support import ConnectorFixture, build_connectors, make_connector
+from tests.office_fixtures import BROKEN_ZIP, scanned_pdf
 
 HANDBOOK = b"""# Handbook
 
@@ -142,16 +146,34 @@ async def test_an_unsupported_format_is_skipped_with_a_readable_reason(
     assert document.error == "This video is not a supported format."
 
 
-async def test_a_pdf_says_coming_soon_rather_than_unsupported(
+async def test_an_epub_says_coming_soon_rather_than_unsupported(
     connectors: ConnectorFixture,
 ) -> None:
-    """The distinction that keeps the task 11 gap honest. A customer who drags in a folder
-    of PDFs should learn the feature is not here yet, not conclude the product is broken."""
+    """The distinction task 09 built, and that task 11 used up for four formats.
+
+    A roadmap item and a file nobody should have uploaded read differently, and a customer
+    has to be able to tell which they are looking at. EPUB is what occupies that state now
+    that PDF and the Office formats have left it.
+    """
+    await connectors.ingest(("book.epub", b"PK\x03\x04" + b"\x00" * 9000))
+
+    document = await connectors.document("book.epub")
+    assert document.status == "skipped"
+    assert document.reason == "not_yet_supported"
+    assert document.error is not None and "not available yet" in document.error
+
+
+async def test_a_truncated_pdf_fails_with_a_sentence_rather_than_a_traceback(
+    connectors: ConnectorFixture,
+) -> None:
+    """The bytes claim to be a PDF and are not one. That is a fault in the file, so it is
+    ``failed`` rather than ``skipped`` — and the reason code says which fault."""
     await connectors.ingest(("report.pdf", b"%PDF-1.7\n" + b"\x00" * 9000))
 
     document = await connectors.document("report.pdf")
-    assert document.status == "skipped"
-    assert document.error is not None and "later release" in document.error
+    assert document.status == "failed"
+    assert document.reason == "malformed_pdf"
+    assert document.error is not None and "truncated or corrupt" in document.error
 
 
 async def test_a_renamed_binary_is_skipped_not_decoded(connectors: ConnectorFixture) -> None:
@@ -676,3 +698,55 @@ async def test_the_job_payload_is_only_strings(connectors: ConnectorFixture) -> 
     [job] = connectors.queue.submitted
     assert isinstance(job.payload, Mapping)
     assert all(isinstance(value, str) for value in job.payload.values())
+
+
+# ---------------------------------------------------------------------------
+# extraction metrics (task 11)
+# ---------------------------------------------------------------------------
+
+
+def extractions(registry: CollectorRegistry, fmt: str, outcome: str) -> float:
+    value = registry.get_sample_value("extractions_total", {"format": fmt, "outcome": outcome})
+    return value or 0.0
+
+
+async def test_extraction_is_counted_by_format_and_outcome() -> None:
+    """The axis the answer lives on. Extraction degrades one format at a time — a PDF
+    library upgrade that starts returning nothing, an Office parser that chokes on one
+    vendor's export — and an unlabelled failure rate averages that into invisibility.
+    """
+    registry = CollectorRegistry()
+    fixture = build_connectors(make_organization(), metrics=build_extraction_metrics(registry))
+
+    await fixture.ingest(
+        ("handbook.md", HANDBOOK),
+        ("scan.pdf", scanned_pdf()),
+        ("policy.docx", BROKEN_ZIP),
+    )
+
+    assert extractions(registry, "markdown", "ok") == 1.0
+    # A scan is a decision rather than a fault, and the counter says so — a corpus that is
+    # all scans is a support conversation, not an incident.
+    assert extractions(registry, "pdf", "skipped") == 1.0
+    assert extractions(registry, "docx", "failed") == 1.0
+
+
+async def test_extraction_duration_is_recorded_per_format() -> None:
+    """Markdown is milliseconds and a 200-page PDF is seconds. One histogram across both
+    hides the fact that decides how much worker capacity a corpus needs."""
+    registry = CollectorRegistry()
+    fixture = build_connectors(make_organization(), metrics=build_extraction_metrics(registry))
+
+    await fixture.ingest(("handbook.md", HANDBOOK))
+
+    count = registry.get_sample_value("extraction_duration_seconds_count", {"format": "markdown"})
+    assert count == 1.0
+
+
+async def test_an_exotic_media_type_does_not_become_a_new_label() -> None:
+    """Label values are a closed map with a fallback. A sniffed media type used directly
+    is unbounded cardinality with the first exotic upload, and a Prometheus series per
+    file type nobody supports is how a metrics backend falls over."""
+    assert format_label("application/vnd.sqlite3") == "other"
+    assert format_label("text/x-rust") == "code"
+    assert format_label("application/pdf") == "pdf"

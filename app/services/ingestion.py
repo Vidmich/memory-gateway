@@ -35,11 +35,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from app.core.metrics import ExtractionMetrics
 from app.core.tenancy import TenantScope
 from app.db.models import Connector, Document
 from app.db.models.connector import TERMINAL_DOCUMENT_STATUSES
@@ -48,14 +50,22 @@ from app.services.chunking import Chunk, chunk_document
 from app.services.connector_source import ConnectorSource, build_source
 from app.services.connector_store import ConnectorStore, DocumentDraft
 from app.services.embeddings import Embedder
-from app.services.extraction import Extracted, ExtractionError, ExtractorRegistry
-from app.services.filetypes import SNIFF_BYTES, describe, sniff
+from app.services.extraction import (
+    Extracted,
+    ExtractionError,
+    ExtractorRegistry,
+    Registration,
+    SkippedDocument,
+)
+from app.services.extraction_pool import ExtractionPool
+from app.services.filetypes import SNIFF_BYTES, describe, format_label, sniff
 from app.services.jobs import (
     INGEST_DOCUMENT,
     JobOutbox,
     JobQueue,
     PermanentJobError,
     ingest_key,
+    queue_for,
     resync_key,
 )
 from app.services.locks import Lock
@@ -105,6 +115,10 @@ class IngestOutcome:
     status: str
     chunk_count: int = 0
     error: str | None = None
+    #: The machine-readable half of ``error``. See ``documents.reason``.
+    reason: str | None = None
+    #: Pages, slides or sheets, where the format has such a unit.
+    page_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +152,8 @@ class IngestionPipeline:
         queue: JobQueue,
         lock: Lock,
         settings: IngestionSettings | None = None,
+        pool: ExtractionPool | None = None,
+        metrics: ExtractionMetrics | None = None,
     ) -> None:
         self._store = store
         self._objects = objects
@@ -148,6 +164,11 @@ class IngestionPipeline:
         self._queue = queue
         self._lock = lock
         self._settings = settings or IngestionSettings()
+        #: ``None`` runs every extractor in a thread, which is what a test wants: a
+        #: subprocess pool costs a second of interpreter startup per child and buys
+        #: isolation that only the isolation tests are about.
+        self._pool = pool
+        self._metrics = metrics
 
     # -- ingestion -------------------------------------------------------
 
@@ -184,7 +205,7 @@ class IngestionPipeline:
             await self._finish(
                 scope,
                 document_id,
-                IngestOutcome(status="failed"),
+                IngestOutcome(status="failed", reason="missing_object"),
                 error="This file is no longer in storage. Run a resync.",
             )
             return IngestOutcome(status="failed", error="missing object")
@@ -206,7 +227,11 @@ class IngestionPipeline:
                 read.data, name=reference.name, media_type=read.media_type
             )
         except ExtractionError as error:
-            outcome = IngestOutcome(status="failed", error=str(error))
+            # `SkippedDocument` is a decision, not a fault: a scan with no text layer will
+            # reach the same decision on every retry, and calling it `failed` would send
+            # somebody looking for a problem with the file that is not there.
+            status = "skipped" if isinstance(error, SkippedDocument) else "failed"
+            outcome = IngestOutcome(status=status, error=str(error), reason=error.reason)
             await self._finish(
                 scope,
                 document_id,
@@ -224,7 +249,12 @@ class IngestionPipeline:
 
         chunks = chunk_document(extracted, chunking, tokenizer=self._tokenizer)
         if not chunks:
-            outcome = IngestOutcome(status="skipped", error="This file contains no text to index.")
+            outcome = IngestOutcome(
+                status="skipped",
+                error="This file contains no text to index.",
+                reason="no_text",
+                page_count=extracted.page_count,
+            )
             # Whatever was indexed before must still go: an emptied file that keeps its
             # old chunks is the worst kind of stale, because retrieval still finds them.
             await self._vectors.delete_document(organization_id, document_id)
@@ -255,7 +285,9 @@ class IngestionPipeline:
             chunks=chunks,
         )
 
-        outcome = IngestOutcome(status="indexed", chunk_count=len(chunks))
+        outcome = IngestOutcome(
+            status="indexed", chunk_count=len(chunks), page_count=extracted.page_count
+        )
         await self._finish(
             scope,
             document_id,
@@ -358,6 +390,7 @@ class IngestionPipeline:
                                 f"This file is larger than the {cap // (1024 * 1024)} MB "
                                 "per-file limit."
                             ),
+                            reason="too_large",
                         ),
                     )
         finally:
@@ -386,30 +419,63 @@ class IngestionPipeline:
             return None
         note = self._registry.pending_note(media_type)
         if note:
-            return IngestOutcome(status="skipped", error=f"{note}.")
+            return IngestOutcome(status="skipped", error=f"{note}.", reason="not_yet_supported")
         return IngestOutcome(
-            status="skipped", error=f"This {describe(media_type)} is not a supported format."
+            status="skipped",
+            error=f"This {describe(media_type)} is not a supported format.",
+            reason="unsupported_format",
         )
 
     async def _extract(self, data: bytes, *, name: str, media_type: str) -> Extracted:
-        extractor = self._registry.find(media_type=media_type, name=name)
-        if extractor is None:  # pragma: no cover - `_unreadable` already returned
+        found = self._registry.lookup(media_type=media_type, name=name)
+        if found is None:  # pragma: no cover - `_unreadable` already returned
             raise ExtractionError("No extractor for this file type.")
+
+        started = time.perf_counter()
+        label = format_label(media_type)
+        outcome = "ok"
+        try:
+            extracted = await self._run(found, data, name=name)
+        except SkippedDocument:
+            outcome = "skipped"
+            raise
+        except ExtractionError:
+            outcome = "failed"
+            raise
+        finally:
+            self._observe(label, outcome, time.perf_counter() - started)
+        return extracted
+
+    async def _run(self, found: Registration, data: bytes, *, name: str) -> Extracted:
+        """One extraction, in whichever place this one is allowed to run.
+
+        The isolated path owns its own clock, because it is the only one that can act on
+        it: killing a subprocess actually stops the work, where a thread can only be
+        abandoned. Both use the same configured number, so the isolation decision does not
+        also change what "too long" means.
+        """
+        if found.isolation_key is not None and self._pool is not None:
+            return await self._pool.run(found.isolation_key, data, name=name)
         try:
             async with asyncio.timeout(self._settings.extraction_timeout_seconds):
                 # Off the event loop: extraction is CPU-bound, and a pathological regex
                 # or a huge CSV would otherwise stall every other job on this worker.
-                return await asyncio.to_thread(extractor, data, name=name)
+                return await asyncio.to_thread(found.extractor, data, name=name)
         except TimeoutError as exc:
             # The thread is abandoned rather than killed — Python cannot interrupt one —
-            # so the cap bounds the *job*, not the CPU. Bounding the CPU would need a
-            # subprocess pool, which is a larger machine than one pathological file
-            # justifies; the worker stays responsive either way because the thread is not
-            # on the event loop.
+            # so this cap bounds the *job*, not the CPU. That is the whole reason the
+            # binary formats are isolated instead: see `app.services.extraction_pool`.
             raise ExtractionError(
                 "Reading this file took longer than "
-                f"{int(self._settings.extraction_timeout_seconds)} seconds and was stopped."
+                f"{int(self._settings.extraction_timeout_seconds)} seconds and was stopped.",
+                reason="extraction_timeout",
             ) from exc
+
+    def _observe(self, label: str, outcome: str, seconds: float) -> None:
+        if self._metrics is None:
+            return
+        self._metrics.duration.labels(format=label).observe(seconds)
+        self._metrics.completed.labels(format=label, outcome=outcome).inc()
 
     # -- resync ----------------------------------------------------------
 
@@ -481,6 +547,7 @@ class IngestionPipeline:
                     INGEST_DOCUMENT,
                     {"organization_id": str(organization_id), "document_id": str(document.id)},
                     idempotency_key=ingest_key(document.id, reference.etag),
+                    queue=queue_for(reference.name),
                 )
 
             for key, row in known.items():
@@ -605,7 +672,9 @@ class IngestionPipeline:
                 return
             document.status = outcome.status
             document.error = error
+            document.reason = outcome.reason
             document.chunk_count = outcome.chunk_count
+            document.page_count = outcome.page_count
             if media_type is not None:
                 document.mime_type = media_type
             if size_bytes is not None:

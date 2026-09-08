@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     storage_quota_bytes: int | None = Field(default=None, ge=1024)
     #: Wall-clock cap on reading one file, so a pathological input cannot occupy a worker.
     extraction_timeout_seconds: float = Field(default=120.0, gt=0)
+    #: Subprocesses reading PDFs and Office documents (task 11). Each holds a parser's
+    #: worth of memory, so this is the knob that bounds a worker's footprint under load.
+    extraction_workers: int = Field(default=2, ge=1, le=32)
+    #: Address space one of those subprocesses may occupy. ``None`` removes the limit,
+    #: which is also what happens on Windows, where there is no such rlimit to set.
+    extraction_memory_limit_bytes: int | None = Field(
+        default=1024 * 1024 * 1024, ge=64 * 1024 * 1024
+    )
     upload_url_ttl_seconds: int = Field(default=15 * 60, ge=60, le=24 * 3600)
 
     # -- embeddings (SPEC §9.4) --------------------------------------------

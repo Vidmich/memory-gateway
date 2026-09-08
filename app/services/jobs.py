@@ -71,6 +71,10 @@ class JobRequest:
     attempt: int = 1
     #: Seconds to wait before the job becomes visible. Set by a retry, zero otherwise.
     delay_seconds: float = 0.0
+    #: Which queue to deliver on. ``None`` is the default one. Set at the enqueue site
+    #: rather than decided by the worker, because the point of a second queue is that a
+    #: worker reading the first one never sees the job at all.
+    queue: str | None = None
 
     def next_attempt(self, *, delay_seconds: float) -> JobRequest:
         return JobRequest(
@@ -83,6 +87,7 @@ class JobRequest:
             request_id=self.request_id,
             attempt=self.attempt + 1,
             delay_seconds=delay_seconds,
+            queue=self.queue,
         )
 
 
@@ -193,6 +198,7 @@ class JobOutbox:
         *,
         idempotency_key: str,
         request_id: str | None = None,
+        queue: str | None = None,
     ) -> None:
         self.pending.append(
             JobRequest(
@@ -200,6 +206,7 @@ class JobOutbox:
                 payload=dict(payload),
                 idempotency_key=idempotency_key,
                 request_id=request_id if request_id is not None else get_request_id(),
+                queue=queue,
             )
         )
 
@@ -361,6 +368,31 @@ def ingest_key(document_id: uuid.UUID, content_hash: str | None) -> str:
     return f"ingest:{document_id}:{content_hash or 'unknown'}"
 
 
+#: The one non-default queue. A *logical* name: turning it into a Redis key is the
+#: adapter's business, and :class:`MemoryJobQueue` has no keys at all.
+HEAVY_QUEUE = "heavy"
+
+#: Extensions whose extraction is slow enough to be worth a queue of its own. Chosen from
+#: the *name* rather than the sniffed type because this is a scheduling decision made
+#: before the bytes have been read, and being wrong about one costs nothing but ordering.
+HEAVY_EXTENSIONS = frozenset({".pdf", ".docx", ".pptx", ".xlsx"})
+
+
+def queue_for(source_name: str) -> str | None:
+    """Which queue a document's ingestion belongs on.
+
+    A 300-page PDF takes seconds to read; a Markdown file takes a millisecond. On one
+    queue the second waits behind the first, and a customer who dropped a folder of notes
+    alongside a manual watches the notes sit at ``pending`` for no reason they can see.
+    Two queues and two worker deployments make that a capacity decision instead — and the
+    heavy one can be given fewer concurrent jobs, which is what actually bounds memory
+    when every job holds a parser.
+    """
+    from app.services.filetypes import extension_of
+
+    return HEAVY_QUEUE if extension_of(source_name) in HEAVY_EXTENSIONS else None
+
+
 def resync_key(connector_id: uuid.UUID) -> str:
     """The lock name for a reconciliation. Pressing the button twice is one sync."""
     return f"resync:{connector_id}"
@@ -372,6 +404,8 @@ def delete_key(connector_id: uuid.UUID) -> str:
 
 __all__ = [
     "DELETE_CONNECTOR",
+    "HEAVY_EXTENSIONS",
+    "HEAVY_QUEUE",
     "INGEST_DOCUMENT",
     "JOB_NAMES",
     "DeadLetter",
@@ -387,5 +421,6 @@ __all__ = [
     "RetryPolicy",
     "delete_key",
     "ingest_key",
+    "queue_for",
     "resync_key",
 ]

@@ -19,6 +19,7 @@ from typing import Any
 
 from app.core.config import Settings, get_settings
 from app.core.ids import uuid7
+from app.core.metrics import ExtractionMetrics
 from app.core.tenancy import Actor, TenantScope
 from app.db.models import Connector, Document, Organization
 from app.services.connector_source import storage_prefix
@@ -46,6 +47,10 @@ from app.services.vector_store import MemoryVectorStore
 #: is about the splitter rather than about a vocabulary downloaded at test time.
 TOKENIZER: Tokenizer = WordTokenizer()
 
+#: Width of the test embedder. Small because most tests index a handful of chunks and a
+#: narrow vector keeps the arithmetic cheap. A test with a corpus of a few hundred chunks
+#: should ask for more — the local embedder hashes words into buckets, and at 64 buckets a
+#: few hundred documents collide often enough that ranking stops being about the text.
 DIMENSION = 64
 
 
@@ -206,13 +211,15 @@ def build_connectors(
     vectors: MemoryVectorStore | None = None,
     limits: IngestionSettings | None = None,
     connector: Connector | None = None,
+    dimension: int = DIMENSION,
+    metrics: ExtractionMetrics | None = None,
 ) -> ConnectorFixture:
     settings = settings or get_settings()
     database = database or MemoryDatabase()
     store = MemoryConnectorStore(database)
     objects = objects or MemoryObjectStore()
     vectors = vectors or MemoryVectorStore()
-    embedder = HashEmbedder(dimension=DIMENSION, model="hash-bow")
+    embedder = HashEmbedder(dimension=dimension, model="hash-bow")
     registry = build_registry()
     queue = MemoryJobQueue()
     lock = MemoryLock()
@@ -228,6 +235,10 @@ def build_connectors(
         queue=queue,
         lock=lock,
         settings=limits,
+        # No `pool`: every extractor runs in a thread here. A subprocess pool costs a
+        # second of interpreter startup per child and buys isolation that only
+        # `tests/test_extraction_pool.py` is about.
+        metrics=metrics,
     )
     service = ConnectorService(
         store,

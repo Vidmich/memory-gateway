@@ -32,6 +32,7 @@ from app.services.extraction import (
     extract_tsv,
     flatten,
 )
+from app.services.filetypes import DOCX, PDF, PPTX, XLSX
 
 # ---------------------------------------------------------------------------
 # decoding
@@ -388,31 +389,42 @@ def test_an_unknown_format_has_no_extractor_and_no_note() -> None:
     assert registry.pending_note("video/quicktime") is None
 
 
-@pytest.mark.parametrize(
-    "media_type",
-    [
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ],
-)
-def test_task_elevens_formats_are_recognised_as_coming_soon(media_type: str) -> None:
-    """The distinction that keeps the gap honest: a roadmap item, not a broken product."""
+@pytest.mark.parametrize("media_type", [PDF, DOCX, PPTX, XLSX])
+def test_the_heavy_formats_are_registered_and_isolated(media_type: str) -> None:
+    """Task 11's four, and the fact that each is marked to run in a subprocess.
+
+    Both halves matter. Registering the extractor is what makes the format work;
+    ``isolation_key`` is what keeps a malformed one from taking the worker with it, and it
+    is a single omitted keyword away from being silently absent.
+    """
     registry = build_registry()
 
-    assert registry.find(media_type=media_type, name="x") is None
-    note = registry.pending_note(media_type)
-    assert note is not None and "later release" in note
+    found = registry.lookup(media_type=media_type, name="x")
+    assert found is not None
+    assert found.isolation_key is not None
+    assert registry.by_isolation_key(found.isolation_key) is found.extractor
+    assert registry.pending_note(media_type) is None
+
+
+@pytest.mark.parametrize("name", ["report.pdf", "policy.docx", "deck.pptx", "prices.xlsx"])
+def test_a_binary_format_is_never_reached_by_extension(name: str) -> None:
+    """A file whose *bytes* are text does not reach a parser written in C because of four
+    characters of its name. The registry has no extension entries for these formats at
+    all, which is what makes that structural rather than incidental."""
+    registry = build_registry()
+
+    assert registry.find(media_type="text/plain", name=name) is extract_plain
 
 
 def test_registering_an_extractor_clears_its_coming_soon_note() -> None:
-    """What task 11 actually does. One call, no change to the pipeline."""
+    """The mechanism task 11 used up for four formats, still there for the next one."""
     registry = build_registry()
-    registry.register(extract_plain, media_types=("application/pdf",), extensions=(".pdf",))
+    assert registry.pending_note("application/epub+zip") is not None
 
-    assert registry.find(media_type="application/pdf", name="a.pdf") is extract_plain
-    assert registry.pending_note("application/pdf") is None
+    registry.register(extract_plain, media_types=("application/epub+zip",))
+
+    assert registry.find(media_type="application/epub+zip", name="a.epub") is extract_plain
+    assert registry.pending_note("application/epub+zip") is None
 
 
 def test_every_text_format_the_spec_names_has_an_extractor() -> None:

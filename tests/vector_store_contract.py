@@ -326,6 +326,66 @@ async def a_dropped_collection_stops_reporting_a_width(store: VectorStore, org: 
 
 
 @check
+async def a_documents_chunks_come_back_in_the_order_they_were_cut(
+    store: VectorStore, org: uuid.UUID
+) -> None:
+    """The chunk inspector. Ordered by ``chunk_index`` rather than by point id, because
+    the ids are hashes and a store's natural order is therefore arbitrary."""
+    await store.ensure_collection(org, dimension=DIMENSION)
+    document, connector = uuid.uuid4(), uuid.uuid4()
+    await store.upsert(
+        org,
+        [
+            make_point(
+                document_id=document,
+                connector_id=connector,
+                organization_id=org,
+                index=index,
+                text=f"chunk {index}",
+            )
+            # Inserted out of order on purpose: an implementation that returned insertion
+            # order would pass a sorted set-up and fail on a real one.
+            for index in (2, 0, 1)
+        ],
+    )
+
+    found = await store.chunks(org, document)
+
+    assert [chunk.index for chunk in found] == [0, 1, 2]
+    assert [chunk.text for chunk in found] == ["chunk 0", "chunk 1", "chunk 2"]
+
+
+@check
+async def chunks_are_scoped_to_one_document(store: VectorStore, org: uuid.UUID) -> None:
+    """The inspector is opened from a row, and it must answer about that row."""
+    connector = uuid.uuid4()
+    wanted, other = uuid.uuid4(), uuid.uuid4()
+    await seed(
+        store,
+        org,
+        [
+            make_point(
+                document_id=wanted, connector_id=connector, organization_id=org, text="mine"
+            ),
+            make_point(
+                document_id=other, connector_id=connector, organization_id=org, text="theirs"
+            ),
+        ],
+    )
+
+    assert [chunk.text for chunk in await store.chunks(org, wanted)] == ["mine"]
+
+
+@check
+async def a_document_with_nothing_indexed_has_no_chunks(store: VectorStore, org: uuid.UUID) -> None:
+    """A document that reports ``indexed`` and returns nothing here is the case the
+    inspector exists to make visible, so the empty answer has to be an answer."""
+    await store.ensure_collection(org, dimension=DIMENSION)
+
+    assert await store.chunks(org, uuid.uuid4()) == []
+
+
+@check
 async def dropping_a_collection_removes_everything(store: VectorStore, org: uuid.UUID) -> None:
     await seed(
         store,

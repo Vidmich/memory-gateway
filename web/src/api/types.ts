@@ -65,6 +65,8 @@ export type ResyncResponse = components['schemas']['ResyncResponse']
 export type SearchRequest = components['schemas']['SearchRequest']
 export type SearchResponse = components['schemas']['SearchResponse']
 export type SearchHit = components['schemas']['SearchHit']
+export type DocumentChunk = components['schemas']['DocumentChunk']
+export type DocumentChunksResponse = components['schemas']['DocumentChunksResponse']
 
 export type SummaryResponse = components['schemas']['SummaryResponse']
 export type SeriesResponse = components['schemas']['SeriesResponse']

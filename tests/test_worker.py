@@ -112,6 +112,7 @@ def _ingestion_of(fixture: Any) -> Any:
     Built by hand rather than through the composition root because that one takes
     :class:`~app.core.clients.Clients`, which opens pools this test has no use for.
     """
+    from app.services.extraction_pool import ExtractionPool
     from app.workers.runtime import Ingestion
 
     return Ingestion(
@@ -125,6 +126,9 @@ def _ingestion_of(fixture: Any) -> Any:
         lock=fixture.lock,
         pipeline=fixture.pipeline,
         settings=fixture.pipeline._settings,
+        # Never used: the pool is lazy, and the pipeline this fixture holds was built
+        # without one, so no subprocess is started by anything below.
+        pool=ExtractionPool(),
     )
 
 

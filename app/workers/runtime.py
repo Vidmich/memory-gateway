@@ -19,10 +19,11 @@ from typing import Any
 
 from app.core.clients import Clients
 from app.core.config import Settings
-from app.core.metrics import JobMetrics
+from app.core.metrics import ExtractionMetrics, JobMetrics
 from app.services.connector_store import ConnectorStore, PostgresConnectorStore
 from app.services.embeddings import Embedder, EmbeddingSettings, build_embedder
 from app.services.extraction import ExtractorRegistry, build_registry
+from app.services.extraction_pool import ExtractionPool
 from app.services.ingestion import IngestionPipeline, IngestionSettings
 from app.services.job_queue import ArqJobQueue
 from app.services.job_store import PostgresDeadLetters
@@ -56,6 +57,13 @@ class Ingestion:
     lock: Lock
     pipeline: IngestionPipeline
     settings: IngestionSettings
+    #: The subprocess pool the heavy extractors run in. Lazy, so the API process — which
+    #: builds all of this to delete documents and reconcile connectors — starts no
+    #: children it will never use. Closed by whoever built it; see ``aclose`` below.
+    pool: ExtractionPool
+
+    async def aclose(self) -> None:
+        await self.pool.aclose()
 
 
 def embedding_settings(settings: Settings) -> EmbeddingSettings:
@@ -78,7 +86,13 @@ def ingestion_settings(settings: Settings) -> IngestionSettings:
     )
 
 
-def build_ingestion(clients: Clients, settings: Settings, *, queue: JobQueue) -> Ingestion:
+def build_ingestion(
+    clients: Clients,
+    settings: Settings,
+    *,
+    queue: JobQueue,
+    metrics: ExtractionMetrics | None = None,
+) -> Ingestion:
     limits = ingestion_settings(settings)
     store = PostgresConnectorStore(clients.session_factory)
     objects = S3ObjectStore(clients.storage, clients.bucket)
@@ -89,6 +103,13 @@ def build_ingestion(clients: Clients, settings: Settings, *, queue: JobQueue) ->
     tokenizer = build_tokenizer()
     registry = build_registry()
     lock = RedisLock(clients.redis)
+    pool = ExtractionPool(
+        workers=settings.extraction_workers,
+        # The same number the in-process path uses, so isolating a format does not also
+        # change what "too long" means for it.
+        timeout_seconds=settings.extraction_timeout_seconds,
+        memory_limit_bytes=settings.extraction_memory_limit_bytes,
+    )
 
     return Ingestion(
         store=store,
@@ -109,8 +130,11 @@ def build_ingestion(clients: Clients, settings: Settings, *, queue: JobQueue) ->
             queue=queue,
             lock=lock,
             settings=limits,
+            pool=pool,
+            metrics=metrics,
         ),
         settings=limits,
+        pool=pool,
     )
 
 

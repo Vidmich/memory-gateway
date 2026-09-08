@@ -125,6 +125,12 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ),
     ScopedEndpoint("DELETE", f"/api/v1/documents/{FOREIGN_DOCUMENT}"),
     ScopedEndpoint("POST", f"/api/v1/documents/{FOREIGN_DOCUMENT}/reindex"),
+    ScopedEndpoint(
+        "GET",
+        f"/api/v1/documents/{FOREIGN_DOCUMENT}/chunks",
+        note="the chunk inspector returns chunk *text*, so it discloses as much as the "
+        "debug search and is reachable with only the read capability",
+    ),
 )
 
 #: The global catalog is readable by everyone, so a foreign-id test on ``GET`` would be

@@ -33,6 +33,14 @@ dependencies = [
     # encoding detection is load-bearing enough that it should not vanish with a
     # dependency bump.
     "charset-normalizer>=3.5.1",
+    # Task 11. `pypdfium2` is the PDF text layer: Google's PDFium behind a thin ctypes
+    # binding, BSD-3-Clause, and roughly thirty times faster than pdfminer on the same
+    # document. The plan named `pymupdf` or `pdfplumber`; `app/services/pdf.py` says why
+    # this is neither. The three Office readers are the obvious ones and are all MIT.
+    "pypdfium2>=5.0",
+    "python-docx>=1.1.2",
+    "python-pptx>=1.0.2",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]
@@ -54,6 +62,10 @@ dev = [
     "uvicorn>=0.32",
     # Used only by the live-provider integration test, which skips without a key.
     "openai>=1.55",
+    # Task 11's fixtures are *written*, not committed: a PDF with a known header at a
+    # known position is something a reviewer can read the source of, and a checked-in
+    # binary is not. Test-time only — nothing in `app/` writes a PDF.
+    "reportlab>=4.2",
 ]
 
 [tool.uv]
@@ -112,6 +124,14 @@ warn_unreachable = true
 [[tool.mypy.overrides]]
 module = ["tests.*"]
 disallow_untyped_decorators = false
+
+# Task 11's readers. `pypdfium2` is a ctypes binding and `openpyxl` ships no stubs; both
+# are reached through a handful of calls in one module each, and the wrappers around them
+# are typed. `types-openpyxl` exists but lags the runtime, which trades a real error for a
+# fictional one.
+[[tool.mypy.overrides]]
+module = ["pypdfium2.*", "openpyxl.*", "reportlab.*"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # pytest

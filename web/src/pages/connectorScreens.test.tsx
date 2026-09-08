@@ -11,6 +11,7 @@ import { ToastProvider } from '@/components/Toast'
 import {
   makeConnector,
   makeDocument,
+  makeDocumentChunk,
   makeSearchHit,
   makeSummary,
   makeUser,
@@ -22,6 +23,7 @@ type ServerOptions = {
   connectors?: ReturnType<typeof makeConnector>[]
   documents?: ReturnType<typeof makeDocument>[]
   hits?: ReturnType<typeof makeSearchHit>[]
+  chunks?: ReturnType<typeof makeDocumentChunk>[]
   resync?: { added: number; updated: number; deleted: number; unchanged: number; skipped: number }
   saveError?: { status: number; code: string; message: string; param?: string }
 }
@@ -83,6 +85,10 @@ function fakeServer(options: ServerOptions = {}) {
           expires_in: 900,
         }),
       )
+    }
+    if (path.startsWith('/api/v1/documents/') && path.endsWith('/chunks')) {
+      const rows = options.chunks ?? [makeDocumentChunk()]
+      return Promise.resolve(json({ chunks: rows, chunk_count: rows.length }))
     }
     if (path.includes('/documents') && method === 'GET') {
       const status = new URL(path, 'http://x').searchParams.get('status')
@@ -472,6 +478,122 @@ describe('presigned upload', () => {
     renderAt('/connectors/c1', fakeServer())
 
     expect(await screen.findByText('orgs/o1/connectors/c1/')).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// extraction states and the chunk inspector (task 11)
+// ---------------------------------------------------------------------------
+
+describe('extraction states', () => {
+  const PDF = 'application/pdf'
+
+  it('shows how long a document is in the unit its format has', async () => {
+    renderAt(
+      '/connectors/c1',
+      fakeServer({
+        documents: [makeDocument({ source_name: 'manual.pdf', mime_type: PDF, page_count: 147 })],
+      }),
+    )
+
+    expect(await screen.findByText('147 pages')).toBeInTheDocument()
+  })
+
+  it('explains a scanned PDF instead of showing it as a failure', async () => {
+    renderAt(
+      '/connectors/c1',
+      fakeServer({
+        documents: [
+          makeDocument({
+            source_name: 'scan.pdf',
+            mime_type: PDF,
+            status: 'skipped',
+            reason: 'needs_ocr',
+            error: 'This PDF has 4 pages and almost no text in it, so it is probably a scan.',
+            chunk_count: 0,
+            page_count: 4,
+          }),
+        ],
+      }),
+    )
+
+    // The headline and the next step, not the server's sentence: a red row with a
+    // paragraph in it reads as a defect in the product rather than as a task.
+    expect(await screen.findByText(/needs OCR/i)).toBeInTheDocument()
+    expect(screen.getByText(/selectable text/i)).toBeInTheDocument()
+    expect(screen.queryByText(/almost no text in it/)).not.toBeInTheDocument()
+  })
+
+  it('falls back to the server sentence for a reason it does not know', async () => {
+    renderAt(
+      '/connectors/c1',
+      fakeServer({
+        documents: [
+          makeDocument({
+            status: 'failed',
+            reason: 'invented_later',
+            error: 'Something specific went wrong.',
+            chunk_count: 0,
+          }),
+        ],
+      }),
+    )
+
+    expect(await screen.findByText('Something specific went wrong.')).toBeInTheDocument()
+  })
+})
+
+describe('the chunk inspector', () => {
+  it('lists what a document became, with the page each chunk came from', async () => {
+    const user = userEvent.setup()
+    renderAt(
+      '/connectors/c1',
+      fakeServer({
+        documents: [makeDocument({ source_name: 'manual.pdf', chunk_count: 2 })],
+        chunks: [
+          makeDocumentChunk({ id: 'p1', chunk_index: 0, page_or_section: 'Warranty (p. 1)' }),
+          makeDocumentChunk({
+            id: 'p2',
+            chunk_index: 1,
+            page_or_section: 'Warranty > Coverage (p. 147)',
+            text: 'The Zynthorp QX-4471 ships from the Utrecht depot.',
+          }),
+        ],
+      }),
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Chunks' }))
+
+    expect(await screen.findByText('Warranty > Coverage (p. 147)')).toBeInTheDocument()
+    expect(screen.getByText(/Utrecht depot/)).toBeInTheDocument()
+  })
+
+  it('is not offered for a document with nothing in the index', async () => {
+    renderAt(
+      '/connectors/c1',
+      fakeServer({ documents: [makeDocument({ status: 'skipped', chunk_count: 0 })] }),
+    )
+
+    await screen.findByText('handbook.md')
+    expect(screen.queryByRole('button', { name: 'Chunks' })).not.toBeInTheDocument()
+  })
+
+  it('says so when the index holds fewer chunks than the row claims', async () => {
+    // The two disagreeing is the finding: a row claiming five with two indexed was written
+    // into a collection that has since been dropped, and "retrieval is bad" is how that
+    // otherwise presents.
+    const user = userEvent.setup()
+    renderAt(
+      '/connectors/c1',
+      fakeServer({
+        documents: [makeDocument({ chunk_count: 5 })],
+        chunks: [makeDocumentChunk()],
+      }),
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Chunks' }))
+
+    expect(await screen.findByText(/The document row says 5/)).toBeInTheDocument()
   })
 })
 

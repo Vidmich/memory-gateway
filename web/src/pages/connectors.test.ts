@@ -8,8 +8,10 @@ import {
   chunkingProblem,
   chunkingWarning,
   documentTone,
+  explanationFor,
   formatBytes,
   inFlight,
+  pageLabel,
   resyncSummary,
   statusSummary,
   uploadSnippet,
@@ -224,5 +226,50 @@ describe('uploadSnippet', () => {
 
     expect(snippet).toContain('-X PUT')
     expect(snippet).toContain('https://storage.test/presigned?sig=abc')
+  })
+})
+
+
+describe('pageLabel', () => {
+  const PDF = 'application/pdf'
+  const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+  it('names the unit the format actually has', () => {
+    expect(pageLabel({ mime_type: PDF, page_count: 147 })).toBe('147 pages')
+    expect(pageLabel({ mime_type: PPTX, page_count: 12 })).toBe('12 slides')
+    expect(pageLabel({ mime_type: XLSX, page_count: 3 })).toBe('3 sheets')
+  })
+
+  it('is singular for one', () => {
+    expect(pageLabel({ mime_type: PDF, page_count: 1 })).toBe('1 page')
+  })
+
+  it('shows nothing for a format with no such unit', () => {
+    // A Word document's pagination is decided by the renderer, so there is no honest
+    // number to show and the server sends none.
+    expect(pageLabel({ mime_type: 'text/markdown', page_count: null })).toBe('\u2014')
+  })
+})
+
+describe('explanationFor', () => {
+  it('turns a scanned PDF into a state with a next step in it', () => {
+    const explained = explanationFor({ reason: 'needs_ocr' })
+
+    expect(explained?.headline).toContain('OCR')
+    expect(explained?.guidance).toContain('selectable text')
+  })
+
+  it('tells somebody how to get past a password-protected file', () => {
+    expect(explanationFor({ reason: 'password_protected' })?.guidance).toContain(
+      'unprotected copy',
+    )
+  })
+
+  it('falls through for a code it does not recognise', () => {
+    // The row then shows the server's sentence, which is what every other row shows. A
+    // reason added on the server must not blank the explanation out.
+    expect(explanationFor({ reason: 'something_new' })).toBeNull()
+    expect(explanationFor({ reason: null })).toBeNull()
   })
 })

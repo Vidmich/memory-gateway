@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
-from app.services.jobs import JobRequest, JobRunner
+from app.services.jobs import HEAVY_QUEUE, JobRequest, JobRunner
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,15 @@ ARQ_FUNCTION = "run_gateway_job"
 #: arq's default sorted-set key. Read for the depth gauge and the readiness probe; named
 #: here rather than inlined so a queue rename is one edit.
 ARQ_QUEUE_KEY = "arq:queue"
+
+#: The heavy queue's key. Its own sorted set, which is the whole point: a worker started
+#: with ``queue_name`` set to this one never sees an ordinary Markdown file, and a
+#: 300-page PDF never sits in front of one.
+ARQ_HEAVY_QUEUE_KEY = "arq:queue:heavy"
+
+#: Logical queue name to Redis key. The mapping lives here because it is an arq detail;
+#: :mod:`app.services.jobs` names queues without knowing they are sorted sets.
+QUEUE_KEYS: dict[str | None, str] = {None: ARQ_QUEUE_KEY, HEAVY_QUEUE: ARQ_HEAVY_QUEUE_KEY}
 
 
 def as_payload(request: JobRequest) -> dict[str, Any]:
@@ -47,6 +56,10 @@ def as_payload(request: JobRequest) -> dict[str, Any]:
         "idempotency_key": request.idempotency_key,
         "request_id": request.request_id,
         "attempt": request.attempt,
+        # Carried so a retry lands back on the queue the work belongs to. Without it the
+        # second attempt at a 300-page PDF would be scheduled in front of the light work
+        # the split exists to protect.
+        "queue": request.queue,
     }
 
 
@@ -57,6 +70,7 @@ def from_payload(data: dict[str, Any]) -> JobRequest:
         idempotency_key=str(data.get("idempotency_key") or ""),
         request_id=data.get("request_id"),
         attempt=int(data.get("attempt") or 1),
+        queue=data.get("queue") or None,
     )
 
 
@@ -105,6 +119,7 @@ class ArqJobQueue:
             ARQ_FUNCTION,
             as_payload(request),
             _job_id=request.idempotency_key,
+            _queue_name=QUEUE_KEYS.get(request.queue, ARQ_QUEUE_KEY),
             _defer_by=(
                 timedelta(seconds=request.delay_seconds) if request.delay_seconds > 0 else None
             ),
@@ -118,7 +133,17 @@ class ArqJobQueue:
         return str(job.job_id)
 
     async def depth(self) -> int:
-        return int(await self._pool.zcard(ARQ_QUEUE_KEY))
+        """Every queue, added together.
+
+        The gauge answers "is ingestion falling behind", and that question is about the
+        backlog rather than about which sorted set it is sitting in. Splitting it by queue
+        would be two series that have to be summed at read time to get the number anyone
+        actually alerts on.
+        """
+        total = 0
+        for key in set(QUEUE_KEYS.values()):
+            total += int(await self._pool.zcard(key))
+        return total
 
     async def ping(self) -> None:
         await self._pool.ping()
@@ -174,7 +199,9 @@ class MemoryJobQueue:
 
 __all__ = [
     "ARQ_FUNCTION",
+    "ARQ_HEAVY_QUEUE_KEY",
     "ARQ_QUEUE_KEY",
+    "QUEUE_KEYS",
     "ArqJobQueue",
     "MemoryJobQueue",
     "as_payload",

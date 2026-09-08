@@ -104,7 +104,7 @@ services:
       RUN_MIGRATIONS: "0"
     volumes:
       - ../../app:/srv/app
-    depends_on:
+    depends_on: &worker-deps
       postgres:
         condition: service_healthy
       redis:
@@ -113,6 +113,26 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  # The same worker reading the other queue. PDFs and Office documents are enqueued
+  # there (see `app/services/jobs.queue_for`), so a folder of notes dropped alongside a
+  # 300-page manual does not sit behind it. Fewer concurrent jobs on purpose: here
+  # concurrency multiplies a parser's memory rather than an HTTP client's.
+  #
+  # Deleting this service is a supported configuration — those jobs then wait for
+  # somebody to start one, which is a visible backlog rather than a silent loss.
+  heavy-worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["arq", "app.workers.main.HeavyWorkerSettings"]
+    environment:
+      <<: *app-env
+      RUN_MIGRATIONS: "0"
+    volumes:
+      - ../../app:/srv/app
+    depends_on: *worker-deps
     restart: unless-stopped
 
   postgres:

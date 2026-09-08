@@ -19,10 +19,13 @@ where the document's own boundaries are. A format with no structure returns one 
 and ``by_heading`` falls back to ``recursive`` for it — which is the fallback the SPEC
 asks for, arrived at by the shape of the data rather than by a special case.
 
-Task 11 adds PDF and Office extractors by registering them. Until then those extensions
-are *recognised* and skipped with "coming soon" rather than failed: a customer who drags
-in a folder of PDFs should learn that the feature is not here yet, not conclude that the
-product is broken.
+PDF and Office extraction lives in :mod:`app.services.pdf` and :mod:`app.services.office`
+and arrives here as four more :meth:`ExtractorRegistry.register` calls — which is what the
+registry was for. Those four are also the only ones marked for **isolation**: they are
+third-party parsers over adversarial binary input, where a malformed file can loop, eat a
+gigabyte, or take the interpreter down with it, and none of those should be able to touch
+a worker that is halfway through somebody else's upload. See
+:mod:`app.services.extraction_pool`.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ from typing import Any, Protocol
 
 from charset_normalizer import from_bytes
 
-from app.services.filetypes import bom_encoding, extension_of, is_text
+from app.services.filetypes import DOCX, PDF, PPTX, XLSX, bom_encoding, extension_of, is_text
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +63,46 @@ MAX_CSV_ROWS = 20_000
 
 class ExtractionError(Exception):
     """The file could not be read. The message goes to ``documents.error`` verbatim, so
-    it is written for a customer: what was wrong, and where."""
+    it is written for a customer: what was wrong, and where.
+
+    ``reason`` is the same fact in a form a program can branch on. The sentence is for a
+    person and will be rewritten as the wording improves; the code is what the UI matches
+    on to turn "password-protected" into an explained state with a way out of it, rather
+    than a red row with a paragraph in it. Deliberately not constrained by the database —
+    a new extractor should not need a migration to explain itself.
+    """
+
+    def __init__(self, message: str, *, reason: str = "extraction_failed") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Survive a trip through :mod:`app.services.extraction_pool`.
+
+        An exception raised in a subprocess is pickled back to the parent, and the default
+        reconstruction calls ``cls(*args)`` — which drops a keyword-only field. Without
+        this, every ``needs_ocr`` decided inside an isolated extractor would arrive as a
+        generic failure, and the UI would show a red row instead of the explanation. The
+        symptom would appear only in the isolated formats, which are exactly the ones that
+        needed the reasons.
+        """
+        return (_rebuild_error, (type(self), str(self), self.reason))
 
 
-class UnsupportedFormat(ExtractionError):
-    """Recognised, but nothing here can read it. Becomes ``skipped``, not ``failed``."""
+class SkippedDocument(ExtractionError):
+    """Read successfully, and deliberately not indexed.
+
+    The distinction from a plain failure is the one the customer cares about. A failure is
+    something that went wrong and might work on retry; this is a decision, and pressing
+    **Retry** on it will reach the same decision again. A scan with no text layer is the
+    case this exists for: indexing it would produce a document that reports ``indexed``
+    with nothing in it, which is worse than a refusal because nothing looks wrong.
+    """
+
+
+def _rebuild_error(kind: type[ExtractionError], message: str, reason: str) -> ExtractionError:
+    """Named by :meth:`ExtractionError.__reduce__`; module-level so that it pickles."""
+    return kind(message, reason=reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +121,19 @@ class Section:
 @dataclass(frozen=True, slots=True)
 class Extracted:
     sections: tuple[Section, ...]
+    #: Pages, slides or sheets — the format's own unit, named in the UI from the media
+    #: type. ``None`` where the format has no such unit: a Word document's pagination is
+    #: decided by the renderer from the fonts and the paper size, so any number here would
+    #: be invented.
+    page_count: int | None = None
+    #: Whether the chunker must keep these boundaries whatever the connector's strategy
+    #: says. Two formats claim it, for two different reasons: a slide is a unit somebody
+    #: authored, and gluing two into one chunk produces a chunk about two subjects; a PDF
+    #: page is what a citation names, and a chunk spanning four of them can only cite one
+    #: of the four truthfully. The extractor sets it because the extractor is the only
+    #: thing that knows which format it is looking at — see
+    #: :func:`~app.services.chunking.chunk_document`.
+    atomic_sections: bool = False
 
     @property
     def text(self) -> str:
@@ -362,7 +413,7 @@ def extract_csv(data: bytes, *, name: str, delimiter: str | None = None) -> Extr
             if number > MAX_CSV_ROWS:
                 truncated = True
                 break
-            rendered = _record(columns, row)
+            rendered = render_record(columns, row)
             if rendered:
                 records.append(rendered)
     except csv.Error as exc:
@@ -388,7 +439,7 @@ def _sniff_delimiter(text: str) -> str:
         return ","
 
 
-def _record(columns: Sequence[str], row: Sequence[str]) -> str:
+def render_record(columns: Sequence[str], row: Sequence[str]) -> str:
     lines = []
     for index, value in enumerate(row):
         cleaned = value.strip()
@@ -467,27 +518,30 @@ def flatten(value: Any, prefix: str = "") -> Iterator[str]:
 
 @dataclass(frozen=True, slots=True)
 class Registration:
+    """One extractor, plus how it is allowed to run."""
+
     extractor: Extractor
-    media_types: tuple[str, ...]
-    extensions: tuple[str, ...]
+    #: The name a subprocess can look this extractor up under, or ``None`` for one that
+    #: runs in the worker like everything else. A *name* rather than the function itself
+    #: because the function has to cross a process boundary and a closure does not pickle;
+    #: the child resolves it from its own copy of the registry. See
+    #: :mod:`app.services.extraction_pool`.
+    isolation_key: str | None = None
 
 
 class ExtractorRegistry:
-    """Which extractor reads which file.
+    """Which extractor reads which file, and where it is allowed to run.
 
     Keyed by sniffed media type *and* by extension, and consulted in that order. The
     media type is the stronger key because it was derived from the bytes; the extension
     is the fallback for a *textual* type this build has no opinion about, which is what
     lets a ``.rst`` file work even if a future sniffer stops recognising it. The
     restriction to text is load-bearing: see :func:`~app.services.filetypes.is_text`.
-
-    Task 11 calls :meth:`register` with a PDF extractor and the ``coming soon`` entry for
-    ``application/pdf`` disappears — one call, no change to the pipeline.
     """
 
     def __init__(self) -> None:
-        self._by_media_type: dict[str, Extractor] = {}
-        self._by_extension: dict[str, Extractor] = {}
+        self._by_media_type: dict[str, Registration] = {}
+        self._by_extension: dict[str, Registration] = {}
         self._pending: dict[str, str] = {}
 
     def register(
@@ -496,12 +550,14 @@ class ExtractorRegistry:
         *,
         media_types: Iterable[str] = (),
         extensions: Iterable[str] = (),
+        isolation_key: str | None = None,
     ) -> None:
+        registration = Registration(extractor=extractor, isolation_key=isolation_key)
         for media_type in media_types:
-            self._by_media_type[media_type] = extractor
+            self._by_media_type[media_type] = registration
             self._pending.pop(media_type, None)
         for extension in extensions:
-            self._by_extension[extension.lower()] = extractor
+            self._by_extension[extension.lower()] = registration
 
     def register_coming_soon(self, media_type: str, note: str) -> None:
         """Recognised, deliberately not implemented yet.
@@ -513,7 +569,7 @@ class ExtractorRegistry:
         if media_type not in self._by_media_type:
             self._pending[media_type] = note
 
-    def find(self, *, media_type: str, name: str) -> Extractor | None:
+    def lookup(self, *, media_type: str, name: str) -> Registration | None:
         found = self._by_media_type.get(media_type)
         if found is not None:
             return found
@@ -521,8 +577,27 @@ class ExtractorRegistry:
             # The extension gets no say over bytes that are not text. A JPEG called
             # `notes.txt` would otherwise reach the plain-text extractor, decode to
             # mojibake, and be indexed — the exact failure sniffing exists to prevent.
+            # It is also why the binary formats register no extensions at all: a `.pdf`
+            # that is not a PDF must not reach a PDF parser.
             return None
         return self._by_extension.get(extension_of(name))
+
+    def find(self, *, media_type: str, name: str) -> Extractor | None:
+        found = self.lookup(media_type=media_type, name=name)
+        return found.extractor if found is not None else None
+
+    def by_isolation_key(self, key: str) -> Extractor | None:
+        """The extractor a subprocess was asked to run.
+
+        The other half of :attr:`Registration.isolation_key`: the parent sends a name, the
+        child builds its own registry and resolves it here. Nothing but a string crosses
+        the boundary, so a worker cannot be asked to call an arbitrary callable by anything
+        that can write to the queue.
+        """
+        for registration in self._by_media_type.values():
+            if registration.isolation_key == key:
+                return registration.extractor
+        return None
 
     def pending_note(self, media_type: str) -> str | None:
         return self._pending.get(media_type)
@@ -576,17 +651,24 @@ def build_registry() -> ExtractorRegistry:
         extract_jsonl, media_types=("application/x-ndjson",), extensions=(".jsonl", ".ndjson")
     )
 
-    # Task 11. Named individually rather than as one "documents" bucket, because the
-    # message a customer reads should be about the file they actually dropped.
-    registry.register_coming_soon("application/pdf", "PDF extraction arrives in a later release")
-    for media_type in (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ):
-        registry.register_coming_soon(
-            media_type, "Office document extraction arrives in a later release"
-        )
+    # Task 11. Imported here rather than at module scope because both modules import from
+    # this one; a function body runs after this module is fully loaded, so the cycle never
+    # forms. Media types only, no extensions: these are binary formats, the bytes have
+    # already settled what they are, and letting a name overrule that would hand a renamed
+    # executable to a parser written in C.
+    from app.services.office import extract_docx, extract_pptx, extract_xlsx
+    from app.services.pdf import extract_pdf
+
+    registry.register(extract_pdf, media_types=(PDF,), isolation_key="pdf")
+    registry.register(extract_docx, media_types=(DOCX,), isolation_key="docx")
+    registry.register(extract_pptx, media_types=(PPTX,), isolation_key="pptx")
+    registry.register(extract_xlsx, media_types=(XLSX,), isolation_key="xlsx")
+
+    # EPUB is sniffed as its own type — it is a ZIP with a known extension — but nothing
+    # reads it yet. Recognised and deferred, rather than lumped in with the videos: one is
+    # a roadmap item and the other is a file nobody should have uploaded, and a customer
+    # needs to be able to tell which they are looking at.
+    registry.register_coming_soon("application/epub+zip", "EPUB extraction is not available yet")
     return registry
 
 
@@ -616,8 +698,9 @@ __all__ = [
     "ExtractionError",
     "Extractor",
     "ExtractorRegistry",
+    "Registration",
     "Section",
-    "UnsupportedFormat",
+    "SkippedDocument",
     "build_registry",
     "decode",
     "extract_csv",
@@ -628,4 +711,5 @@ __all__ = [
     "extract_plain",
     "extract_tsv",
     "flatten",
+    "render_record",
 ]

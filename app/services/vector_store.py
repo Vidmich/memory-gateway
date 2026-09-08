@@ -78,6 +78,28 @@ class Match:
         return str(self.payload.get("text", ""))
 
 
+@dataclass(frozen=True, slots=True)
+class Stored:
+    """One indexed chunk, read back by *identity* rather than by similarity.
+
+    Separate from :class:`Match` because it has no score, and a score of zero would be a
+    number somebody eventually renders. What this answers is "what is actually in the
+    index for this document", which is the first question when a file reports ``indexed``
+    and its answers are still wrong.
+    """
+
+    id: str
+    payload: dict[str, Any]
+
+    @property
+    def text(self) -> str:
+        return str(self.payload.get("text", ""))
+
+    @property
+    def index(self) -> int:
+        return int(self.payload.get("chunk_index", 0))
+
+
 class VectorStore(Protocol):
     async def ensure_collection(self, organization_id: uuid.UUID, *, dimension: int) -> None:
         """Create the collection if it is missing, with payload indexes. Idempotent, and
@@ -121,6 +143,18 @@ class VectorStore(Protocol):
         limit: int = DEFAULT_SEARCH_LIMIT,
         min_score: float = 0.0,
     ) -> list[Match]: ...
+
+    async def chunks(
+        self, organization_id: uuid.UUID, document_id: uuid.UUID, *, limit: int = 500
+    ) -> list[Stored]:
+        """One document's chunks, in the order they were cut.
+
+        The chunk inspector, and the fastest way to see whether extraction produced text
+        worth embedding: a PDF whose every chunk is a page header, a spreadsheet indexed
+        as bare cells, a Word file that came out as its pre-review draft. All three report
+        ``indexed`` and answer badly, and nothing else on the screen distinguishes them.
+        """
+        ...
 
     async def count(
         self,
@@ -281,6 +315,26 @@ class QdrantVectorStore:
             for point in found.points
         ]
 
+    async def chunks(
+        self, organization_id: uuid.UUID, document_id: uuid.UUID, *, limit: int = 500
+    ) -> list[Stored]:
+        name = collection_for(organization_id)
+        if not await self._client.collection_exists(name):
+            return []
+        # `scroll`, not `query_points`: this is a filtered read of everything matching,
+        # with no vector to score against. Ordering is done here rather than pushed down
+        # because Qdrant orders a scroll by point id, and the ids are hashes.
+        points, _ = await self._client.scroll(
+            collection_name=name,
+            scroll_filter=_equals("document_id", str(document_id)),
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        found = [Stored(id=str(point.id), payload=dict(point.payload or {})) for point in points]
+        found.sort(key=lambda chunk: chunk.index)
+        return found
+
     async def count(
         self,
         organization_id: uuid.UUID,
@@ -401,6 +455,18 @@ class MemoryVectorStore:
         scored.sort(key=lambda match: (-match.score, match.id))
         return scored[:limit]
 
+    async def chunks(
+        self, organization_id: uuid.UUID, document_id: uuid.UUID, *, limit: int = 500
+    ) -> list[Stored]:
+        points = self.collections.get(collection_for(organization_id), {})
+        found = [
+            Stored(id=point.id, payload=dict(point.payload))
+            for point in points.values()
+            if str(point.payload.get("document_id")) == str(document_id)
+        ]
+        found.sort(key=lambda chunk: chunk.index)
+        return found[:limit]
+
     async def count(
         self,
         organization_id: uuid.UUID,
@@ -439,6 +505,7 @@ __all__ = [
     "Match",
     "MemoryVectorStore",
     "QdrantVectorStore",
+    "Stored",
     "VectorStore",
     "collection_for",
     "point_id",

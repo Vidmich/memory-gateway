@@ -214,6 +214,82 @@ export function chunkingWarning(connector: ConnectorResponse, changed: boolean):
   } already indexed keep their old chunks until you reindex them.`
 }
 
+/**
+ * What a format's `page_count` counts, from the media type.
+ *
+ * The noun is derived here rather than stored beside the number, because it is a fact
+ * about the format: storing both would be two columns that can disagree, and the one that
+ * would be wrong is the one nobody looks at.
+ */
+const PAGE_UNITS: Record<string, [string, string]> = {
+  'application/pdf': ['page', 'pages'],
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': [
+    'slide',
+    'slides',
+  ],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['sheet', 'sheets'],
+}
+
+/** `147 pages`, `12 slides`, `3 sheets`, or an em dash where the format has no such unit. */
+export function pageLabel(document: {
+  mime_type: string | null
+  page_count: number | null
+}): string {
+  const unit = document.mime_type ? PAGE_UNITS[document.mime_type] : undefined
+  if (!unit || document.page_count === null) return '—'
+  return `${document.page_count} ${document.page_count === 1 ? unit[0] : unit[1]}`
+}
+
+export type Explanation = {
+  headline: string
+  guidance: string
+}
+
+/**
+ * The states that are not really failures, spelled out.
+ *
+ * A scanned PDF and a password-protected file are the two things a customer uploads that
+ * cannot be indexed *and* can be fixed by the customer. Rendering them as a red row with a
+ * paragraph in it makes them look like a defect in the product; rendering them as an
+ * explained state with the next step in it makes them a task.
+ *
+ * Keyed on `reason`, never on the message: the message is written for a person and gets
+ * rewritten as the wording improves, and a UI matching on its text breaks silently when it
+ * does. An unrecognised code falls through to showing the sentence, which is what every
+ * other row shows anyway.
+ */
+const EXPLANATIONS: Record<string, Explanation> = {
+  needs_ocr: {
+    headline: 'Scanned — needs OCR',
+    guidance:
+      'This PDF is images of pages with no text layer, so there is nothing to index. Upload a version with selectable text, or run it through OCR first.',
+  },
+  password_protected: {
+    headline: 'Password-protected',
+    guidance:
+      'Save an unprotected copy and upload that. The gateway does not store document passwords.',
+  },
+  not_yet_supported: {
+    headline: 'Not supported yet',
+    guidance:
+      'The format is recognised. This file is safe to leave here — a resync will pick it up when support arrives.',
+  },
+  extraction_timeout: {
+    headline: 'Took too long to read',
+    guidance:
+      'Reading this file hit the time limit. That is usually a very large document, or one with unusual internal structure; splitting it up is the reliable fix.',
+  },
+  extraction_out_of_memory: {
+    headline: 'Too large to read',
+    guidance:
+      'Reading this file needed more memory than one document is allowed. Splitting it into smaller files is the reliable fix.',
+  },
+}
+
+export function explanationFor(document: { reason: string | null }): Explanation | null {
+  return document.reason ? (EXPLANATIONS[document.reason] ?? null) : null
+}
+
 /** `aws s3 cp` is not the instruction; a presigned PUT is. */
 export function uploadSnippet(url: string): string {
   return `curl -X PUT --upload-file ./your-file.md \\\n  "${url}"`

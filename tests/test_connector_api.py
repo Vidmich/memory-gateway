@@ -422,6 +422,75 @@ async def test_an_empty_search_query_is_a_422(auth_harness: AuthHarness, token: 
 
 
 # ---------------------------------------------------------------------------
+# the chunk inspector (task 11)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_chunk_inspector_lists_what_a_document_became(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    """The fastest way to see whether extraction produced sensible text. A document that
+    reports ``indexed`` with a plausible chunk count and answers badly looks identical to
+    a healthy one everywhere else on the screen."""
+    connector = await created(auth_harness, token)
+    await upload(
+        auth_harness.client, auth_harness.bearer(token), connector["id"], ("handbook.md", HANDBOOK)
+    )
+    fixture = auth_harness.auth.connectors
+    assert fixture is not None
+    await fixture.run_jobs()
+    listed = await auth_harness.client.get(
+        f"/api/v1/connectors/{connector['id']}/documents", headers=auth_harness.bearer(token)
+    )
+    [document] = listed.json()["items"]
+
+    response = await auth_harness.client.get(
+        f"/api/v1/documents/{document['id']}/chunks", headers=auth_harness.bearer(token)
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["chunk_count"] == document["chunk_count"]
+    [chunk] = body["chunks"]
+    assert chunk["chunk_index"] == 0
+    assert chunk["page_or_section"] == "Handbook"
+    assert "widgets" in chunk["text"]
+    assert chunk["token_count"] > 0
+
+
+async def test_the_chunk_inspector_is_a_404_for_a_document_that_does_not_exist(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    response = await auth_harness.client.get(
+        f"/api/v1/documents/{uuid.uuid4()}/chunks", headers=auth_harness.bearer(token)
+    )
+
+    assert response.status_code == 404
+
+
+async def test_a_skipped_document_carries_a_reason_code_beside_its_sentence(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    """The sentence is for a person and gets rewritten as the wording improves; the code
+    is what the UI branches on to turn a refusal into an explained state."""
+    connector = await created(auth_harness, token)
+    await upload(
+        auth_harness.client, auth_harness.bearer(token), connector["id"], ("clip.mov", MOV)
+    )
+    fixture = auth_harness.auth.connectors
+    assert fixture is not None
+    await fixture.run_jobs()
+
+    response = await auth_harness.client.get(
+        f"/api/v1/connectors/{connector['id']}/documents", headers=auth_harness.bearer(token)
+    )
+
+    [document] = response.json()["items"]
+    assert document["reason"] == "unsupported_format"
+    assert document["page_count"] is None
+
+
+# ---------------------------------------------------------------------------
 # capabilities
 # ---------------------------------------------------------------------------
 

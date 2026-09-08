@@ -22,9 +22,9 @@ from app.core.clients import Clients
 from app.core.config import Settings, get_settings
 from app.core.logging import bind_request_id, configure_logging
 from app.core.metrics import build_metrics
-from app.services.job_queue import ARQ_FUNCTION, ArqJobQueue, from_payload
+from app.services.job_queue import ARQ_FUNCTION, ARQ_HEAVY_QUEUE_KEY, ArqJobQueue, from_payload
 from app.services.jobs import JobRunner
-from app.workers.runtime import build_dead_letters, build_ingestion, build_runner
+from app.workers.runtime import Ingestion, build_dead_letters, build_ingestion, build_runner
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +53,10 @@ async def startup(context: dict[str, Any]) -> None:
     # arq hands the worker its own pool; reusing it means the queue the runner re-enqueues
     # retries onto is the same queue this worker is reading from.
     queue = ArqJobQueue(context["redis"])
-    ingestion = build_ingestion(clients, settings, queue=queue)
+    ingestion = build_ingestion(clients, settings, queue=queue, metrics=metrics.extraction)
 
     context["clients"] = clients
+    context["ingestion"] = ingestion
     context["runner"] = build_runner(
         ingestion,
         settings,
@@ -66,6 +67,11 @@ async def startup(context: dict[str, Any]) -> None:
 
 
 async def shutdown(context: dict[str, Any]) -> None:
+    ingestion: Ingestion | None = context.get("ingestion")
+    if ingestion is not None:
+        # The extraction subprocesses are children of this process. A worker that exits
+        # without stopping them leaves them behind on every restart.
+        await ingestion.aclose()
     clients: Clients | None = context.get("clients")
     if clients is not None:
         await clients.aclose()
@@ -98,6 +104,26 @@ class WorkerSettings:
     keep_result = 300
 
 
+class HeavyWorkerSettings(WorkerSettings):
+    """The same worker, reading the other queue: ``arq app.workers.main.HeavyWorkerSettings``.
+
+    PDFs and Office documents are enqueued here (see
+    :func:`~app.services.jobs.queue_for`), and everything else stays on the default queue.
+    The split is about *ordering*, not capability: without it a folder of notes dropped
+    alongside a 300-page manual sits at ``pending`` behind it for no reason a customer can
+    see. It is also where the memory ceiling actually gets set, because concurrency here
+    multiplies a parser's footprint rather than an HTTP client's — hence the lower job
+    count, deliberately not derived from ``worker_max_jobs``.
+
+    Running it is optional. With no heavy worker deployed, those jobs simply wait, which
+    is a visible backlog rather than a silent loss — and a single-worker deployment can
+    read both by starting two processes from the same image.
+    """
+
+    queue_name = ARQ_HEAVY_QUEUE_KEY
+    max_jobs = 2
+
+
 # `arq` also accepts a module-level `functions` list; naming the class explicitly in the
 # command keeps the settings and the functions in one place.
-__all__ = ["ARQ_FUNCTION", "WorkerSettings", "run_gateway_job"]
+__all__ = ["ARQ_FUNCTION", "HeavyWorkerSettings", "WorkerSettings", "run_gateway_job"]

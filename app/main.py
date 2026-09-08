@@ -121,7 +121,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Ingestion. Built here, in the API process, because two of its operations are
         # synchronous — deleting a document and reconciling a connector — and the worker
         # builds the same objects from the same function, so the two cannot drift.
-        ingestion = build_ingestion(clients, settings, queue=build_queue(clients.jobs))
+        ingestion = build_ingestion(
+            clients, settings, queue=build_queue(clients.jobs), metrics=metrics.extraction
+        )
         app.state.ingestion = ingestion
         # Retrieval reads the same index ingestion writes, through the same two ports —
         # which is what makes "did my upload become searchable" and "does the gateway see
@@ -202,6 +204,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Fire-and-forget writes (`last_used_at`) get a moment to land before the
             # pools they need are closed underneath them.
             await background.drain()
+            # Before the clients, because a child process holds nothing of theirs but is
+            # a process: leaving it behind on a rolling restart leaks one per replica.
+            await ingestion.aclose()
             await clients.aclose()
             logger.info("service stopped")
 

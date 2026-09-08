@@ -450,6 +450,82 @@
         "title": "CredentialStatus",
         "type": "object"
       },
+      "DocumentChunk": {
+        "description": "One indexed chunk, as the inspector shows it. No score: nothing was searched for.",
+        "properties": {
+          "chunk_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Index"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "page_or_section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Or Section"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "token_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Count"
+          }
+        },
+        "required": [
+          "id",
+          "chunk_index",
+          "page_or_section",
+          "token_count",
+          "text"
+        ],
+        "title": "DocumentChunk",
+        "type": "object"
+      },
+      "DocumentChunksResponse": {
+        "properties": {
+          "chunk_count": {
+            "title": "Chunk Count",
+            "type": "integer"
+          },
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentChunk"
+            },
+            "title": "Chunks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "chunks",
+          "chunk_count"
+        ],
+        "title": "DocumentChunksResponse",
+        "type": "object"
+      },
       "DocumentResponse": {
         "properties": {
           "chunk_count": {
@@ -527,6 +603,28 @@
             ],
             "title": "Mime Type"
           },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
           "size_bytes": {
             "title": "Size Bytes",
             "type": "integer"
@@ -558,7 +656,9 @@
           "size_bytes",
           "status",
           "error",
+          "reason",
           "chunk_count",
+          "page_count",
           "embedding_model",
           "content_hash",
           "indexed_at",
@@ -4614,6 +4714,62 @@
           }
         },
         "summary": "Delete Document",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/v1/documents/{document_id}/chunks": {
+      "get": {
+        "description": "The chunk inspector: what this document actually became, in cut order.\n\nA read, so it sits behind the read capability rather than the write one \u2014 looking at\nwhat was indexed is not a change, and the people who most need to look at it are the\nones who cannot change anything.",
+        "operationId": "document_chunks_api_v1_documents__document_id__chunks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentChunksResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Document Chunks",
         "tags": [
           "connectors"
         ]

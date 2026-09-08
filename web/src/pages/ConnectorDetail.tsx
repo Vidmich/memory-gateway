@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   useDeleteDocument,
+  useDocumentChunks,
   useReindexDocument,
   useSearch,
   useUpdateConnector,
@@ -22,7 +23,9 @@ import {
   chunkingProblem,
   chunkingWarning,
   documentTone,
+  explanationFor,
   formatBytes,
+  pageLabel,
   uploadSnippet,
   type ChunkingForm,
 } from '@/pages/connectors'
@@ -90,8 +93,8 @@ export function UploadZone({ connectorId, disabled }: { connectorId: string; dis
     >
       <p className="text-sm font-medium text-slate-800">Drop files or a folder here</p>
       <p className="mt-1 text-xs text-slate-500">
-        Text and code: Markdown, HTML, CSV, JSON, YAML, and source files. PDFs and Office
-        documents are recognised and skipped until a later release.
+        PDF, Word, PowerPoint and Excel, plus text and code: Markdown, HTML, CSV, JSON, YAML
+        and source files. Scanned PDFs need OCR and are skipped with an explanation.
       </p>
       <button
         type="button"
@@ -149,6 +152,9 @@ export function DocumentTable({
   const reindex = useReindexDocument()
   const remove = useDeleteDocument()
   const { notify } = useToast()
+  // One open at a time. A connector with two hundred documents would otherwise fetch two
+  // hundred chunk lists, and nobody compares two of them side by side anyway.
+  const [inspecting, setInspecting] = useState<string | null>(null)
 
   if (loading && documents.length === 0) {
     return <p className="py-8 text-center text-sm text-slate-500">Loading documents…</p>
@@ -182,6 +188,9 @@ export function DocumentTable({
           <th scope="col" className="py-2 pr-3 text-right">
             Chunks
           </th>
+          <th scope="col" className="py-2 pr-3 text-right">
+            Length
+          </th>
           <th scope="col" className="py-2 pr-3">
             Indexed
           </th>
@@ -190,14 +199,15 @@ export function DocumentTable({
       </thead>
       <tbody className="divide-y divide-slate-100">
         {documents.map((document) => (
-          <tr key={document.id} className="align-top">
+          <Fragment key={document.id}>
+          <tr className="align-top">
             <td className="py-2 pr-3">
               <div className="font-medium text-slate-800">{document.source_name}</div>
               {/* Inline, per SPEC §13.1. A detail view per failed row would mean the
-                  table cannot say what is wrong until somebody clicks. */}
-              {document.error ? (
-                <div className="mt-0.5 text-xs text-amber-700">{document.error}</div>
-              ) : null}
+                  table cannot say what is wrong until somebody clicks. An explained
+                  state replaces the sentence rather than sitting beside it: two ways of
+                  saying the same thing is how somebody reads neither. */}
+              <DocumentReason document={document} />
             </td>
             <td className="py-2 pr-3 font-mono text-xs text-slate-500">
               {document.mime_type ?? '—'}
@@ -211,10 +221,25 @@ export function DocumentTable({
             <td className="py-2 pr-3 text-right text-slate-600">
               {document.chunk_count || '—'}
             </td>
+            <td className="py-2 pr-3 text-right text-xs text-slate-500">
+              {pageLabel(document)}
+            </td>
             <td className="py-2 pr-3 text-xs text-slate-500">
               {document.indexed_at ? new Date(document.indexed_at).toLocaleString() : '—'}
             </td>
             <td className="py-2 text-right whitespace-nowrap">
+              {document.chunk_count > 0 ? (
+                <button
+                  type="button"
+                  aria-expanded={inspecting === document.id}
+                  onClick={() =>
+                    setInspecting((open) => (open === document.id ? null : document.id))
+                  }
+                  className="text-xs font-medium text-slate-600 hover:underline"
+                >
+                  {inspecting === document.id ? 'Hide chunks' : 'Chunks'}
+                </button>
+              ) : null}
               {writes ? (
                 <>
                   <button
@@ -224,7 +249,7 @@ export function DocumentTable({
                         notify(`Reindexing ${document.source_name}.`)
                       })
                     }}
-                    className="text-xs font-medium text-slate-600 hover:underline"
+                    className="ml-3 text-xs font-medium text-slate-600 hover:underline"
                   >
                     {document.status === 'failed' ? 'Retry' : 'Reindex'}
                   </button>
@@ -243,9 +268,95 @@ export function DocumentTable({
               ) : null}
             </td>
           </tr>
+          {inspecting === document.id ? (
+            <tr>
+              <td colSpan={8} className="bg-slate-50 px-3 py-3">
+                <ChunkInspector documentId={document.id} expected={document.chunk_count} />
+              </td>
+            </tr>
+          ) : null}
+          </Fragment>
         ))}
       </tbody>
     </table>
+  )
+}
+
+/**
+ * The reason a document is not indexed, in the form it deserves.
+ *
+ * A recognised code becomes a heading and a next step; anything else falls back to the
+ * server's sentence, which is what the table showed before this existed and is still the
+ * right answer for a code the browser has never heard of.
+ */
+export function DocumentReason({ document }: { document: DocumentResponse }) {
+  const explained = explanationFor(document)
+  if (explained) {
+    return (
+      <div className="mt-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5">
+        <div className="text-xs font-medium text-amber-900">{explained.headline}</div>
+        <div className="mt-0.5 text-xs text-amber-800">{explained.guidance}</div>
+      </div>
+    )
+  }
+  if (!document.error) return null
+  return <div className="mt-0.5 text-xs text-amber-700">{document.error}</div>
+}
+
+/**
+ * What one document actually became.
+ *
+ * The fastest way to see whether extraction produced text worth embedding — a PDF whose
+ * every chunk opens with the same page header, a spreadsheet indexed as bare cells, a Word
+ * file that came out as its pre-review draft. All three report `indexed` with a plausible
+ * chunk count, and nothing else on this screen tells them apart from a healthy document.
+ */
+export function ChunkInspector({
+  documentId,
+  expected,
+}: {
+  documentId: string
+  expected: number
+}) {
+  const chunks = useDocumentChunks(documentId)
+
+  if (chunks.isPending) {
+    return <p className="text-xs text-slate-500">Loading chunks…</p>
+  }
+  if (chunks.isError) {
+    return <p className="text-xs text-red-600">The chunks could not be loaded.</p>
+  }
+
+  const items = chunks.data?.chunks ?? []
+  return (
+    <div>
+      <p className="mb-2 text-xs text-slate-500">
+        {items.length} chunk{items.length === 1 ? '' : 's'} in the index.
+        {items.length !== expected ? (
+          /* The two disagreeing is the finding, not a rendering detail: a row claiming
+             twelve chunks with three in the index was written into a collection that has
+             since been dropped, and "retrieval is bad" is how that otherwise presents. */
+          <span className="ml-1 font-medium text-amber-700">
+            The document row says {expected} — reindex to rebuild it.
+          </span>
+        ) : null}
+      </p>
+      <ol className="space-y-2">
+        {items.map((chunk) => (
+          <li key={chunk.id} className="rounded-md border border-slate-200 bg-white p-2">
+            <div className="mb-1 flex items-center justify-between gap-2 text-xs text-slate-500">
+              <span className="font-medium text-slate-700">
+                {chunk.page_or_section ?? `Chunk ${(chunk.chunk_index ?? 0) + 1}`}
+              </span>
+              <span className="font-mono">{chunk.token_count ?? 0} tokens</span>
+            </div>
+            <p className="line-clamp-4 whitespace-pre-wrap text-xs text-slate-600">
+              {chunk.text}
+            </p>
+          </li>
+        ))}
+      </ol>
+    </div>
   )
 }
 

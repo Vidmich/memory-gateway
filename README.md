@@ -8,11 +8,12 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 10 complete**, and with it the product's core promise. An
-organization goes from empty to a working OpenAI-compatible endpoint entirely in the
-browser — sign in, configure an upstream model, create a gateway, copy its URL, mint a
-key, call it — and every request through it is recorded and inspectable. **Connectors**
-ingest content: drag a folder in and watch each file move from `pending` to `indexed`.
+Current state: **task 11 complete**. An organization goes from empty to a working
+OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream model,
+create a gateway, copy its URL, mint a key, call it — and every request through it is
+recorded and inspectable. **Connectors** ingest the documents customers actually have —
+PDF, Word, PowerPoint and Excel alongside Markdown, HTML, CSV and code — and each file
+moves from `pending` to `indexed` while you watch, citing the page or slide it came from.
 **Memory** then attaches those connectors to a gateway, and the endpoint starts answering
 from them: the same question with `X-Gateway-Memory: off` cannot answer it, which is the
 whole feature in one A/B. **Monitoring** charts the traffic, including how often retrieval
@@ -270,13 +271,14 @@ Getting that backwards either way is the most expensive mistake available here: 
 provider blip permanently fails a thousand documents, the other way a corrupt file is
 retried until it dead-letters and the customer is told nothing useful.
 
-**What is read.** SPEC §9.2's text and code formats, with two renderings that matter more
-than they look. CSV and TSV become named records — `name: Ada` / `role: Engineer`, not
-`Ada,Engineer` — because a row of commas embeds to a vector about commas. JSON becomes key
-paths, `user.roles.0: admin`. HTML is stripped to text with its headings kept and its
-`<script>` dropped. PDFs and Office documents are *recognised* and skipped with "coming
-soon" rather than failed, so the task 11 gap reads as a roadmap item instead of a broken
-product.
+**What is read.** SPEC §9.2's formats in full; the four binary ones have a section of
+their own below. The renderings that matter more than they look: CSV, TSV, spreadsheet
+rows and every table in a Word file or a slide become named records — `name: Ada` /
+`role: Engineer`, not `Ada,Engineer` — because a row of commas embeds to a vector about
+commas. JSON becomes key paths, `user.roles.0: admin`.
+HTML is stripped to text with its headings kept and its `<script>` dropped. A format
+nothing can read yet is *recognised* and skipped with a note rather than failed, so a
+roadmap gap does not read as a broken product.
 
 **What a file is** is decided from its first bytes, never from its name. A JPEG called
 `notes.txt` is skipped as an image; a `.mov` is recognised from its `ftyp` box. Binary
@@ -305,6 +307,76 @@ yet, and a listing is a snapshot taken before any lock could have helped.
 their source and section. It answers "is my file actually in there" without a gateway in
 the way, which makes it the first thing to check when a gateway's answers look wrong: if
 the search finds nothing either, the problem is ingestion rather than retrieval.
+
+### Documents: PDF, Word, PowerPoint, Excel
+
+Real corpora are PDFs and Office files, not tidy Markdown. Each of the four keeps the
+structure it already has, and the label a chunk carries is what a citation will show:
+`manual.pdf (p. 147)`, `Slide 3: Roadmap`, `Security > Access Control`, `Prices`.
+
+**PDF extraction is where RAG quality quietly dies**, so four things are undone before
+anything is embedded. Running headers and footers are stripped — detected by position and
+repetition together, with digit runs masked so `Page 4 of 200` and `Page 5 of 200` are
+recognised as the same footer — because otherwise the confidentiality notice is in all 200
+chunks and similarity scores compress until nothing discriminates. Words broken across a
+line break are rejoined. Two-column pages are read down rather than across, found with a
+projection profile that tolerates a title lying across the gutter. And a **chunk never
+crosses a page break**, whatever the connector's chunking strategy says, because a chunk
+drawn from pages 144 to 147 can cite at most one of them truthfully — a reader who turns
+to the page and does not find the sentence stops believing every citation after it.
+
+The reader is [`pypdfium2`](https://pypi.org/project/pypdfium2/): PDFium, the engine in
+Chrome's PDF viewer, BSD-3-Clause. The plan named PyMuPDF or pdfplumber; the first is
+AGPL-3.0, which is a live question for a hosted service, and the second is pdfminer
+underneath — 25 seconds on a 200-page document where PDFium takes 0.9.
+
+**A scan is refused, not indexed.** Below a floor of extracted characters per page the
+document lands as `skipped: needs_ocr` with an explanation and a next step on the
+connector page, rather than as `indexed` with a handful of empty chunks — which is worse
+than a failure, because nothing looks wrong. A password-protected PDF says so; one
+carrying only an *owner* password ("you may read this but not print it") is read, because
+that is most of the corporate documents anybody actually has.
+
+**Word gives the accepted text, not the marked-up text.** Reading a paragraph's direct
+children silently drops edits made with track changes on, so a policy document that has
+been through review indexes as its pre-review draft with a plausible chunk count and
+nothing looking wrong. Insertions are kept and deletions discarded. Headings become a
+path, lists keep their markers, footnotes are appended to the paragraph that references
+them, and headers and footers are ignored. There is no page count: pagination is a
+rendering decision, so the column is empty rather than invented.
+
+**PowerPoint includes the speaker notes**, labelled. A slide says "Q3 priorities" over
+three bullets of four words each; the sentence that says what was actually decided is in
+the notes. Slides do not join into one chunk: a slide is a unit somebody authored, and
+gluing two of them together produces a chunk about two subjects.
+
+**Excel rows are records**, by the same function CSV uses, with header detection, empty
+columns dropped, formulas falling back to their own text where no cached value was saved,
+and a 50 000-row cap per sheet that marks itself in the text — a spreadsheet is usually a
+database export, and indexing all of it produces near-identical chunks that crowd every
+prose document out of the index.
+
+**Heavy extraction runs in a subprocess pool.** These are large C and C++ libraries
+reading binary formats designed in the nineties, driven by files that arrive from the
+internet: a crafted PDF can loop inside the parser, a workbook can allocate until the
+machine swaps, and a corrupt font table can segfault a library that has no idea Python
+exists. A thread cannot be interrupted and a segfault does not care whose thread it was,
+so those four extractors run in children with a wall clock the parent enforces by killing
+them and an address-space ceiling the kernel enforces. They also get a **queue of their
+own**, so a folder of notes dropped alongside a 300-page manual does not sit at `pending`
+behind it: `arq app.workers.main.HeavyWorkerSettings` reads it, and running one is
+optional — without it those jobs simply wait, which is a visible backlog rather than a
+silent loss.
+
+**Reading it back.** The document table shows pages, slides or sheets beside the chunk
+count, `needs_ocr` and `password_protected` render as explained states with a way out of
+them rather than as red rows, and **Chunks** on any indexed row lists what the file
+actually became with the page or section each chunk came from. That is the fastest way to
+tell a healthy document from one that reports `indexed` and answers badly — they look
+identical everywhere else on the screen. `extraction_duration_seconds{format}` and
+`extractions_total{format, outcome}` are the same question in Prometheus: extraction
+degrades one format at a time, and an unlabelled failure rate averages that into
+invisibility.
 
 ### The worker
 
@@ -606,13 +678,16 @@ app/
               routing (routing, end_user), request logging (request_log, log_store,
               redaction), the monitoring reads (monitoring, metrics_store), and
               ingestion — its ports (object_store, vector_store, embeddings,
-              tokenizer, locks, jobs, job_queue), its pipeline (extraction,
-              chunking, ingestion) and its control plane (connectors,
-              connector_store, connector_source) — and the read side of the same
-              index: retrieval (search, timeouts, the failure policy) and
-              memory_preview (the editor's Try retrieval and prompt preview)
-  workers/    the ingestion worker — `arq app.workers.main.WorkerSettings` — and the
-              composition root it and the API both build their stack from
+              tokenizer, locks, jobs, job_queue), its pipeline (extraction and
+              the readers it registers — pdf, office — plus extraction_pool for
+              the ones that need a subprocess, then chunking, ingestion) and its
+              control plane (connectors, connector_store, connector_source) — and
+              the read side of the same index: retrieval (search, timeouts, the
+              failure policy) and memory_preview (the editor's Try retrieval and
+              prompt preview)
+  workers/    the ingestion workers — `arq app.workers.main.WorkerSettings` and
+              `HeavyWorkerSettings` for the PDF and Office queue — and the
+              composition root they and the API both build their stack from
   cli.py      operator commands — `python -m app.cli seed | openapi`
 migrations/   alembic
 deploy/       compose now, helm from task 18
@@ -626,7 +701,8 @@ web/          the React SPA
                 invitation acceptance, models (list and editor), gateways
                 (list, editor, routing and memory sections with Try retrieval,
                 keys), connectors (list, and a detail screen with the upload
-                zone, document table, chunking panel and debug search),
+                zone, document table, chunk inspector, chunking panel and debug
+                search),
                 monitoring (charts, request table, detail drawer with the
                 attempts timeline and the retrieved chunks)
   e2e/          Playwright
@@ -680,6 +756,7 @@ first request. See [.env.example](.env.example) for the full list.
 | `POST /api/v1/connectors/{id}/resync` | Reconcile against storage; reports `{added, updated, deleted, unchanged, skipped}`. |
 | `POST /api/v1/connectors/{id}/search` | Debug-only semantic search over one connector's chunks, with scores. |
 | `POST /api/v1/documents/{id}/reindex` | The retry button. Resets the row to `pending` and enqueues it. |
+| `GET /api/v1/documents/{id}/chunks` | The chunk inspector: what one document became, with each chunk's page or section. |
 | `DELETE /api/v1/documents/{id}` | The document, its object and its vectors. |
 | `GET /healthz` | Liveness. Checks nothing else — a dependency outage must not get the pod restarted into the same outage. |
 | `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. |

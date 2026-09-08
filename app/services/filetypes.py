@@ -52,13 +52,20 @@ SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (b"MZ", "application/vnd.microsoft.portable-executable"),
 )
 
+#: The Office media types, spelled once. They are long enough that a typo in one of them
+#: would be a format that silently never matches anything.
+DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+PDF = "application/pdf"
+
 #: ZIP is a container, so the signature alone cannot tell an Office document from a
 #: backup archive. This is the one place an extension is allowed to refine a *binary*
 #: verdict, and only within the container it already proved itself to be.
 ZIP_CONTAINERS: Mapping[str, str] = {
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".docx": DOCX,
+    ".pptx": PPTX,
+    ".xlsx": XLSX,
     ".epub": "application/epub+zip",
 }
 
@@ -204,13 +211,42 @@ def is_text(media_type: str) -> bool:
     return media_type.startswith("text/") or media_type in TEXT_MEDIA_TYPES
 
 
+#: Media type to metric label. A *closed* map with a fallback, because these become
+#: Prometheus label values and a label taken straight from a sniffed media type is a
+#: cardinality bomb waiting for the first customer who uploads something exotic. The
+#: groups are the ones a per-format failure rate is worth reading for: the four heavy
+#: formats individually, since each has its own parser and its own way of going wrong,
+#: and everything textual collapsed into a handful.
+FORMAT_LABELS: Mapping[str, str] = {
+    PDF: "pdf",
+    DOCX: "docx",
+    PPTX: "pptx",
+    XLSX: "xlsx",
+    "text/markdown": "markdown",
+    "text/html": "html",
+    "text/csv": "csv",
+    "text/tab-separated-values": "csv",
+    "application/json": "json",
+    "application/x-ndjson": "json",
+    "text/plain": "text",
+}
+
+
+def format_label(media_type: str) -> str:
+    """A bounded label for the extraction metrics. Never the raw media type."""
+    found = FORMAT_LABELS.get(media_type)
+    if found is not None:
+        return found
+    return "code" if media_type in TEXT_MEDIA_TYPES else "other"
+
+
 def describe(media_type: str) -> str:
     """A short phrase for an error message: ``a PDF``, ``a video``, ``this file type``.
 
     Written for the sentence "Skipped: {describe} is not supported yet", which is what a
     customer reads on the connector page.
     """
-    if media_type == "application/pdf":
+    if media_type == PDF:
         return "PDF"
     if media_type in set(ZIP_CONTAINERS.values()):
         return "Office document"
@@ -225,12 +261,18 @@ def describe(media_type: str) -> str:
 __all__ = [
     "DEFAULT_BINARY_TYPE",
     "DEFAULT_TEXT_TYPE",
+    "DOCX",
+    "FORMAT_LABELS",
+    "PDF",
+    "PPTX",
     "SNIFF_BYTES",
     "TEXT_EXTENSIONS",
     "TEXT_MEDIA_TYPES",
+    "XLSX",
     "bom_encoding",
     "describe",
     "extension_of",
+    "format_label",
     "is_text",
     "looks_like_text",
     "sniff",

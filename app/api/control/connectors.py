@@ -33,6 +33,8 @@ from app.schemas.connector import (
     ConnectorCreateRequest,
     ConnectorResponse,
     ConnectorUpdateRequest,
+    DocumentChunk,
+    DocumentChunksResponse,
     DocumentResponse,
     ResyncResponse,
     SearchHit,
@@ -206,6 +208,26 @@ async def delete_document(
     """The document, its object and its vectors. Synchronous: it is bounded work, and the
     row is on screen in front of whoever pressed it."""
     await service.delete_document(actor, document_id)
+
+
+@router.get("/documents/{document_id}/chunks", dependencies=[_reads])
+async def document_chunks(
+    document_id: uuid.UUID,
+    actor: CurrentActor,
+    service: _Service,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> DocumentChunksResponse:
+    """The chunk inspector: what this document actually became, in cut order.
+
+    A read, so it sits behind the read capability rather than the write one — looking at
+    what was indexed is not a change, and the people who most need to look at it are the
+    ones who cannot change anything.
+    """
+    found = await service.document_chunks(actor, document_id, limit=limit)
+    return DocumentChunksResponse(
+        chunks=[DocumentChunk.of(chunk) for chunk in found.chunks],
+        chunk_count=found.chunk_count,
+    )
 
 
 @router.post("/documents/{document_id}/reindex", dependencies=[_writes])

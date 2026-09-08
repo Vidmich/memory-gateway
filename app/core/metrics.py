@@ -104,6 +104,31 @@ class RetrievalMetrics:
 
 
 @dataclass(frozen=True)
+class ExtractionMetrics:
+    """Reading a file, as two numbers (task 11).
+
+    Both are labelled by *format*, because that is the axis the answer lives on. Extraction
+    is where corpus quality is decided, and it degrades one format at a time: a PDF library
+    upgrade that starts returning nothing, an Office parser that chokes on files from one
+    vendor's export. An unlabelled failure rate averages that into invisibility — nine
+    healthy formats hide the tenth — and an unlabelled duration hides that PDFs are two
+    orders of magnitude slower than Markdown, which is the fact that decides how much
+    worker capacity a customer's corpus needs.
+
+    ``completed`` is labelled by outcome rather than split in two, so the failure *rate* is
+    one expression; ``skipped`` is one of those outcomes, because a corpus that is all
+    scans is a support conversation rather than an incident.
+
+    The label values come from :func:`~app.services.filetypes.format_label`, which is a
+    closed map with a fallback — a sniffed media type used directly would be unbounded
+    cardinality with the first exotic upload.
+    """
+
+    duration: Histogram
+    completed: Counter
+
+
+@dataclass(frozen=True)
 class Metrics:
     registry: CollectorRegistry
     http_requests: Counter
@@ -114,6 +139,7 @@ class Metrics:
     routing: RoutingMetrics
     jobs: JobMetrics
     retrieval: RetrievalMetrics
+    extraction: ExtractionMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -157,6 +183,29 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         routing=build_routing_metrics(registry),
         jobs=build_job_metrics(registry),
         retrieval=build_retrieval_metrics(registry),
+        extraction=build_extraction_metrics(registry),
+    )
+
+
+def build_extraction_metrics(registry: CollectorRegistry) -> ExtractionMetrics:
+    """Split out like the others, so a pipeline can be built in a test on its own."""
+    return ExtractionMetrics(
+        duration=Histogram(
+            "extraction_duration_seconds",
+            "How long reading one file took, by format.",
+            labelnames=("format",),
+            # Markdown is milliseconds and a 200-page PDF is seconds, so this spans four
+            # orders of magnitude on purpose. The top edge is the default extraction
+            # timeout: anything in the overflow bin did not finish.
+            buckets=(0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 15.0, 30.0, 60.0, 120.0),
+            registry=registry,
+        ),
+        completed=Counter(
+            "extractions_total",
+            "Files read, by format and outcome: ok, failed, skipped.",
+            labelnames=("format", "outcome"),
+            registry=registry,
+        ),
     )
 
 

@@ -70,8 +70,17 @@ def chunk_document(
     *,
     tokenizer: Tokenizer,
 ) -> list[Chunk]:
-    """Split an extracted document according to its connector's configuration."""
-    if config.strategy == "by_heading":
+    """Split an extracted document according to its connector's configuration.
+
+    ``atomic_sections`` is the one thing the *document* gets to override the connector on,
+    and only two formats claim it. A slide is a unit somebody authored, and joining two of
+    them produces a chunk about two subjects. A PDF page is what a citation names, and a
+    chunk running from page 144 to page 147 can cite at most one of those truthfully — an
+    end user who turns to the page and does not find the sentence stops believing every
+    citation after it. A heading in a Markdown file claims nothing, because choosing about
+    headings is exactly what the strategy is for.
+    """
+    if config.strategy == "by_heading" or extracted.atomic_sections:
         pieces = _by_heading(extracted, config, tokenizer)
     else:
         pieces = _whole_document(extracted, config, tokenizer)

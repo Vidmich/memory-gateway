@@ -51,10 +51,11 @@ from app.services.jobs import (
     JobQueue,
     delete_key,
     ingest_key,
+    queue_for,
 )
 from app.services.object_store import ObjectStore, ObjectTooLarge
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
-from app.services.vector_store import Match, VectorStore
+from app.services.vector_store import Match, Stored, VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,19 @@ class _Accepted:
     document_id: uuid.UUID
     size_bytes: int
     etag: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentChunks:
+    """What the inspector shows: the chunks, and what the row claims it has.
+
+    Both, because the two disagreeing is itself the finding — a document reporting twelve
+    chunks with three in the index was written into a collection that has since been
+    dropped, and the inspector is where that becomes visible instead of "retrieval is bad".
+    """
+
+    chunks: list[Stored]
+    chunk_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +347,31 @@ class ConnectorService:
             organization_id=organization_id, document_id=document_id, delete_object=True
         )
 
+    async def document_chunks(
+        self, actor: Actor, document_id: uuid.UUID, *, limit: int = 200
+    ) -> DocumentChunks:
+        """What one document actually became, in the order it was cut.
+
+        The chunk inspector. It answers a question nothing else on the connector screen
+        can: a PDF whose every chunk opens with the same page header, a spreadsheet
+        indexed as bare cells, a Word file that came out as its pre-review draft all
+        report ``indexed`` with a plausible chunk count and answer badly, and the only way
+        to see which is to read the text.
+
+        Scoped by the document row first, so an id from another organization is a 404
+        before the vector store is touched at all.
+        """
+        async with self._store.begin(actor.scope) as transaction:
+            document = await transaction.document(document_id)
+            if document is None:
+                raise NotFound("Document not found.")
+            organization_id = document.organization_id
+            expected = document.chunk_count
+        stored = await self._vectors.chunks(
+            organization_id, document_id, limit=max(1, min(limit, 500))
+        )
+        return DocumentChunks(chunks=stored, chunk_count=expected)
+
     async def reindex_document(self, actor: Actor, document_id: uuid.UUID) -> Document:
         """The **Retry** button, and the way a chunking change is applied to one file."""
         outbox = JobOutbox(self._queue)
@@ -354,6 +393,7 @@ class ConnectorService:
                 # even though nothing about the file changed, and keying on the hash would
                 # make the button do nothing for an hour.
                 idempotency_key=f"{ingest_key(document_id, document.content_hash)}:manual",
+                queue=queue_for(document.source_name),
             )
             await transaction.commit()
         await outbox.flush()
@@ -421,6 +461,7 @@ class ConnectorService:
                     "document_id": str(accepted.document_id),
                 },
                 idempotency_key=ingest_key(accepted.document_id, accepted.etag),
+                queue=queue_for(accepted.name),
             )
 
         # After every commit, always. A job that names a document row a rollback removed

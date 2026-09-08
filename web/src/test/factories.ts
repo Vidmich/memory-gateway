@@ -14,6 +14,7 @@ import type {
   BucketResponse,
   ConnectorResponse,
   CurrentUser,
+  DocumentChunk,
   DocumentResponse,
   GatewayResponse,
   GatewayTestResponse,
@@ -402,12 +403,25 @@ export function makeDocument(overrides: Partial<DocumentResponse> = {}): Documen
     size_bytes: 2048,
     status: 'indexed',
     error: null,
+    reason: null,
     chunk_count: 3,
+    page_count: null,
     embedding_model: 'text-embedding-3-small',
     content_hash: 'a'.repeat(64),
     indexed_at: NOW,
     created_at: NOW,
     updated_at: NOW,
+    ...overrides,
+  }
+}
+
+export function makeDocumentChunk(overrides: Partial<DocumentChunk> = {}): DocumentChunk {
+  return {
+    id: 'p1',
+    chunk_index: 0,
+    page_or_section: 'Leave',
+    token_count: 42,
+    text: 'Everyone gets twenty-five days of annual leave.',
     ...overrides,
   }
 }

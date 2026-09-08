@@ -25,6 +25,7 @@ import type {
   ConnectorPage,
   ConnectorResponse,
   ConnectorUpdateRequest,
+  DocumentChunksResponse,
   DocumentPage,
   DocumentResponse,
   ResyncResponse,
@@ -40,6 +41,7 @@ export const keys = {
   one: (id: string) => ['connectors', id] as const,
   documents: (connectorId: string, status?: string | null) =>
     ['connectors', connectorId, 'documents', { status: status ?? null }] as const,
+  chunks: (documentId: string) => ['connectors', 'chunks', documentId] as const,
 }
 
 /** Statuses from which nothing happens on its own — the same list the server has. */
@@ -97,6 +99,24 @@ export function useDocuments(
     // An idle connector polls not at all; a busy one polls until it is not busy.
     refetchInterval: (query_) =>
       query_.state.data && isSettled(query_.state.data.items) ? false : POLL_INTERVAL_MS,
+  })
+}
+
+/**
+ * The chunk inspector: what one document actually became.
+ *
+ * Fetched only while the panel is open — `enabled` on the id — because it is a per-row
+ * detail nobody wants on the table's polling schedule, and a connector with two hundred
+ * documents would otherwise fetch two hundred chunk lists to render one.
+ */
+export function useDocumentChunks(
+  documentId: string | undefined,
+): UseQueryResult<DocumentChunksResponse> {
+  const client = useApiClient()
+  return useQuery({
+    queryKey: keys.chunks(documentId ?? ''),
+    queryFn: () => client.get<DocumentChunksResponse>(`/api/v1/documents/${documentId}/chunks`),
+    enabled: Boolean(documentId),
   })
 }
 

@@ -284,6 +284,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{document_id}/chunks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Document Chunks
+         * @description The chunk inspector: what this document actually became, in cut order.
+         *
+         *     A read, so it sits behind the read capability rather than the write one — looking at
+         *     what was indexed is not a change, and the people who most need to look at it are the
+         *     ones who cannot change anything.
+         */
+        get: operations["document_chunks_api_v1_documents__document_id__chunks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{document_id}/reindex": {
         parameters: {
             query?: never;
@@ -1097,6 +1121,29 @@ export interface components {
             /** Hint */
             hint?: string | null;
         };
+        /**
+         * DocumentChunk
+         * @description One indexed chunk, as the inspector shows it. No score: nothing was searched for.
+         */
+        DocumentChunk: {
+            /** Chunk Index */
+            chunk_index: number | null;
+            /** Id */
+            id: string;
+            /** Page Or Section */
+            page_or_section: string | null;
+            /** Text */
+            text: string;
+            /** Token Count */
+            token_count: number | null;
+        };
+        /** DocumentChunksResponse */
+        DocumentChunksResponse: {
+            /** Chunk Count */
+            chunk_count: number;
+            /** Chunks */
+            chunks: components["schemas"]["DocumentChunk"][];
+        };
         /** DocumentResponse */
         DocumentResponse: {
             /** Chunk Count */
@@ -1126,6 +1173,10 @@ export interface components {
             indexed_at: string | null;
             /** Mime Type */
             mime_type: string | null;
+            /** Page Count */
+            page_count: number | null;
+            /** Reason */
+            reason: string | null;
             /** Size Bytes */
             size_bytes: number;
             /** Source Name */
@@ -2920,6 +2971,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    document_chunks_api_v1_documents__document_id__chunks_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentChunksResponse"];
+                };
             };
             /** @description Validation Error */
             422: {

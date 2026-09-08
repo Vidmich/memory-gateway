@@ -128,6 +128,7 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ),
         CheckConstraint("size_bytes >= 0", name="size_is_not_negative"),
         CheckConstraint("chunk_count >= 0", name="chunk_count_is_not_negative"),
+        CheckConstraint("page_count IS NULL OR page_count >= 0", name="page_count_is_not_negative"),
         # The reconciliation key. Two ingestions of the same object racing each other must
         # produce one row, and this is what makes that a database guarantee rather than a
         # hopeful SELECT followed by an INSERT.
@@ -177,7 +178,18 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: A sentence a customer can act on: which byte failed to decode, which extension is
     #: not supported yet. Never a traceback.
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The same fact as a stable code — ``needs_ocr``, ``password_protected``,
+    #: ``unsupported_format``. The sentence above is for a person and gets rewritten; this
+    #: is what the UI branches on to turn a failure into an explained state with a way out
+    #: of it. Not CHECK-constrained, unlike ``status``: reasons are open by design, so a
+    #: new extractor can explain a new failure without a migration, and a code the UI does
+    #: not recognise falls back to showing the sentence.
+    reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Pages, slides or sheets — whichever unit the format has, with the noun derived in
+    #: the UI from the media type. ``NULL`` where the format has none: a Word document's
+    #: pagination is a rendering decision, so a number here would be invented.
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: SPEC §9.4 — recorded per document so a platform embedding-model change is
     #: detectable as drift instead of silently degrading retrieval.
     embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)

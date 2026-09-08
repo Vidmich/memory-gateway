@@ -32,7 +32,7 @@ from app.services.connectors import (
     UploadOutcome,
 )
 from app.services.ingestion import ResyncSummary
-from app.services.vector_store import Match
+from app.services.vector_store import Match, Stored
 
 MAX_NAME = 200
 MAX_DESCRIPTION = 2000
@@ -149,7 +149,13 @@ class DocumentResponse(BaseModel):
     #: Why it failed or was skipped, in a sentence written for a customer. Null on a
     #: healthy row, and present on the list rather than behind a click.
     error: str | None
+    #: The same fact as a stable code — ``needs_ocr``, ``password_protected``. The UI
+    #: turns the ones it recognises into an explained state with a way out of it, and
+    #: falls back to showing ``error`` for the ones it does not.
+    reason: str | None
     chunk_count: int
+    #: Pages, slides or sheets. Null where the format has no such unit.
+    page_count: int | None
     embedding_model: str | None
     content_hash: str | None
     indexed_at: datetime | None
@@ -167,13 +173,44 @@ class DocumentResponse(BaseModel):
             size_bytes=document.size_bytes,
             status=document.status,
             error=document.error,
+            reason=document.reason,
             chunk_count=document.chunk_count,
+            page_count=document.page_count,
             embedding_model=document.embedding_model,
             content_hash=document.content_hash,
             indexed_at=document.indexed_at,
             created_at=document.created_at,
             updated_at=document.updated_at,
         )
+
+
+class DocumentChunk(BaseModel):
+    """One indexed chunk, as the inspector shows it. No score: nothing was searched for."""
+
+    id: str
+    chunk_index: int | None
+    page_or_section: str | None
+    token_count: int | None
+    text: str
+
+    @classmethod
+    def of(cls, chunk: Stored) -> DocumentChunk:
+        payload = chunk.payload
+        return cls(
+            id=chunk.id,
+            chunk_index=_number(payload.get("chunk_index")),
+            page_or_section=_text(payload.get("page_or_section")),
+            token_count=_number(payload.get("token_count")),
+            text=chunk.text,
+        )
+
+
+class DocumentChunksResponse(BaseModel):
+    chunks: list[DocumentChunk]
+    #: What the row says it has. Shown beside the number returned, because the two
+    #: disagreeing is itself the finding: a document that reports twelve chunks and has
+    #: three in the index was reindexed into a collection that has since been dropped.
+    chunk_count: int
 
 
 class UploadOutcomeResponse(BaseModel):
@@ -306,6 +343,8 @@ __all__ = [
     "ConnectorCreateRequest",
     "ConnectorResponse",
     "ConnectorUpdateRequest",
+    "DocumentChunk",
+    "DocumentChunksResponse",
     "DocumentResponse",
     "ResyncResponse",
     "SearchHit",

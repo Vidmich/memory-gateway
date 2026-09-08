@@ -42,7 +42,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # ---------------------------------------------------------------------------
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.14-slim-bookworm AS runtime
 
 # `TIKTOKEN_CACHE_DIR` is the one that makes a read-only root filesystem work: tiktoken
 # writes its downloaded vocabulary to a cache directory on first use, and with nowhere to

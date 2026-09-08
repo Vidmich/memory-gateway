@@ -8,7 +8,7 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 14 complete**. An organization goes from empty to a working
+Current state: **task 15 complete**. An organization goes from empty to a working
 OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream model,
 create a gateway, copy its URL, mint a key, call it — and every request through it is
 recorded and inspectable. **Connectors** ingest the documents customers actually have —
@@ -31,7 +31,10 @@ chain that survives an upstream outage, or a weighted A/B split whose result you
 the same charts. And every endpoint can be given **rate limits** — requests and tokens per
 minute, a daily cap, concurrent requests, per gateway and per end user — enforced
 atomically over sliding windows, answered with a 429 an OpenAI SDK retries on its own, and
-shown as live bars on the editor beside the numbers that produced them.
+shown as live bars on the editor beside the numbers that produced them. And every one
+of those changes is on the **audit log**: who changed what, when, from which address, with
+a field-level before and after — a rotated provider credential shows as
+`credential: "***" → "***"`, which is the whole point.
 
 ## Quick start (Docker)
 
@@ -730,6 +733,72 @@ the limit or find the loop; Monitoring adds a **top throttled end users** panel,
 from the request log so it covers the window the rest of the screen shows and survives a
 Redis restart.
 
+## Audit log
+
+SPEC §10.4. Every control-plane mutation writes one row: actor, organization, action,
+target, a field-level diff, the address it came from, and the request id that ties it to
+the access log. **Audit log** in the sidebar lists them, filterable by action, kind and
+date, with an expandable diff per row and a streaming CSV export. Each gateway, model and
+connector also carries a **History** panel showing its own changes, which is where the log
+actually gets read: somebody looking at an endpoint that started answering badly wants
+"what changed here", not a search.
+
+**It is append-only, and that is enforced by the database.** The repository has no update
+or delete method and the API has no route for one — but both of those are conventions that
+hold until somebody adds a method. A `BEFORE UPDATE OR DELETE` trigger is what holds
+afterwards, and it holds for the ORM, for `psql`, and for a migration written in a hurry.
+It is a backstop rather than a vault: real tamper-evidence — hash chaining, shipping the
+log somewhere the operator cannot rewrite — is task 18's, alongside the grant that limits
+the application role to `SELECT, INSERT` on this table.
+
+**The event is written in the same transaction as the change.** Not a router-level hook,
+which would miss the mutations background jobs make, and not an afterwards-write, which
+would leave a committed change with no record when a process dies between the two. The
+recorder is mixed into every store transaction, so `transaction.audit(...)` sits beside the
+line that made the change and commits or rolls back with it. *Building* the event is the
+part that never fails a mutation: a defect in a snapshot function loses one event, is
+logged, and increments `audit_event_failures_total` — because an audit log with silent
+gaps is worse than none, and this is what stops the gaps being silent.
+
+**Redaction is structural, never a scan for values that look like secrets.** A credential
+does not enter the snapshot in the first place: it is wrapped in a marker carrying a digest
+used only for comparison, so the log can say a credential was replaced and can never say
+what it was replaced with. The same marker covers a password hash, an invitation token, and
+the *values* of `extra_headers` and a connector's `config` — the two free-form maps that
+already have somewhere for an `api-key` to go. Keys stay visible, so
+`extra_headers.api-key: "***" → "***"` still says which header changed.
+
+**End-user content stays out.** A memory fact's text is a sentence about a person, and SPEC
+§6.5 gives that person the right to have it erased — which is the one thing an append-only
+table cannot do. So a manual edit records the shape of the change (kind, confidence, expiry,
+supersession) and not the sentence. The end user's external id *is* recorded, because an
+erasure request is made with it: a log that cannot say whose memory was purged cannot be
+used to show that it was.
+
+**Diffs are computed against the Pydantic models, not the raw rows.** A configuration blob
+goes through its schema first, so a row written before a field existed diffs against that
+field's default rather than inventing a change for every knob added since — and a nested
+change renders as a readable path: `memory_config.doc_top_k: 6 → 10`. Values are capped at
+500 characters (a system prompt is a prompt, and storing every revision of one is a cost
+with no reader) and a cut value says so. A bulk operation is **one** event with a count and
+a sample: a resync that touched four hundred documents is one thing that happened, and four
+hundred rows would bury every other event on the screen.
+
+**Superadmin access to a customer's organization appears in that customer's own log**, in a
+colour used nowhere else on the screen. It is recorded per *session* rather than per
+request — reading three screens is forty requests and one visit — debounced through Redis
+so two replicas serving one visit still write one event. The attribution is derived rather
+than passed: an actor at platform scope has no organization of their own, so an event of
+theirs that lands in an organization's log is, by construction, support access. That covers
+all three routes to it, including the one a call site would forget.
+
+**Coverage is a test, not a habit.** `tests/test_audit_hooks.py` enumerates the real routing
+table and insists every mutating endpoint is either declared with the action it records or
+listed as a non-mutation with the reason — so an endpoint added without a hook fails CI.
+A second test then drives the whole control plane over HTTP and asserts that every declared
+action actually fired, which is what catches a route that was declared and then wired to a
+service method with no hook in it.
+
 ## Request logging and monitoring
 
 Every request through a gateway becomes a row. **Monitoring** shows the request rate with
@@ -914,7 +983,7 @@ and fails if the committed copy has drifted; `make openapi` updates it.
 app/
   api/        routers — health, proxy/ (data plane), control/ (the UI's API:
               auth, directory, models, gateways, connectors, monitoring,
-              end_users), spa.py (serves the built SPA in production)
+              end_users, audit), spa.py (serves the built SPA in production)
   adapters/   upstream dialects — openai now, anthropic in task 16
   core/       config, logging, errors, ids, metrics, middleware, clients,
               crypto (envelope encryption), keys (API key format), passwords
@@ -932,7 +1001,12 @@ app/
               routing (routing), rate limits (limits — the rules and the
               arithmetic, limit_store — the Lua script and its in-memory twin,
               limiter — one request's passage through them, limits_service —
-              what the Limits screen reads), end-user identity and conversation memory
+              what the Limits screen reads), the audit trail (audit — the diff, the
+              structural redaction and the recorder mixed into every store
+              transaction, audit_snapshots — what each kind of row looks like in
+              an event, audit_store, audit_service — the screen and the CSV,
+              impersonation — the debounced record of a support visit),
+              end-user identity and conversation memory
               (end_user, end_user_resolver, end_user_store, end_users,
               fact_vectors, facts), memory write-back (distillation — the prompt
               and the parser, distiller — one pass, reconciliation — dedupe,
@@ -971,7 +1045,9 @@ web/          the React SPA
                 the memory browser (end-user list, and a detail screen with the
                 fact list, semantic search and the erasure panel),
                 monitoring (charts, request table, detail drawer with the
-                attempts timeline, the retrieved chunks and the recalled facts)
+                attempts timeline, the retrieved chunks and the recalled facts),
+                the audit log (the filterable screen, the expandable diff shared
+                with the per-object History panels)
   e2e/          Playwright
 ```
 
@@ -1014,6 +1090,8 @@ first request. See [.env.example](.env.example) for the full list.
 | `GET /api/v1/gateways/{id}/limits` | This gateway's caps, what is actually enforced after the platform ceiling, and how much is spent right now. |
 | `GET /api/v1/limits/pressure` | Gateways past 80% of a cap, worst first. The dashboard's warning card. |
 | `GET /api/v1/metrics/throttled` | Who was rate-limited most in a window. |
+| `GET /api/v1/audit-events` | Who changed what. Cursor-paginated, filterable by action, actor, target and date. |
+| `GET /api/v1/audit-events/export` | The same filter as a streaming CSV. Capped and rate-limited. |
 | `GET /api/v1/metrics/summary` | Totals, percentiles, per-model traffic and the error taxonomy for a window. Cached 30 s. |
 | `GET /api/v1/metrics/timeseries` | Bucketed series. `metric` is `requests`, `latency`, `tokens` or `retrieval`; the server picks the bucket width. |
 | `GET /api/v1/logs` | The request table. Cursor-paginated, filterable by gateway, model, status class, end user, session, latency and error text. |

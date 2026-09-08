@@ -47,6 +47,8 @@ from app.core.tenancy import Actor
 from app.db.models import EndUser, MemoryFact
 from app.db.models.end_user import FACT_KINDS, MAX_FACT_LENGTH
 from app.schemas.distillation import organization_distillation
+from app.services.audit import summarize
+from app.services.audit_snapshots import subject, target_of
 from app.services.embeddings import Embedder
 from app.services.end_user_store import EndUserStore, EndUserTransaction, FactDraft, FactPatch
 from app.services.fact_vectors import FactPoint, FactVectorStore, fact_payload
@@ -247,6 +249,17 @@ class EndUserService:
                 end_user,
                 FactDraft(text=cleaned, kind=kind, confidence=confidence, expires_at=expires_at),
             )
+            # The sentence itself is not in the event — see `audit_snapshots` on why
+            # end-user content stays out of an append-only table. What is recorded is that
+            # an operator wrote a fact about this person, and what shape it had.
+            transaction.audit(
+                actor,
+                "memory_fact.create",
+                after=subject(fact),
+                # Named from the row, not from the actor's scope: a platform
+                # administrator has none, and the event belongs to the customer.
+                organization_id=organization_id,
+            )
             await transaction.commit()
 
         try:
@@ -281,6 +294,7 @@ class EndUserService:
             if fact is None:
                 raise NotFound(NO_SUCH_FACT)
             organization_id = fact.organization_id
+            before = subject(fact)
 
             if patch.text is not None:
                 fact.text = _clean_fact(patch.text)
@@ -299,6 +313,13 @@ class EndUserService:
                 # it is still what they mean. Without this the recency decay would go on
                 # ageing a sentence that was just confirmed.
                 fact.last_seen_at = datetime.now(UTC)
+            transaction.audit(
+                actor,
+                "memory_fact.update",
+                before=before,
+                after=subject(fact),
+                organization_id=organization_id,
+            )
             await transaction.commit()
             superseded = fact.superseded_at is not None
 
@@ -321,6 +342,7 @@ class EndUserService:
             if fact is None:
                 raise NotFound(NO_SUCH_FACT)
             organization_id = fact.organization_id
+            removed = subject(fact)
 
         # Vector first: see the module docstring on ordering.
         await self._vectors.delete(organization_id, [fact_id])
@@ -328,6 +350,12 @@ class EndUserService:
             stored = await transaction.fact(fact_id)
             if stored is not None:
                 await transaction.delete_fact(stored)
+            transaction.audit(
+                actor,
+                "memory_fact.delete",
+                before=removed,
+                organization_id=organization_id,
+            )
             await transaction.commit()
 
     async def purge(
@@ -337,6 +365,7 @@ class EndUserService:
         async with self._store.begin(actor.scope) as transaction:
             end_user = await self._require(transaction, end_user_id)
             organization_id = end_user.organization_id
+            person = target_of(end_user)
 
         # By filter, not by the ids we think exist: a purge that missed a point nobody
         # remembered would be a right-to-erasure failure, and the filter cannot miss one.
@@ -344,8 +373,18 @@ class EndUserService:
 
         async with self._store.begin(actor.scope) as transaction:
             removed = await transaction.delete_facts_of(end_user_id)
+            transaction.audit(
+                actor,
+                "end_user.memory.purge",
+                target=person,
+                organization_id=organization_id,
+                summary=summarize(removed),
+            )
             await transaction.commit()
 
+        # The transcript count is deliberately not in the event above: erasing them is
+        # a second system's work and can fail on its own, and an event that claimed
+        # both when only one happened would be worse than one that claims less.
         transcripts = 0
         if include_transcripts and self._logs is not None:
             async with self._logs.begin(actor.scope) as reader:

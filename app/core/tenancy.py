@@ -78,8 +78,11 @@ class TenantScope:
     def assume(self, organization_id: uuid.UUID, *, actor_user_id: uuid.UUID) -> TenantScope:
         """Narrow a platform scope to one organization, for support.
 
-        SPEC §5.2 requires every such access to be recorded. It goes to the structured
-        log now; task 15 routes the same event into ``audit_events``.
+        SPEC §5.2 requires every such access to be recorded. This writes the structured
+        log line; the ``audit_events`` row is written by
+        :class:`app.services.impersonation.SupportAccessRecorder`, which the dependency
+        that calls this method also drives. The split is not an accident — this module is
+        pure and synchronous, and the audit row is a debounced database write.
         """
         if self.role != "superadmin":
             # Unreachable through the API — the header is ignored for everyone else —
@@ -144,11 +147,21 @@ class TenantScope:
 
 @dataclass(frozen=True, slots=True)
 class Actor:
-    """Who is asking, and what they may see. Both come from the session.
+    """Who is asking, what they may see, and where they are asking from.
 
     Lives here rather than beside any one service because every domain service takes one:
-    the directory in task 04, the model catalog in 05, gateways in 06.
+    the directory in task 04, the model catalog in 05, gateways in 06, and the audit trail
+    in 15 — which is why the last three fields exist.
+
+    They are optional, and a service must behave identically without them: an actor built
+    by a test or by a CLI command has no HTTP request behind it, and the audit event it
+    produces is simply one without an address on it.
     """
 
     user_id: uuid.UUID
     scope: TenantScope
+    #: The actor's email, denormalised into every event they cause. The audit log has to
+    #: stay readable after the account is removed, and a foreign key cannot promise that.
+    label: str | None = None
+    ip: str | None = None
+    user_agent: str | None = None

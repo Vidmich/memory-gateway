@@ -44,6 +44,8 @@ from app.schemas.distillation import (
     DistillationUsage,
     organization_distillation,
 )
+from app.services.audit import summarize
+from app.services.audit_snapshots import subject, target_of
 from app.services.debounce import Debouncer, session_key
 from app.services.directory_store import DirectoryStore
 from app.services.distillation_models import ModelChoice
@@ -131,6 +133,7 @@ class DistillationService:
             organization = await transaction.organization(organization_id)
             if organization is None:  # pragma: no cover - the scope guarantees it
                 raise NotFound("No such organization.")
+            before = subject(organization)
             settings = dict(organization.settings or {})
             settings[ORG_DISTILLATION] = merge_config(
                 DistillationConfig,
@@ -142,6 +145,16 @@ class DistillationService:
             # identity, and a nested `dict.__setitem__` on a loaded value is a change it
             # never notices and never writes.
             organization.settings = settings
+            # An organization-settings edit like any other, so it diffs as
+            # `settings.distillation.*` and sits on the Organization's audit trail beside
+            # the logging defaults it lives next to in the same column.
+            transaction.audit(
+                actor,
+                "organization.distillation.update",
+                before=before,
+                after=subject(organization),
+                organization_id=organization_id,
+            )
             await transaction.commit()
 
         if self._cache is not None:
@@ -184,6 +197,7 @@ class DistillationService:
             if end_user is None:
                 raise NotFound(NO_SUCH_END_USER)
             organization_id = end_user.organization_id
+            person = target_of(end_user)
 
         end = datetime.now(UTC)
         scope = TenantScope.of_organization(organization_id)
@@ -222,6 +236,24 @@ class DistillationService:
                 "audit_action": "end_user.memory.distil",
             },
         )
+        # Recorded after the pass, in a transaction of its own, because what is worth
+        # recording is what it *did* — and that number does not exist until it has run.
+        # The facts it wrote are the distiller's own, and carry `actor_type: system`
+        # nowhere: this is a person pressing a button, and the button is the event.
+        async with self._end_users.begin(actor.scope) as transaction:
+            transaction.audit(
+                actor,
+                "end_user.memory.distil",
+                target=person,
+                organization_id=organization_id,
+                summary=summarize(
+                    result.inserted,
+                    (),
+                    sessions=result.sessions,
+                    superseded=result.superseded,
+                ),
+            )
+            await transaction.commit()
         return result
 
     # -- internals --------------------------------------------------------

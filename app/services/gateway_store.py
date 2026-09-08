@@ -39,6 +39,11 @@ from app.db.repositories import (
     UpstreamModelRepository,
     model_is_visible,
 )
+from app.services.audit import (
+    AuditingTransaction,
+    MemoryAuditRecorder,
+    PostgresAuditRecorder,
+)
 from app.services.memory_db import MemoryDatabase
 
 #: One link of a routing chain: the model, and its A/B weight. A tuple rather than a
@@ -47,7 +52,7 @@ from app.services.memory_db import MemoryDatabase
 type Chain = tuple[UpstreamModel, int]
 
 
-class GatewayTransaction(Protocol):
+class GatewayTransaction(AuditingTransaction, Protocol):
     """One unit of work, already scoped. Returned objects are live in both
     implementations: mutate one and commit."""
 
@@ -124,7 +129,7 @@ class GatewayStore(Protocol):
 # ---------------------------------------------------------------------------
 
 
-class PostgresGatewayTransaction:
+class PostgresGatewayTransaction(PostgresAuditRecorder):
     def __init__(self, session: AsyncSession, scope: TenantScope) -> None:
         self._session = session
         self._scope = scope
@@ -221,7 +226,7 @@ class PostgresGatewayStore:
 # ---------------------------------------------------------------------------
 
 
-class MemoryGatewayTransaction:
+class MemoryGatewayTransaction(MemoryAuditRecorder):
     """Dictionaries, filtered through the same predicates the SQL clauses are built
     from — :meth:`TenantScope.permits` and :func:`model_is_visible`."""
 

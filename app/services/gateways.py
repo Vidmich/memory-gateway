@@ -58,6 +58,7 @@ from app.schemas.gateway_config import (
     merge_config,
     organization_logging_defaults,
 )
+from app.services.audit_snapshots import subject
 from app.services.gateway_probe import GatewayProbe, GatewayProbeResult
 from app.services.gateway_resolver import ConfigCache
 from app.services.gateway_store import Chain, GatewayStore, GatewayTransaction
@@ -298,6 +299,16 @@ class GatewayService:
             )
             await transaction.add_gateway(gateway)
             await transaction.set_targets(gateway, chain)
+            # After the targets, so the routing chain is part of the snapshot. It is one
+            # value rather than a path per link — see `gateway_subject`.
+            transaction.audit(
+                actor,
+                "gateway.create",
+                after=subject(gateway),
+                # Named from the row, not from the actor's scope: a platform
+                # administrator has none, and the event belongs to the customer.
+                organization_id=gateway.organization_id,
+            )
             await transaction.commit()
 
             view = self._view(gateway, key_count=0)
@@ -314,6 +325,7 @@ class GatewayService:
 
         async with self._store.begin(actor.scope) as transaction:
             gateway = await self._must_find(transaction, gateway_id)
+            before = subject(gateway)
 
             _apply(gateway, "name", _stripped(patch.name))
             _apply(gateway, "description", patch.description)
@@ -362,6 +374,16 @@ class GatewayService:
             if not isinstance(patch.limits, _Unset):
                 gateway.limits = _checked_limits(merged_limits, chain, Ceilings.of(self._settings))
 
+            # One event for the whole save, config blobs and routing chain included. The
+            # editor writes several sections at once, and three events for one press of
+            # Save would be three rows nobody can tell apart.
+            transaction.audit(
+                actor,
+                "gateway.update",
+                before=before,
+                after=subject(gateway),
+                organization_id=gateway.organization_id,
+            )
             await transaction.commit()
             counts = await transaction.key_counts([gateway.id])
             view = self._view(gateway, key_count=counts.get(gateway.id, 0))
@@ -378,6 +400,12 @@ class GatewayService:
             # Keys and targets go with it: `ON DELETE CASCADE` on both. A key without a
             # gateway could never authenticate anything, so keeping it would only make
             # the revocation list longer.
+            transaction.audit(
+                actor,
+                "gateway.delete",
+                before=subject(gateway),
+                organization_id=organization_id,
+            )
             await transaction.delete_gateway(gateway)
             await transaction.commit()
 
@@ -438,6 +466,15 @@ class GatewayService:
                 expires_at=expires_at,
             )
             await transaction.add_key(key)
+            # The key row, never the token: only `sha256(secret)` is stored anywhere, and
+            # the snapshot carries the prefix — which is the part somebody matches against
+            # a client's configuration when deciding which key to revoke.
+            transaction.audit(
+                actor,
+                "key.create",
+                after=subject(key),
+                organization_id=gateway.organization_id,
+            )
             await transaction.commit()
 
         logger.info(
@@ -462,8 +499,19 @@ class GatewayService:
             key = await transaction.key(key_id)
             if key is None:
                 raise NotFound(NO_SUCH_KEY)
+            before = subject(key)
             if key.revoked_at is None:
                 key.revoked_at = datetime.now(UTC)
+            gateway = await transaction.gateway(key.gateway_id)
+            transaction.audit(
+                actor,
+                "key.revoke",
+                before=before,
+                after=subject(key),
+                # Read back rather than assumed: this route is keyed by the key alone, so
+                # the gateway — and with it the organization — is one lookup away.
+                organization_id=gateway.organization_id if gateway is not None else None,
+            )
             await transaction.commit()
 
         logger.info(

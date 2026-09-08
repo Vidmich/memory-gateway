@@ -133,6 +133,7 @@ async def change_password(
     body: PasswordChangeRequest,
     current: CurrentUser,
     service: _Service,
+    context: _Context,
 ) -> None:
     """Change your own password and sign every *other* session out.
 
@@ -146,6 +147,9 @@ async def change_password(
         current_password=body.current_password,
         new_password=body.new_password,
         keep_family_id=current.family_id,
+        # For the audit event: SPEC §10.4 records the address a change came from, and a
+        # password change is the one this matters most for.
+        context=context,
     )
 
 

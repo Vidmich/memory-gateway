@@ -4,6 +4,54 @@
  */
 
 export interface paths {
+    "/api/v1/audit-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Audit Events
+         * @description Newest first, cursor-paginated.
+         *
+         *     ``target_type`` plus ``target_id`` is the contextual history a gateway, model or
+         *     connector screen asks for — which is where this log is actually read, rather than on
+         *     the full-list screen somebody opens once a quarter.
+         */
+        get: operations["list_audit_events_api_v1_audit_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit-events/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Audit Events
+         * @description The same filter, as a CSV file, streamed.
+         *
+         *     No cursor and no limit: an export is the whole result, up to the service's row cap.
+         *     ``Content-Disposition`` names a file rather than letting the browser render the text,
+         *     because the one thing somebody does with this response is open it in a spreadsheet.
+         */
+        get: operations["export_audit_events_api_v1_audit_events_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -1280,6 +1328,73 @@ export interface components {
              */
             target_id: string;
         };
+        /**
+         * AuditChangeResponse
+         * @description One field that moved, at a dotted path — ``memory_config.doc_top_k``.
+         */
+        AuditChangeResponse: {
+            /** After */
+            after?: unknown;
+            /** Before */
+            before?: unknown;
+            kind: components["schemas"]["ChangeKind"];
+            /** Path */
+            path: string;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /**
+         * AuditEventResponse
+         * @description One row of the audit log.
+         */
+        AuditEventResponse: {
+            /** Action */
+            action: string;
+            /** Actor */
+            actor?: string | null;
+            /** Actor Type */
+            actor_type: string;
+            /** Actor User Id */
+            actor_user_id?: string | null;
+            /** Changes */
+            changes: components["schemas"]["AuditChangeResponse"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Ip */
+            ip?: string | null;
+            /**
+             * Omitted
+             * @default 0
+             */
+            omitted: number;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** Request Id */
+            request_id?: string | null;
+            /** Summary */
+            summary?: {
+                [key: string]: unknown;
+            } | null;
+            /** Target */
+            target?: string | null;
+            /** Target Id */
+            target_id?: string | null;
+            /** Target Type */
+            target_type: string;
+            /** User Agent */
+            user_agent?: string | null;
+        };
         /** Body_upload_api_v1_connectors__connector_id__upload_post */
         Body_upload_api_v1_connectors__connector_id__upload_post: {
             /** Files */
@@ -1297,6 +1412,8 @@ export interface components {
              */
             start: string;
         };
+        /** @enum {string} */
+        ChangeKind: "added" | "removed" | "changed";
         /**
          * ChunkingConfig
          * @description SPEC §9.3, with the defaults it names.
@@ -2747,6 +2864,13 @@ export interface components {
             /** Status */
             status?: string | null;
         };
+        /** Page[AuditEventResponse] */
+        Page_AuditEventResponse_: {
+            /** Items */
+            items: components["schemas"]["AuditEventResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** Page[ConnectorResponse] */
         Page_ConnectorResponse_: {
             /** Items */
@@ -3349,6 +3473,82 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_audit_events_api_v1_audit_events_get: {
+        parameters: {
+            query?: {
+                organization_id?: string | null;
+                actor_user_id?: string | null;
+                action?: string | null;
+                target_type?: string | null;
+                target_id?: string | null;
+                from?: string | null;
+                to?: string | null;
+                cursor?: string | null;
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_AuditEventResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_audit_events_api_v1_audit_events_export_get: {
+        parameters: {
+            query?: {
+                organization_id?: string | null;
+                actor_user_id?: string | null;
+                action?: string | null;
+                target_type?: string | null;
+                target_id?: string | null;
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     login_api_v1_auth_login_post: {
         parameters: {
             query?: never;

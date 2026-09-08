@@ -46,6 +46,8 @@ from app.core.tenancy import TenantScope
 from app.db.models import Connector, Document
 from app.db.models.connector import TERMINAL_DOCUMENT_STATUSES
 from app.schemas.connector_config import ChunkingConfig
+from app.services.audit import Attribution
+from app.services.audit_snapshots import subject
 from app.services.chunking import Chunk, chunk_document
 from app.services.connector_source import ConnectorSource, build_source
 from app.services.connector_store import ConnectorStore, DocumentDraft
@@ -609,6 +611,15 @@ class IngestionPipeline:
         async with self._store.begin(scope) as transaction:
             connector = await transaction.connector(connector_id)
             if connector is not None:
+                # Attributed to the job, not to whoever pressed the button minutes ago:
+                # the person asked for a deletion and that is already recorded; this is
+                # the row, the objects and the vectors actually being gone, which the
+                # worker is what knows.
+                transaction.audit(
+                    Attribution.system(organization_id, job="delete-connector"),
+                    "connector.purge",
+                    before=subject(connector),
+                )
                 await transaction.delete_connector(connector)
             await transaction.commit()
 

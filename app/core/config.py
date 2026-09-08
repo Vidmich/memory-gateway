@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     model_test_max_attempts: int = Field(default=20, ge=1)
     model_test_window_seconds: int = Field(default=60, ge=1)
 
+    #: Audit-log CSV exports allowed per user per window (SPEC §10.4). An export is the
+    #: cheapest way to pull an organization's whole configuration history in one request,
+    #: and each one is a streamed scan of the table — so it gets a ceiling, sized for a
+    #: person clicking a button rather than for a script in a loop.
+    audit_export_max_attempts: int = Field(default=10, ge=1)
+    audit_export_window_seconds: int = Field(default=60 * 60, ge=1)
+
     #: Failed logins allowed per window before backoff, counted per IP and per email.
     login_max_attempts: int = Field(default=5, ge=1)
     login_attempt_window_seconds: int = Field(default=15 * 60, ge=1)

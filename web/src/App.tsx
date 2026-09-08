@@ -7,6 +7,7 @@ import { ProtectedRoute } from '@/auth/ProtectedRoute'
 import { ToastProvider } from '@/components/Toast'
 import { AppShell } from '@/layout/AppShell'
 import { AcceptInvitationPage } from '@/pages/AcceptInvitationPage'
+import { AuditPage } from '@/pages/AuditPage'
 import { ConnectorDetailPage } from '@/pages/ConnectorDetailPage'
 import { ConnectorsPage } from '@/pages/ConnectorsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -69,6 +70,7 @@ export function AppRoutes() {
         <Route path="/monitoring" element={<MonitoringPage />} />
         <Route path="/memory" element={<EndUsersPage />} />
         <Route path="/memory/:endUserId" element={<EndUserDetailPage />} />
+        <Route path="/audit" element={<AuditPage />} />
         <Route path="/settings" element={<OrganizationSettingsPage />} />
         <Route path="/settings/members" element={<MembersPage />} />
         {/* Rendering is gated by capability; the API is what actually refuses. */}

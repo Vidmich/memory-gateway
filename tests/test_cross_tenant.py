@@ -341,6 +341,63 @@ async def test_an_invitation_list_never_includes_another_organization(
     assert response.json()["items"] == []
 
 
+async def test_an_audit_log_never_includes_another_organization(
+    directory: DirectoryHarness,
+) -> None:
+    """Task 15. The log holds who changed what, which for another tenant is a map of
+    their configuration, their staff and their support history."""
+    world = directory.world
+    await world.directory.update_organization(
+        world.actor(world.globex_admin), world.globex.id, name="Globex Renamed"
+    )
+
+    response = await directory.as_user(world.acme_admin, "GET", "/api/v1/audit-events")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+
+async def test_asking_for_another_organizations_audit_log_narrows_to_nothing(
+    directory: DirectoryHarness,
+) -> None:
+    """``organization_id`` is a *filter*, and a filter intersects with the scope clause.
+
+    A platform administrator uses it to pick one customer out of the whole log; for
+    anybody else the only thing it can do is exclude their own rows.
+    """
+    world = directory.world
+    await world.directory.update_organization(
+        world.actor(world.acme_admin), world.acme.id, name="Acme Renamed"
+    )
+    await world.directory.update_organization(
+        world.actor(world.globex_admin), world.globex.id, name="Globex Renamed"
+    )
+
+    response = await directory.as_user(
+        world.acme_admin,
+        "GET",
+        f"/api/v1/audit-events?organization_id={world.globex.id}",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+
+async def test_an_audit_export_is_scoped_the_same_way(directory: DirectoryHarness) -> None:
+    """The export is the same query with a different renderer, and the isolation has to
+    hold in both — a CSV of somebody else's history is the same disclosure with a
+    filename on it."""
+    world = directory.world
+    await world.directory.update_organization(
+        world.actor(world.globex_admin), world.globex.id, name="Globex Renamed"
+    )
+
+    response = await directory.as_user(world.acme_admin, "GET", "/api/v1/audit-events/export")
+
+    assert response.status_code == 200
+    assert "Globex" not in response.text
+
+
 async def test_the_assume_header_does_nothing_for_an_org_user(
     directory: DirectoryHarness,
 ) -> None:

@@ -41,6 +41,8 @@ from app.schemas.gateway_config import (
     merge_config,
     organization_logging_defaults,
 )
+from app.services.audit import Attribution
+from app.services.audit_snapshots import subject
 from app.services.directory_store import DirectoryStore, DirectoryTransaction
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
 
@@ -154,6 +156,14 @@ class DirectoryService:
                 id=uuid7(), name=name.strip(), slug=slug, status="active", settings={}
             )
             await transaction.add_organization(organization)
+            # The new organization's own log, not the platform's: the first thing that
+            # ever happened to a customer is that somebody created them.
+            transaction.audit(
+                actor,
+                "organization.create",
+                after=subject(organization),
+                organization_id=organization.id,
+            )
             await transaction.commit()
 
         logger.info(
@@ -180,6 +190,7 @@ class DirectoryService:
         to suspend or un-suspend itself — and the route enforces that before calling."""
         async with self._store.begin(actor.scope) as transaction:
             organization = await self._organization_or_404(transaction, organization_id)
+            before = subject(organization)
 
             if slug is not None and slug != organization.slug:
                 if await transaction.slug_taken(slug, excluding=organization.id):
@@ -193,6 +204,13 @@ class DirectoryService:
                 _check_logging_defaults(settings)
                 organization.settings = settings
 
+            transaction.audit(
+                actor,
+                "organization.update",
+                before=before,
+                after=subject(organization),
+                organization_id=organization.id,
+            )
             await transaction.commit()
 
         logger.info(
@@ -241,6 +259,7 @@ class DirectoryService:
                 raise NotFound("No such member.")
 
             inner = await self._narrow(transaction, actor, member.organization_id)
+            before = subject(member)
 
             losing_admin = (role is not None and role != "org_admin") or (
                 status is not None and status != "active"
@@ -258,6 +277,16 @@ class DirectoryService:
             if status is not None:
                 member.status = status
 
+            # The organization is named explicitly because a platform administrator's
+            # own scope has none. That is also what `Attribution.inside` reads to mark the
+            # event as support access, so this call site does not have to know it is one.
+            transaction.audit(
+                actor,
+                "member.update",
+                before=before,
+                after=subject(member),
+                organization_id=member.organization_id,
+            )
             await transaction.commit()
 
         logger.info(
@@ -285,6 +314,12 @@ class DirectoryService:
                 await self._require_another_admin(inner, member)
 
             organization_id = member.organization_id
+            transaction.audit(
+                actor,
+                "member.remove",
+                before=subject(member),
+                organization_id=organization_id,
+            )
             await inner.delete_user(member)
             await transaction.commit()
 
@@ -343,6 +378,12 @@ class DirectoryService:
                 accepted_at=None,
             )
             await inner.add_invitation(invitation)
+            transaction.audit(
+                actor,
+                "invitation.create",
+                after=subject(invitation),
+                organization_id=organization_id,
+            )
             await transaction.commit()
 
         logger.info(
@@ -376,6 +417,12 @@ class DirectoryService:
 
             inner = await self._narrow(transaction, actor, invitation.organization_id)
             organization_id = invitation.organization_id
+            transaction.audit(
+                actor,
+                "invitation.revoke",
+                before=subject(invitation),
+                organization_id=organization_id,
+            )
             await inner.delete_invitation(invitation)
             await transaction.commit()
 
@@ -404,10 +451,21 @@ class DirectoryService:
 
             organization = await self._organization_or_404(transaction, invitation.organization_id)
             await self._narrow(transaction, actor, invitation.organization_id)
+            before = subject(invitation)
 
             minted = tokens.mint_opaque_token()
             invitation.token_hash = minted.token_hash
             invitation.expires_at = datetime.now(UTC) + timedelta(days=INVITATION_TTL_DAYS)
+            # The diff says the token changed and the expiry moved, and says nothing
+            # about what the token became — it is a bearer credential, so it is marked
+            # sensitive in the snapshot and compared by fingerprint.
+            transaction.audit(
+                actor,
+                "invitation.resend",
+                before=before,
+                after=subject(invitation),
+                organization_id=invitation.organization_id,
+            )
             await transaction.commit()
 
         logger.info(
@@ -478,6 +536,19 @@ class DirectoryService:
             )
             await inner.add_user(user)
             invitation.accepted_at = datetime.now(UTC)
+            # The actor is the person who just accepted: there is no session yet, so the
+            # attribution is built by hand rather than from an `Actor`. It is a `user`
+            # event, not a platform one — the organization is theirs from this moment.
+            inner.audit(
+                Attribution(
+                    actor_type="user",
+                    user_id=user.id,
+                    label=user.email,
+                    organization_id=organization.id,
+                ),
+                "invitation.accept",
+                after=subject(user),
+            )
             await transaction.commit()
 
         logger.info(

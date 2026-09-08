@@ -16,6 +16,7 @@ from app.core.config import Settings
 from app.core.errors import Forbidden, Unauthorized, Validation
 from app.core.keys import bearer_token
 from app.core.tenancy import Actor, TenantScope
+from app.services.audit_service import AuditService
 from app.services.auth import AuthenticationRequired, AuthService, Identity, RequestContext
 from app.services.catalog import CatalogService
 from app.services.connectors import ConnectorService
@@ -82,6 +83,11 @@ def get_limits_service(request: Request) -> LimitsService:
     return service
 
 
+def get_audit_service(request: Request) -> AuditService:
+    service: AuditService = request.app.state.audit_service
+    return service
+
+
 def get_memory_preview(request: Request) -> MemoryPreview:
     service: MemoryPreview = request.app.state.memory_preview
     return service
@@ -130,14 +136,24 @@ async def require_identity(
 CurrentUser = Annotated[Identity, Depends(require_identity)]
 
 
-def current_actor(request: Request, identity: CurrentUser) -> Actor:
-    """Who is acting, and inside which organization.
+async def current_actor(request: Request, identity: CurrentUser) -> Actor:
+    """Who is acting, inside which organization, and from where.
 
     The scope comes from the session. The only thing that can widen it is a superadmin
     presenting :data:`ASSUME_ORGANIZATION_HEADER`, and that path goes through
-    :meth:`TenantScope.assume`, which logs the access.
+    :meth:`TenantScope.assume`, which logs the access — and, here, records it in the
+    customer's own audit log through :class:`SupportAccessRecorder`.
+
+    The address and the email ride along because every audit event needs them and no
+    service should have to reach for a ``Request`` to find out. They are read once, in the
+    one dependency that already exists on every authenticated route.
+
+    ``async`` although it awaits nothing: a synchronous dependency runs in a worker
+    thread, where there is no event loop for the recorder's fire-and-forget write to be
+    spawned on.
     """
     scope = TenantScope.of(identity)
+    context = request_context(request)
 
     raw = request.headers.get(ASSUME_ORGANIZATION_HEADER)
     if raw and scope.is_platform:
@@ -146,8 +162,25 @@ def current_actor(request: Request, identity: CurrentUser) -> Actor:
         except ValueError as exc:
             raise Validation("Malformed organization id.", param="x-assume-organization") from exc
         scope = scope.assume(organization_id, actor_user_id=identity.user.id)
+        recorder = getattr(request.app.state, "support_access", None)
+        if recorder is not None:
+            # Debounced and off the request path — a support session is dozens of
+            # requests and one visit. See app/services/impersonation.py.
+            recorder.note(
+                actor_user_id=identity.user.id,
+                actor_label=identity.user.email,
+                organization_id=organization_id,
+                ip=context.ip,
+                user_agent=context.user_agent,
+            )
 
-    return Actor(user_id=identity.user.id, scope=scope)
+    return Actor(
+        user_id=identity.user.id,
+        scope=scope,
+        label=identity.user.email,
+        ip=context.ip,
+        user_agent=context.user_agent,
+    )
 
 
 CurrentActor = Annotated[Actor, Depends(current_actor)]

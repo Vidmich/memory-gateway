@@ -31,6 +31,9 @@ from app.core.middleware import (
 )
 from app.core.passwords import build_hasher
 from app.services.api_keys import KeyAuthenticator, LastUsedRecorder
+from app.services.audit import count_audit_failures_with
+from app.services.audit_service import AuditService
+from app.services.audit_store import PostgresAuditStore
 from app.services.auth import AuthService
 from app.services.auth_provider import LocalPasswordProvider
 from app.services.auth_store import PostgresAuthStore
@@ -53,6 +56,7 @@ from app.services.gateway_resolver import (
 )
 from app.services.gateway_store import PostgresGatewayStore
 from app.services.gateways import GatewayService
+from app.services.impersonation import SupportAccessRecorder
 from app.services.limit_store import RedisLimitStore
 from app.services.limiter import RateLimiter
 from app.services.limits import Ceilings
@@ -217,6 +221,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # to the one after the flusher's cache expires.
             cache=distillation.trigger,
         )
+
+        # SPEC §10.4. The read half only: an event is written into whichever transaction
+        # is making the change, through the recorder mixins the stores carry, so there is
+        # no writer to wire here. The one exception is a superadmin opening a customer's
+        # organization, which happens on a read and has no transaction to join.
+        audit_store = PostgresAuditStore(clients.session_factory)
+        app.state.audit_service = AuditService(
+            audit_store,
+            export_limiter=FixedWindowLimiter(
+                store=RedisThrottleStore(clients.redis),
+                action="audit-export",
+                limit=settings.audit_export_max_attempts,
+                window_seconds=settings.audit_export_window_seconds,
+            ),
+        )
+        app.state.support_access = SupportAccessRecorder(
+            audit_store,
+            # Redis, so one support session across two replicas is still one event.
+            RedisThrottleStore(clients.redis),
+        )
+        # An event that could not be built is swallowed rather than failing somebody's
+        # save; this is what keeps that from being invisible. Process-level because the
+        # code that increments it is a mixin on a transaction — see the function's own
+        # docstring.
+        count_audit_failures_with(metrics.audit.failures)
 
         hasher = build_hasher(settings)
         app.state.auth_service = AuthService(

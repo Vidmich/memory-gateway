@@ -20,6 +20,7 @@ import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { useToast } from '@/components/Toast'
 import { GatewayKeys } from '@/pages/GatewayKeys'
 import { LimitsSection } from '@/pages/GatewayLimits'
+import { ObjectAudit } from '@/pages/ObjectAudit'
 import { MemorySection } from '@/pages/GatewayMemory'
 import { RoutingSection } from '@/pages/GatewayRouting'
 import {
@@ -446,6 +447,11 @@ export function GatewayFormPage() {
 
       {/* 7. Keys ------------------------------------------------------- */}
       {gatewayId ? <GatewayKeys gatewayId={gatewayId} /> : null}
+
+      {/* Its own history, which is where the audit log is actually read: somebody
+          looking at a misbehaving endpoint wants "what changed here", and they want it
+          without leaving the screen they are on. */}
+      <ObjectAudit targetType="gateway" targetId={gatewayId} noun="gateway" />
 
       {gateway ? <TestPanel gateway={gateway} /> : null}
 

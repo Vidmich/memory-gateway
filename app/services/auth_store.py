@@ -34,10 +34,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Organization, User, UserSession
 from app.db.scoping import unscoped
+from app.services.audit import (
+    AuditingTransaction,
+    MemoryAuditRecorder,
+    PostgresAuditRecorder,
+)
 from app.services.memory_db import MemoryDatabase
 
 
-class AuthTransaction(Protocol):
+class AuthTransaction(AuditingTransaction, Protocol):
     """One unit of work. Objects it returns are live: mutating them and committing
     persists the change, in both implementations."""
 
@@ -78,7 +83,7 @@ class AuthStore(Protocol):
 # ---------------------------------------------------------------------------
 
 
-class PostgresAuthTransaction:
+class PostgresAuthTransaction(PostgresAuditRecorder):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
@@ -172,7 +177,7 @@ class PostgresAuthStore:
 # ---------------------------------------------------------------------------
 
 
-class MemoryAuthTransaction:
+class MemoryAuthTransaction(MemoryAuditRecorder):
     """Backed by plain dictionaries.
 
     ``commit`` is a no-op and there is no rollback: writes are visible the moment they
@@ -180,27 +185,27 @@ class MemoryAuthTransaction:
     otherwise would be more misleading than saying so here.
     """
 
-    def __init__(self, state: MemoryDatabase) -> None:
-        self._state = state
+    def __init__(self, database: MemoryDatabase) -> None:
+        self._db = database
 
     async def user_by_email(self, email: str) -> User | None:
         wanted = email.strip().casefold()
-        for user in self._state.users.values():
+        for user in self._db.users.values():
             if user.email.casefold() == wanted:
                 return user
         return None
 
     async def user_by_id(self, user_id: uuid.UUID) -> User | None:
-        return self._state.users.get(user_id)
+        return self._db.users.get(user_id)
 
     async def organization(self, organization_id: uuid.UUID) -> Organization | None:
-        return self._state.organizations.get(organization_id)
+        return self._db.organizations.get(organization_id)
 
     async def add_session(self, record: UserSession) -> None:
-        self._state.sessions[record.id] = record
+        self._db.sessions[record.id] = record
 
     async def session_by_token_hash(self, token_hash: str) -> UserSession | None:
-        for record in self._state.sessions.values():
+        for record in self._db.sessions.values():
             if record.refresh_token_hash == token_hash:
                 return record
         return None
@@ -208,11 +213,11 @@ class MemoryAuthTransaction:
     async def family_is_live(self, family_id: uuid.UUID) -> bool:
         return any(
             record.family_id == family_id and record.revoked_at is None
-            for record in self._state.sessions.values()
+            for record in self._db.sessions.values()
         )
 
     async def revoke_family(self, family_id: uuid.UUID, *, reason: str, at: datetime) -> None:
-        for record in self._state.sessions.values():
+        for record in self._db.sessions.values():
             if record.family_id == family_id and record.revoked_at is None:
                 record.revoked_at = at
                 record.revoked_reason = reason
@@ -225,7 +230,7 @@ class MemoryAuthTransaction:
         reason: str,
         at: datetime,
     ) -> None:
-        for record in self._state.sessions.values():
+        for record in self._db.sessions.values():
             if (
                 record.user_id == user_id
                 and record.family_id != keep_family_id
@@ -246,22 +251,22 @@ class MemoryAuthStore:
     """
 
     def __init__(self, database: MemoryDatabase | None = None) -> None:
-        self._state = database or MemoryDatabase()
+        self._db = database or MemoryDatabase()
 
     @property
     def database(self) -> MemoryDatabase:
-        return self._state
+        return self._db
 
     def add_user(self, user: User) -> User:
-        return self._state.add_user(user)
+        return self._db.add_user(user)
 
     def add_organization(self, organization: Organization) -> Organization:
-        return self._state.add_organization(organization)
+        return self._db.add_organization(organization)
 
     @property
     def sessions(self) -> dict[uuid.UUID, UserSession]:
-        return self._state.sessions
+        return self._db.sessions
 
     @asynccontextmanager
     async def begin(self) -> AsyncIterator[AuthTransaction]:
-        yield MemoryAuthTransaction(self._state)
+        yield MemoryAuthTransaction(self._db)

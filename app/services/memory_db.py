@@ -20,6 +20,7 @@ from typing import Any
 
 from app.db.models import (
     ApiKey,
+    AuditEvent,
     Connector,
     DistillationRun,
     Document,
@@ -57,6 +58,9 @@ class MemoryDatabase:
     request_logs: dict[uuid.UUID, RequestLog] = field(default_factory=dict)
     transcripts: dict[uuid.UUID, Transcript] = field(default_factory=dict)
     distillation_runs: dict[uuid.UUID, DistillationRun] = field(default_factory=dict)
+    #: Task 15. Append-only here too: nothing in this class removes one, which is the
+    #: in-memory half of the trigger the migration installs.
+    audit_events: dict[uuid.UUID, AuditEvent] = field(default_factory=dict)
 
     def add_user(self, user: User) -> User:
         self.users[user.id] = _stamped(user)
@@ -97,6 +101,12 @@ class MemoryDatabase:
     def add_end_user(self, end_user: EndUser) -> EndUser:
         self.end_users[end_user.id] = _stamped(end_user, "first_seen_at", "last_seen_at")
         return end_user
+
+    def add_audit_event(self, event: AuditEvent) -> AuditEvent:
+        # No `updated_at`: the table has none, because a column an UPDATE would touch is
+        # a place an UPDATE could hide. See `app.db.models.audit`.
+        self.audit_events[event.id] = _stamped(event, "created_at")
+        return event
 
     def add_fact(self, fact: MemoryFact) -> MemoryFact:
         # No `updated_at` on this one — see the note on its two timestamps in

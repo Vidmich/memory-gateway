@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.adapters.base import UpstreamTarget
 from app.api.control.deps import (
+    get_audit_service,
     get_auth_service,
     get_catalog_service,
     get_connector_service,
@@ -573,6 +574,7 @@ class AuthHarness:
 def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastAPI:
     application = create_app()
     application.dependency_overrides[get_auth_service] = lambda: auth.service
+    application.dependency_overrides[get_audit_service] = lambda: auth.audit
     application.dependency_overrides[get_directory_service] = lambda: auth.directory
     application.dependency_overrides[get_catalog_service] = lambda: auth.catalog
     connectors = auth.connectors
@@ -618,6 +620,9 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
         if fixture.preview is not None:
             application.state.memory_preview = fixture.preview
         application.state.monitoring_service = fixture.monitoring
+        # Read off `app.state`, not through a dependency: the support-access recorder is
+        # driven by `current_actor`, which has a Request and not a service of its own.
+        application.state.support_access = fixture.support_access
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield AuthHarness(app=application, client=http_client, auth=fixture)
@@ -686,6 +691,7 @@ async def directory() -> AsyncIterator[DirectoryHarness]:
         if world.auth.preview is not None:
             application.state.memory_preview = world.auth.preview
         application.state.monitoring_service = world.auth.monitoring
+        application.state.support_access = world.auth.support_access
         transport = ASGITransport(app=application)
         async with AsyncClient(transport=transport, base_url="http://testserver") as http_client:
             yield DirectoryHarness(app=application, client=http_client, world=world)

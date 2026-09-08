@@ -39,6 +39,10 @@ export const NAVIGATION: readonly NavEntry[] = [
   // Same reasoning again: reading it is how a support question gets answered, and the
   // write controls inside the screen are what `resources:write` gates.
   { to: '/memory', label: 'Memory' },
+  // Readable by every role, like Monitoring and for the same reason: the question
+  // "who turned this off yesterday" is asked by whoever is answering the ticket, and
+  // needing write permission to look would be a worse posture, not a better one.
+  { to: '/audit', label: 'Audit log' },
   { to: '/settings', label: 'Organization', section: 'Settings' },
   { to: '/settings/members', label: 'Members' },
   {

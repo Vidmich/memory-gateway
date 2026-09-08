@@ -16,6 +16,7 @@ import { Field, Form, Select, SubmitButton, TextArea, TextInput } from '@/compon
 import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { useToast } from '@/components/Toast'
 import { PRESETS, presetById, presetFor } from '@/pages/providerPresets'
+import { ObjectAudit } from '@/pages/ObjectAudit'
 
 const DIALECTS = [
   { value: 'openai', label: 'OpenAI-compatible' },
@@ -515,6 +516,10 @@ export function ModelFormPage() {
       </Form>
 
       {probe ? <ProbeResult result={probe.result} source={probe.source} /> : null}
+
+      {/* Where a credential rotation shows up: "***" to "***", with a name and a date
+          against it. The one question asked of a model's history is who changed the key. */}
+      <ObjectAudit targetType="upstream_model" targetId={modelId} noun="model" />
     </div>
   )
 }

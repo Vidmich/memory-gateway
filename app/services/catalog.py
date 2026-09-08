@@ -52,6 +52,7 @@ from app.core.ids import uuid7
 from app.core.tenancy import Actor
 from app.db.models import UpstreamModel
 from app.db.models.upstream_model import DEFAULT_TIMEOUT_SECONDS
+from app.services.audit_snapshots import subject
 from app.services.catalog_store import CatalogStore, CatalogTransaction
 from app.services.gateway_resolver import ConfigCache
 from app.services.model_probe import Probe, ProbeResult
@@ -263,6 +264,15 @@ class CatalogService:
                 # Stamps the scope's organization; a superadmin at platform scope has
                 # none, so creating an org model means opening that organization first.
                 await transaction.add_model(model)
+            # A global model belongs to nobody, so its event has no organization and
+            # appears in no customer's log — which is right: they cannot see the row
+            # either, only that it exists in the catalog.
+            transaction.audit(
+                actor,
+                "model.create",
+                after=subject(model),
+                organization_id=model.organization_id,
+            )
             await transaction.commit()
 
         self._log("model created", actor, model, action="model.create")
@@ -274,6 +284,7 @@ class CatalogService:
 
         async with self._store.begin(actor.scope) as transaction:
             model = await self._writable(transaction, model_id)
+            before = subject(model)
 
             auth_type = _picked(patch.auth_type, model.auth_type)
             credential_after = (
@@ -312,6 +323,15 @@ class CatalogService:
                 # replacement, which is why there is no reveal to compare against.
                 self._store_credential(model, patch.credential)
 
+            # The credential is compared on its ciphertext and rendered as `"***"` on
+            # both sides, so a rotation is visible as an event and invisible as a value.
+            transaction.audit(
+                actor,
+                "model.update",
+                before=before,
+                after=subject(model),
+                organization_id=model.organization_id,
+            )
             await transaction.commit()
             # After the commit, so nothing can repopulate the cache from a row this
             # transaction has not written yet.
@@ -330,6 +350,12 @@ class CatalogService:
 
             organization_id = model.organization_id
             name = model.name
+            transaction.audit(
+                actor,
+                "model.delete",
+                before=subject(model),
+                organization_id=organization_id,
+            )
             await transaction.delete_model(model)
             await transaction.commit()
 

@@ -27,10 +27,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.tenancy import TenantScope
 from app.db.models import Gateway, UpstreamModel
 from app.db.repositories import GatewayRepository, UpstreamModelRepository, model_is_visible
+from app.services.audit import (
+    AuditingTransaction,
+    MemoryAuditRecorder,
+    PostgresAuditRecorder,
+)
 from app.services.memory_db import MemoryDatabase
 
 
-class CatalogTransaction(Protocol):
+class CatalogTransaction(AuditingTransaction, Protocol):
     """One unit of work, already scoped. Returned objects are live in both
     implementations: mutate one and commit."""
 
@@ -87,7 +92,7 @@ class CatalogStore(Protocol):
 # ---------------------------------------------------------------------------
 
 
-class PostgresCatalogTransaction:
+class PostgresCatalogTransaction(PostgresAuditRecorder):
     def __init__(self, session: AsyncSession, scope: TenantScope) -> None:
         self._session = session
         self._scope = scope
@@ -158,7 +163,7 @@ class PostgresCatalogStore:
 # ---------------------------------------------------------------------------
 
 
-class MemoryCatalogTransaction:
+class MemoryCatalogTransaction(MemoryAuditRecorder):
     """Dictionaries, filtered through :func:`model_is_visible` and
     :meth:`TenantScope.permits` — the same predicates the SQL clauses are built from."""
 

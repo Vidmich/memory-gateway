@@ -140,6 +140,34 @@ export class ApiClient {
   }
 
   async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
+    const response = await this.raw(method, path, options)
+    if (response.status === 204) return undefined as T
+    return (await response.json()) as T
+  }
+
+  /**
+   * A file the server streams rather than a JSON document — today, the audit-log CSV.
+   *
+   * It goes through `raw` rather than being fetched by a plain link because the access
+   * token lives in memory: an `<a href>` carries no `Authorization` header, and a
+   * download endpoint that worked without one would be a hole in the only thing standing
+   * between an unauthenticated visitor and an organization's whole history.
+   */
+  async blob(path: string, options: RequestOptions = {}): Promise<Blob> {
+    return await (await this.raw('GET', path, options)).blob()
+  }
+
+  /**
+   * One request, including the refresh-and-retry, without touching the body.
+   *
+   * Separate from `request` so that a non-JSON response gets exactly the same session
+   * handling — a second copy of that dance is a second place for a session to end badly.
+   */
+  private async raw(
+    method: string,
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<Response> {
     const { body, signal, allowRefresh = true } = options
 
     const headers: Record<string, string> = { accept: 'application/json' }
@@ -164,12 +192,11 @@ export class ApiClient {
         this.onSessionEnded()
         throw await toError(response)
       }
-      return this.request<T>(method, path, { ...options, allowRefresh: false })
+      return this.raw(method, path, { ...options, allowRefresh: false })
     }
 
     if (!response.ok) throw await toError(response)
-    if (response.status === 204) return undefined as T
-    return (await response.json()) as T
+    return response
   }
 
   get<T>(path: string, options?: RequestOptions): Promise<T> {

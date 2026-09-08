@@ -16,6 +16,8 @@ from app.core.crypto import SecretBox
 from app.core.ids import uuid7
 from app.core.passwords import Hasher, build_hasher
 from app.db.models import Organization, User, UserSession
+from app.services.audit_service import AuditService
+from app.services.audit_store import MemoryAuditStore
 from app.services.auth import AuthService, RequestContext
 from app.services.auth_provider import LocalPasswordProvider, PasswordCredentials
 from app.services.auth_store import AuthStore, MemoryAuthStore
@@ -26,6 +28,7 @@ from app.services.directory_store import MemoryDirectoryStore
 from app.services.gateway_probe import GatewayProbe
 from app.services.gateway_store import MemoryGatewayStore
 from app.services.gateways import GatewayService
+from app.services.impersonation import SupportAccessRecorder
 from app.services.limit_store import MemoryLimitStore
 from app.services.limits import Ceilings
 from app.services.limits_service import LimitsService
@@ -103,6 +106,15 @@ class AuthFixture:
     #: Task 13's write half, over the same rows. ``None`` for a platform-only fixture,
     #: which has no organization for a conversation to belong to.
     distillation: DistillationFixture | None
+    #: Task 15's read half, over the same rows every mutation above records into —
+    #: which is the point: an audit test drives a real endpoint and then reads the log
+    #: the same screen would, rather than inspecting whatever the service happened to
+    #: return.
+    audit: AuditService
+    audit_store: MemoryAuditStore
+    #: The debounced writer for a superadmin opening this organization. Wired here so an
+    #: assumed request in a test writes the event a real one would.
+    support_access: SupportAccessRecorder
     #: The read half of task 07, over the same rows the write half fills in.
     monitoring: MonitoringService
     logs: LogFixture
@@ -229,6 +241,7 @@ def build_auth(
         else None
     )
     limit_buckets = MemoryLimitStore()
+    audit_store = MemoryAuditStore(database)
     return AuthFixture(
         service=service,
         directory=directory,
@@ -240,6 +253,11 @@ def build_auth(
         preview=preview,
         end_users=end_users,
         distillation=distillation,
+        audit=AuditService(audit_store),
+        audit_store=audit_store,
+        # The same throttle store the login backoff uses, so a test that makes two assumed
+        # requests sees the debounce a real support session would.
+        support_access=SupportAccessRecorder(audit_store, throttle_store),
         monitoring=monitoring,
         logs=logs,
         secret_box=secret_box,

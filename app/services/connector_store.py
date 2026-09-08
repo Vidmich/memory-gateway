@@ -35,6 +35,11 @@ from app.core.tenancy import TenantScope
 from app.db.models import Connector, Document
 from app.db.repositories import ConnectorRepository, DocumentIndexRow, DocumentRepository
 from app.db.scoping import scoped
+from app.services.audit import (
+    AuditingTransaction,
+    MemoryAuditRecorder,
+    PostgresAuditRecorder,
+)
 from app.services.memory_db import MemoryDatabase
 
 
@@ -49,7 +54,7 @@ class DocumentDraft:
     mime_type: str | None = None
 
 
-class ConnectorTransaction(Protocol):
+class ConnectorTransaction(AuditingTransaction, Protocol):
     """One unit of work, already scoped. Returned objects are live in both
     implementations: mutate one and commit."""
 
@@ -124,7 +129,7 @@ class ConnectorStore(Protocol):
 # ---------------------------------------------------------------------------
 
 
-class PostgresConnectorTransaction:
+class PostgresConnectorTransaction(PostgresAuditRecorder):
     def __init__(self, session: AsyncSession, scope: TenantScope) -> None:
         self._session = session
         self._scope = scope
@@ -249,7 +254,7 @@ class PostgresConnectorStore:
 # ---------------------------------------------------------------------------
 
 
-class MemoryConnectorTransaction:
+class MemoryConnectorTransaction(MemoryAuditRecorder):
     def __init__(self, database: MemoryDatabase, scope: TenantScope) -> None:
         self._db = database
         self._scope = scope

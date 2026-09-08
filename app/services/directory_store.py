@@ -30,10 +30,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.tenancy import TenantScope
 from app.db.models import Gateway, Invitation, Organization, User
 from app.db.repositories import InvitationRepository, OrganizationRepository, UserRepository
+from app.services.audit import (
+    AuditingTransaction,
+    MemoryAuditRecorder,
+    PostgresAuditRecorder,
+)
 from app.services.memory_db import MemoryDatabase
 
 
-class DirectoryTransaction(Protocol):
+class DirectoryTransaction(AuditingTransaction, Protocol):
     """One unit of work, already scoped. Returned objects are live: mutating one and
     committing persists the change, in both implementations."""
 
@@ -100,7 +105,7 @@ class DirectoryStore(Protocol):
 # ---------------------------------------------------------------------------
 
 
-class PostgresDirectoryTransaction:
+class PostgresDirectoryTransaction(PostgresAuditRecorder):
     def __init__(self, session: AsyncSession, scope: TenantScope) -> None:
         self._session = session
         self._scope = scope
@@ -189,7 +194,7 @@ class PostgresDirectoryStore:
 # ---------------------------------------------------------------------------
 
 
-class MemoryDirectoryTransaction:
+class MemoryDirectoryTransaction(MemoryAuditRecorder):
     """Dictionaries, filtered through the same :meth:`TenantScope.permits` predicate the
     SQL clause is built from. ``commit`` is a no-op and writes are visible immediately."""
 

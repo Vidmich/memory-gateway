@@ -17,6 +17,7 @@ import {
   UploadZone,
 } from '@/pages/ConnectorDetail'
 import { DOCUMENT_STATUSES, formatBytes, resyncSummary, statusSummary } from '@/pages/connectors'
+import { ObjectAudit } from '@/pages/ObjectAudit'
 
 /**
  * One connector: upload, watch, tune, search (SPEC §13.1).
@@ -159,6 +160,10 @@ export function ConnectorDetailPage() {
           ) : null}
         </section>
       ) : null}
+
+      {/* Chunking changes, resyncs and uploads, in one place. A connector that started
+          answering badly usually had its chunking changed, and this is what says when. */}
+      <ObjectAudit targetType="connector" targetId={connector.id} noun="connector" />
 
       <ConfirmDialog
         open={confirming}

@@ -39,6 +39,8 @@ from app.db.models import Connector, Document
 from app.db.models.connector import CONNECTOR_TYPES
 from app.schemas.config import merge_config
 from app.schemas.connector_config import ChunkingConfig, requires_reindex
+from app.services.audit import Target, summarize
+from app.services.audit_snapshots import subject, target_of
 from app.services.connector_source import storage_prefix
 from app.services.connector_store import ConnectorStore, ConnectorTransaction, DocumentDraft
 from app.services.embeddings import Embedder
@@ -265,6 +267,14 @@ class ConnectorService:
             connector.storage_prefix = storage_prefix(
                 organization_id=connector.organization_id, connector_id=connector.id
             )
+            transaction.audit(
+                actor,
+                "connector.create",
+                after=subject(connector),
+                # Named from the row, not from the actor's scope: a platform
+                # administrator has none, and the event belongs to the customer.
+                organization_id=connector.organization_id,
+            )
             await transaction.commit()
 
         logger.info(
@@ -278,6 +288,7 @@ class ConnectorService:
     ) -> ConnectorView:
         async with self._store.begin(actor.scope) as transaction:
             connector = await self._require(transaction, connector_id)
+            recorded = subject(connector)
             before = ChunkingConfig.load(connector.chunking)
 
             if patch.name is not None:
@@ -294,6 +305,16 @@ class ConnectorService:
 
             after = ChunkingConfig.load(connector.chunking)
             changed = requires_reindex(before, after)
+            # A chunking change is the one edit here with consequences beyond the row —
+            # every existing chunk is now stale — so the diff naming `chunking.*` is what
+            # explains a reindex that follows it.
+            transaction.audit(
+                actor,
+                "connector.update",
+                before=recorded,
+                after=subject(connector),
+                organization_id=connector.organization_id,
+            )
             await transaction.commit()
 
             counts = await transaction.document_counts([connector_id])
@@ -318,8 +339,19 @@ class ConnectorService:
         outbox = JobOutbox(self._queue)
         async with self._store.begin(actor.scope) as transaction:
             connector = await self._require(transaction, connector_id)
+            before = subject(connector)
             connector.status = "deleting"
             organization_id = connector.organization_id
+            # The person's act is "asked for this to go", recorded here. The row actually
+            # disappearing is the worker's, and is a second event carrying
+            # ``actor_type: system`` — see ``IngestionPipeline.purge``.
+            transaction.audit(
+                actor,
+                "connector.delete",
+                before=before,
+                after=subject(connector),
+                organization_id=organization_id,
+            )
             outbox.add(
                 DELETE_CONNECTOR,
                 {"organization_id": str(organization_id), "connector_id": str(connector_id)},
@@ -343,9 +375,20 @@ class ConnectorService:
             if document is None:
                 raise NotFound("Document not found.")
             organization_id = document.organization_id
+            removed = subject(document)
         await self._pipeline.drop_document(
             organization_id=organization_id, document_id=document_id, delete_object=True
         )
+        # Recorded *after*, in its own transaction, and this is the one hook in task 15
+        # that is not in the same unit of work as the change it records. It cannot be: the
+        # deletion spans three systems, and an event written alongside the row would claim
+        # a removal the object store might still refuse. The cost is the narrow window in
+        # which a crash loses the record of a delete that did happen.
+        async with self._store.begin(actor.scope) as transaction:
+            transaction.audit(
+                actor, "document.delete", before=removed, organization_id=organization_id
+            )
+            await transaction.commit()
 
     async def document_chunks(
         self, actor: Actor, document_id: uuid.UUID, *, limit: int = 200
@@ -379,6 +422,7 @@ class ConnectorService:
             document = await transaction.document(document_id)
             if document is None:
                 raise NotFound("Document not found.")
+            before = subject(document)
             document.status = "pending"
             document.error = None
             document.chunk_count = 0
@@ -394,6 +438,13 @@ class ConnectorService:
                 # make the button do nothing for an hour.
                 idempotency_key=f"{ingest_key(document_id, document.content_hash)}:manual",
                 queue=queue_for(document.source_name),
+            )
+            transaction.audit(
+                actor,
+                "document.reindex",
+                before=before,
+                after=subject(document),
+                organization_id=document.organization_id,
             )
             await transaction.commit()
         await outbox.flush()
@@ -467,6 +518,22 @@ class ConnectorService:
         # After every commit, always. A job that names a document row a rollback removed
         # is a worker failure nobody can explain from the evidence.
         await outbox.flush()
+
+        # One event for the batch, not one per file: dropping forty files in is one thing
+        # somebody did, and forty rows would bury every other event on the screen. The
+        # count and a few names are what makes it recognisable; the documents themselves
+        # are on the connector's own tab.
+        stored = [row.filename for row in outcomes if row.status != "rejected"]
+        if stored:
+            async with self._store.begin(actor.scope) as transaction:
+                transaction.audit(
+                    actor,
+                    "connector.upload",
+                    target=Target("connector", connector_id, connector.name),
+                    organization_id=organization_id,
+                    summary=summarize(len(stored), stored, rejected=len(outcomes) - len(stored)),
+                )
+                await transaction.commit()
         return outcomes
 
     async def _store_one(
@@ -576,7 +643,7 @@ class ConnectorService:
             await transaction.commit()
 
         try:
-            return await self._pipeline.resync(
+            summary = await self._pipeline.resync(
                 organization_id=organization_id, connector_id=connector_id
             )
         except Exception as error:
@@ -585,6 +652,30 @@ class ConnectorService:
             # `error` status and the `error` column exist for.
             await self._mark_failed(actor, connector_id, error)
             raise
+
+        # The reconciliation's own counts, as one event. What changed is potentially
+        # thousands of document rows, and SPEC §9.1's five numbers are a better account of
+        # that than five thousand entries would be.
+        async with self._store.begin(actor.scope) as transaction:
+            synced = await transaction.connector(connector_id)
+            if synced is not None:
+                transaction.audit(
+                    actor,
+                    "connector.resync",
+                    target=target_of(synced),
+                    organization_id=organization_id,
+                    summary=summarize(
+                        summary.added + summary.updated + summary.deleted,
+                        (),
+                        added=summary.added,
+                        updated=summary.updated,
+                        deleted=summary.deleted,
+                        unchanged=summary.unchanged,
+                        skipped=summary.skipped,
+                    ),
+                )
+                await transaction.commit()
+        return summary
 
     async def _mark_failed(self, actor: Actor, connector_id: uuid.UUID, error: Exception) -> None:
         try:

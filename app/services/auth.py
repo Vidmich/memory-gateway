@@ -26,6 +26,8 @@ from app.core.errors import AppError, Unauthorized
 from app.core.ids import uuid7
 from app.core.passwords import Hasher, PasswordPolicy
 from app.db.models import Organization, User, UserSession
+from app.services.audit import Attribution
+from app.services.audit_snapshots import subject
 from app.services.auth_provider import AuthProvider, Credentials
 from app.services.auth_store import AuthStore, AuthTransaction
 from app.services.login_throttle import Attempt, LoginThrottle, TooManyAttempts
@@ -306,6 +308,7 @@ class AuthService:
         current_password: str,
         new_password: str,
         keep_family_id: uuid.UUID,
+        context: RequestContext | None = None,
     ) -> None:
         reason = self._policy.check(new_password)
         if reason is not None:
@@ -318,7 +321,26 @@ class AuthService:
             if not self._hasher.verify(user.password_hash, current_password):
                 raise InvalidCredentials("Your current password is incorrect.")
 
+            before = subject(user)
             user.password_hash = self._hasher.hash(new_password)
+            # Somebody changing their own password is not configuration, and it is the
+            # one session event that belongs here: a password change is what an account
+            # takeover looks like from the outside, and it is the event a person reviews
+            # their own log for. Logging in is not — every session is already a row in
+            # `sessions`, with its own address and user agent.
+            transaction.audit(
+                Attribution(
+                    actor_type="user",
+                    user_id=user.id,
+                    label=user.email,
+                    organization_id=user.organization_id,
+                    ip=context.ip if context else None,
+                    user_agent=context.user_agent if context else None,
+                ),
+                "user.password_change",
+                before=before,
+                after=subject(user),
+            )
             await transaction.revoke_other_families(
                 user_id=user_id,
                 keep_family_id=keep_family_id,

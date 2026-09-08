@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import ColumnElement, Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,7 @@ from sqlalchemy.orm import selectinload
 from app.core.tenancy import TenantScope
 from app.db.models import (
     ApiKey,
+    AuditEvent,
     Connector,
     Document,
     Gateway,
@@ -32,6 +33,13 @@ from app.db.models import (
     User,
 )
 from app.db.scoping import ScopedRepository, scoped, unscoped
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # The filter shape belongs to the service that owns the screen, and that module
+    # imports this one. Under `from __future__ import annotations` the reference is a
+    # string, so the cycle never exists at runtime — the same arrangement
+    # `app.core.tenancy` uses for `Identity`.
+    from app.services.audit_store import AuditFilters
 
 
 class UserRepository(ScopedRepository[User]):
@@ -72,6 +80,67 @@ class UserRepository(ScopedRepository[User]):
             )
         )
         return (await self._session.execute(statement)).scalars().first()
+
+
+class AuditEventRepository(ScopedRepository[AuditEvent]):
+    """The audit trail, read-only.
+
+    Read-only is not a comment: this class inherits :meth:`ScopedRepository.add` and
+    :meth:`~app.db.scoping.ScopedRepository.delete` and overrides both to refuse, because
+    an event is written into the transaction that is making the change it records — see
+    :mod:`app.services.audit` — and never through a repository somebody could reach for
+    later. The database refuses an ``UPDATE`` or a ``DELETE`` on this table outright.
+
+    ``organization_id`` is nullable here, unlike every other table with a scope. A
+    platform event — a global model created, a platform setting changed — belongs to no
+    customer, and the scope clause excludes ``NULL`` for an organization scope, which is
+    exactly right: it is the platform's own record and appears in nobody's log but the
+    platform's.
+    """
+
+    model = AuditEvent
+
+    def page(
+        self,
+        filters: AuditFilters,
+        *,
+        after: uuid.UUID | None,
+        limit: int,
+    ) -> Select[tuple[AuditEvent]]:
+        statement = self.select().order_by(AuditEvent.id.desc()).limit(limit + 1)
+        if after is not None:
+            statement = statement.where(AuditEvent.id < after)
+        # Narrowing only. For a platform caller this picks one customer out of the whole
+        # log; for anybody else it intersects with a scope clause that is already theirs,
+        # so an id from another organization returns nothing rather than something.
+        if filters.organization_id is not None:
+            statement = statement.where(AuditEvent.organization_id == filters.organization_id)
+        if filters.actor_user_id is not None:
+            statement = statement.where(AuditEvent.actor_user_id == filters.actor_user_id)
+        if filters.action is not None:
+            statement = statement.where(AuditEvent.action == filters.action)
+        if filters.target_type is not None:
+            statement = statement.where(AuditEvent.target_type == filters.target_type)
+        if filters.target_id is not None:
+            statement = statement.where(AuditEvent.target_id == filters.target_id)
+        if filters.start is not None:
+            statement = statement.where(AuditEvent.created_at >= filters.start)
+        if filters.end is not None:
+            statement = statement.where(AuditEvent.created_at < filters.end)
+        return statement
+
+    async def add(self, entity: AuditEvent) -> AuditEvent:
+        raise NotImplementedError(_APPEND_ONLY)
+
+    async def delete(self, entity: AuditEvent) -> None:
+        raise NotImplementedError(_APPEND_ONLY)
+
+
+#: Why the two inherited write methods refuse. One string, so the two answers agree.
+_APPEND_ONLY = (
+    "audit_events is append-only and is written through the transaction performing the "
+    "mutation; see app.services.audit.AuditRecorder."
+)
 
 
 class InvitationRepository(ScopedRepository[Invitation]):

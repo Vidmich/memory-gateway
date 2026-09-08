@@ -197,6 +197,25 @@ class RateLimitMetrics:
 
 
 @dataclass(frozen=True)
+class AuditMetrics:
+    """The audit trail, as one number (SPEC §10.4, task 15).
+
+    One, because there is only one thing about this subsystem that an operator can act
+    on. Events are written inside the transaction that makes the change, so "how many
+    events were recorded" is "how many mutations happened" and the screen already shows
+    that. What is *not* visible anywhere is an event that could not be built — a snapshot
+    function raising on a shape nobody anticipated — because recording deliberately
+    swallows that rather than failing somebody's save.
+
+    An audit log with silent gaps is worse than none, because it is trusted. This counter
+    is how the gap stops being silent: any value above zero means the log is incomplete,
+    and the label says which action to go and look at.
+    """
+
+    failures: Counter
+
+
+@dataclass(frozen=True)
 class Metrics:
     registry: CollectorRegistry
     http_requests: Counter
@@ -210,6 +229,7 @@ class Metrics:
     extraction: ExtractionMetrics
     distillation: DistillationMetrics
     rate_limits: RateLimitMetrics
+    audit: AuditMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -256,6 +276,18 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         extraction=build_extraction_metrics(registry),
         distillation=build_distillation_metrics(registry),
         rate_limits=build_rate_limit_metrics(registry),
+        audit=build_audit_metrics(registry),
+    )
+
+
+def build_audit_metrics(registry: CollectorRegistry) -> AuditMetrics:
+    return AuditMetrics(
+        failures=Counter(
+            "audit_event_failures_total",
+            "Mutations that committed without their audit event, by action.",
+            labelnames=("action",),
+            registry=registry,
+        ),
     )
 
 

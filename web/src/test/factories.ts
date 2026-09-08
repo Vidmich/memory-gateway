@@ -7,6 +7,8 @@
  */
 
 import type {
+  AuditChange,
+  AuditEvent,
   PromptPreviewResponse,
   RetrievalPreviewResponse,
   RetrievedChunkResponse,
@@ -652,4 +654,37 @@ export function makeThrottledEndUser(
   overrides: Partial<ThrottledEndUser> = {},
 ): ThrottledEndUser {
   return { end_user_id: 'eu1', external_id: 'noisy-bot', rejections: 12, ...overrides }
+}
+
+export function makeAuditChange(overrides: Partial<AuditChange> = {}): AuditChange {
+  return {
+    path: 'system_context',
+    kind: 'changed',
+    before: 'Be brief.',
+    after: 'Be brief and kind.',
+    truncated: false,
+    ...overrides,
+  }
+}
+
+export function makeAuditEvent(overrides: Partial<AuditEvent> = {}): AuditEvent {
+  return {
+    id: 'ae1',
+    created_at: '2026-03-04T12:00:00Z',
+    organization_id: 'org1',
+    actor_user_id: 'u1',
+    actor: 'ada@example.com',
+    actor_type: 'user',
+    action: 'gateway.update',
+    target_type: 'gateway',
+    target_id: 'g1',
+    target: 'acme-support',
+    changes: [makeAuditChange()],
+    omitted: 0,
+    summary: null,
+    ip: '203.0.113.7',
+    user_agent: 'pytest',
+    request_id: 'req-1',
+    ...overrides,
+  }
 }

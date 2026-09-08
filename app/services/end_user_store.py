@@ -41,6 +41,11 @@ from app.core.ids import uuid7
 from app.core.tenancy import TenantScope
 from app.db.models import EndUser, MemoryFact, Organization
 from app.db.scoping import ScopedRepository, scoped, unscoped
+from app.services.audit import (
+    AuditingTransaction,
+    MemoryAuditRecorder,
+    PostgresAuditRecorder,
+)
 from app.services.memory_db import MemoryDatabase
 
 
@@ -107,7 +112,7 @@ class FactPatch:
     superseded: bool | None = None
 
 
-class EndUserTransaction(Protocol):
+class EndUserTransaction(AuditingTransaction, Protocol):
     """One unit of work, already scoped. Returned objects are live in both
     implementations: mutate one and commit."""
 
@@ -268,7 +273,7 @@ class MemoryFactRepository(ScopedRepository[MemoryFact]):
     model = MemoryFact
 
 
-class PostgresEndUserTransaction:
+class PostgresEndUserTransaction(PostgresAuditRecorder):
     def __init__(self, session: AsyncSession, scope: TenantScope) -> None:
         self._session = session
         self._scope = scope
@@ -545,7 +550,7 @@ def _escaped(value: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class MemoryEndUserTransaction:
+class MemoryEndUserTransaction(MemoryAuditRecorder):
     def __init__(self, database: MemoryDatabase, scope: TenantScope) -> None:
         self._db = database
         self._scope = scope

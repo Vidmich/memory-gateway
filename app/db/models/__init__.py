@@ -9,6 +9,7 @@ is what keeps that from happening.
 from __future__ import annotations
 
 from app.db.models.api_key import ApiKey
+from app.db.models.audit import AuditEvent
 from app.db.models.connector import Connector, Document, JobDeadLetter
 from app.db.models.distillation import DistillationRun
 from app.db.models.end_user import EndUser, MemoryFact
@@ -22,6 +23,7 @@ from app.db.models.user import User
 
 __all__ = [
     "ApiKey",
+    "AuditEvent",
     "Connector",
     "DistillationRun",
     "Document",

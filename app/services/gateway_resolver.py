@@ -43,7 +43,7 @@ from app.api.proxy.errors import GatewayDisabled, GatewayNotFound, GatewayUnavai
 from app.core.crypto import DecryptionError, SecretBox
 from app.db.models import Gateway, GatewayTarget
 from app.db.scoping import unscoped
-from app.schemas.gateway_config import LoggingConfig, MemoryConfig
+from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig
 from app.services.request_log import LogPolicy
 
 logger = logging.getLogger(__name__)
@@ -62,8 +62,10 @@ VERSION_TTL_SECONDS = 7 * 24 * 3600
 #: a miss rather than migrated, so a rolling deploy costs one database read per slug
 #: and needs no coordination. Task 07 raised it to 2 by adding the logging policy; task
 #: 08 raised it to 3 by adding the per-target weights that A/B selection needs; task 10
-#: raised it to 4 by adding the memory configuration and each target's context window.
-PAYLOAD_VERSION = 4
+#: raised it to 4 by adding the memory configuration and each target's context window;
+#: task 14 raised it to 5 by adding the limits blob, whether the chain reaches a global
+#: catalog model, and the distillation half of the logging policy.
+PAYLOAD_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,18 @@ class ResolvedGateway:
     #: to an exception, so a bad edit degrades retrieval instead of taking the gateway
     #: down. The control plane refuses such an edit; this is the backstop for the row.
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    #: SPEC §11, resolved the same way and for the same reason. The default is unlimited,
+    #: which is what a gateway configured before this field existed gets and what it had
+    #: before — a cache payload that fell back to *some* limit would throttle traffic
+    #: nobody had asked to throttle.
+    limits: LimitsConfig = field(default_factory=LimitsConfig)
+    #: Whether the usable chain reaches at least one **global catalog** model — the
+    #: operator's credential rather than the organization's (SPEC §8.4). Carried on the
+    #: payload rather than derived from ``targets`` because a target's scope is not on the
+    #: wire object the data plane uses, and because this is what decides whether the
+    #: platform ceiling applies: repointing a gateway at a global model has to start
+    #: enforcing it on the next request, not on the next save of the Limits section.
+    global_models: bool = False
 
     @property
     def virtual_model(self) -> str:
@@ -364,6 +378,13 @@ def _encode(gateway: Gateway) -> dict[str, Any]:
         # away — and `MemoryConfig.load` is permissive, which is what makes an unknown
         # key written by a newer build survive a rollback.
         "memory": MemoryConfig.load(gateway.memory_config).model_dump(mode="json"),
+        "limits": LimitsConfig.load(gateway.limits).model_dump(mode="json"),
+        # Computed from the *usable* chain: a disabled global model cannot be routed to,
+        # so it cannot spend the operator's key and must not pull the ceiling down onto a
+        # gateway that is only serving its own models.
+        "global_models": any(
+            target.upstream_model.scope == "global" for target in _usable(gateway)
+        ),
         "targets": [_encode_target(target) for target in _usable(gateway)],
         # Keyed by model id so the map survives a target dropping out of `targets` for
         # being disabled — which is exactly when the weights stop summing to 100.
@@ -427,6 +448,8 @@ def _decode(
         disabled=tuple(payload.get("disabled", ())),
         log_policy=_decode_policy(payload.get("logging")),
         memory=MemoryConfig.load(payload.get("memory")),
+        limits=LimitsConfig.load(payload.get("limits")),
+        global_models=bool(payload.get("global_models", False)),
     )
 
 
@@ -451,11 +474,20 @@ def _decode_target(item: Mapping[str, Any], decrypt: Any) -> UpstreamTarget:
 
 
 def _encode_policy(config: LoggingConfig) -> dict[str, Any]:
+    """The five things the request path reads out of the logging blob.
+
+    ``distillation`` is here rather than derived downstream because ``LogPolicy.of`` is
+    the one place that knows it needs *both* halves — a gateway can only feed memory if it
+    is also storing the bodies memory is distilled from — and a payload that carried the
+    toggle without that rule would let a stored row promise memory it can never build.
+    """
+    policy = LogPolicy.of(config)
     return {
-        "request_body": config.log_request_body,
-        "assembled_prompt": config.log_assembled_prompt,
-        "response_body": config.log_response_body,
-        "redaction_patterns": list(config.redaction_patterns),
+        "request_body": policy.request_body,
+        "assembled_prompt": policy.assembled_prompt,
+        "response_body": policy.response_body,
+        "redaction_patterns": list(policy.redaction_patterns),
+        "distillation": policy.distillation,
     }
 
 
@@ -464,7 +496,10 @@ def _decode_policy(payload: Any) -> LogPolicy:
 
     Absent means a payload from before this field existed, and the schema default is full
     capture — so the fallback and the default agree, and a rolling deploy cannot produce a
-    minute of silently unlogged traffic.
+    minute of silently unlogged traffic. ``distillation`` is the one exception and it
+    defaults to *off*: an older payload predates the feature, and a gateway that started
+    writing durable facts about people because a cache entry was stale would be the wrong
+    way round to be wrong.
     """
     if not isinstance(payload, Mapping):
         return LogPolicy()
@@ -473,6 +508,7 @@ def _decode_policy(payload: Any) -> LogPolicy:
         assembled_prompt=bool(payload.get("assembled_prompt", True)),
         response_body=bool(payload.get("response_body", True)),
         redaction_patterns=tuple(payload.get("redaction_patterns") or ()),
+        distillation=bool(payload.get("distillation", False)),
     )
 
 

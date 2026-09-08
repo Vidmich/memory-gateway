@@ -108,6 +108,34 @@ class Settings(BaseSettings):
     #: so a single-target gateway is unaffected by its existence.
     routing_deadline_seconds: float = Field(default=120.0, gt=0)
 
+    # -- rate limiting (SPEC §11) ------------------------------------------
+    #: What happens to a request when the limiter's Redis cannot be reached.
+    #:
+    #: ``True`` serves it and increments ``rate_limit_unavailable_total``; ``False``
+    #: refuses it with a 503. The default is the less bad of two bad options and it is
+    #: still a real trade: rate limiting is protective, not correctness-critical, and
+    #: making it a hard dependency turns a Redis blip into a full outage of every gateway
+    #: at once. The exposure while it is open is the shared upstream key, which is
+    #: exactly what the ceilings below protect — so an operator who would rather shed
+    #: load than risk spend sets this to ``False`` and gets that instead.
+    rate_limit_fail_open: bool = True
+    #: Platform ceilings for a gateway that routes to a **global catalog model** — one
+    #: on the operator's credential rather than the organization's (SPEC §8.4, §17.3).
+    #:
+    #: ``None`` throughout is the default, because a platform that starts throttling
+    #: existing traffic on upgrade is worse than one that has to be configured. Where a
+    #: value is set it is a *maximum*, not a default: a gateway asking for more is
+    #: lowered to it, a gateway asking for less keeps its own number, and an org_admin
+    #: cannot raise their own limit past it — it is the operator's bill, not theirs.
+    #:
+    #: Only the gateway scope is capped. A per-end-user cap above the gateway's is not a
+    #: loophole, it is a number that never binds, and lowering it would only make the
+    #: screen say something different from what happens.
+    global_model_requests_per_minute: int | None = Field(default=None, ge=1)
+    global_model_tokens_per_minute: int | None = Field(default=None, ge=1)
+    global_model_requests_per_day: int | None = Field(default=None, ge=1)
+    global_model_concurrent_requests: int | None = Field(default=None, ge=1)
+
     # -- ingestion ---------------------------------------------------------
     #: SPEC §9.2's per-file cap. Enforced while the bytes are streaming, so an oversized
     #: upload is refused rather than stored and then deleted.

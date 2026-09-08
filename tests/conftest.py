@@ -41,6 +41,7 @@ from app.api.control.deps import (
     get_distillation_service,
     get_end_user_service,
     get_gateway_service,
+    get_limits_service,
     get_memory_preview,
     get_monitoring_service,
     get_settings_from_app,
@@ -48,6 +49,7 @@ from app.api.control.deps import (
 from app.api.proxy.deps import (
     get_authenticator,
     get_end_users,
+    get_limiter,
     get_memory,
     get_request_logs,
     get_resolver,
@@ -67,6 +69,7 @@ from app.services.retrieval import MemoryService, Retriever
 from app.services.vector_store import ChunkPoint, MemoryVectorStore
 from tests.auth_support import PASSWORD, AuthFixture, build_auth
 from tests.directory_support import World, build_world
+from tests.limits_support import LimitFixture, build_limits, limits_config
 from tests.monitoring_support import LogFixture, build_logs
 from tests.support import (
     FakeAuthenticator,
@@ -344,11 +347,17 @@ class MemoryFixture:
         return document_id
 
 
-def build_memory() -> MemoryFixture:
+def build_memory(database: MemoryDatabase | None = None) -> MemoryFixture:
+    """The memory subsystem over in-process stores.
+
+    ``database`` is optional so that a caller wiring the data plane and the *control*
+    plane together can hand both halves the same rows — which is what makes "the caller
+    this request created" and "the caller the monitoring screen names" the same person.
+    """
     embedder = HashEmbedder(dimension=MEMORY_DIMENSION, model="hash-bow")
     vectors = MemoryVectorStore()
     facts = MemoryFactVectorStore()
-    database = MemoryDatabase()
+    database = database or MemoryDatabase()
     end_users = MemoryEndUserStore(database)
     retriever = Retriever(embedder, vectors)
     return MemoryFixture(
@@ -382,6 +391,10 @@ class ProxyHarness:
     logs: LogFixture
     #: Retrieval, over an in-process index. Empty unless a test fills it.
     memory: MemoryFixture
+    #: SPEC §11's limiter, over in-process counters. Unlimited unless a test calls
+    #: :meth:`limit` — so every data-plane test also proves that an unconfigured gateway
+    #: pays nothing for the feature existing.
+    limits: LimitFixture
 
     @property
     def gateway(self) -> ResolvedGateway:
@@ -402,12 +415,19 @@ class ProxyHarness:
         target = replace(self.target, **overrides)
         self.resolver.gateway = replace(self.gateway, targets=(target,))
 
+    def limit(self, *, per_end_user: dict[str, int | None] | None = None, **caps: int) -> None:
+        """Give the gateway some limits. ``limit(requests_per_minute=2)``."""
+        self.resolver.gateway = replace(
+            self.gateway, limits=limits_config(per_end_user=per_end_user, **caps)
+        )
+
 
 def build_proxy_app(
     resolver: FakeResolver,
     authenticator: FakeAuthenticator,
     logs: LogFixture,
     memory: MemoryFixture | None = None,
+    limits: LimitFixture | None = None,
 ) -> FastAPI:
     application = create_app()
     application.dependency_overrides[get_resolver] = lambda: resolver
@@ -423,6 +443,11 @@ def build_proxy_app(
     application.dependency_overrides[get_memory] = lambda: fixture.service
     # Same reasoning again: the real resolver writes an end-user row on first sight.
     application.dependency_overrides[get_end_users] = lambda: fixture.resolver
+    # And again one service along: the real one is backed by Redis. The limiter itself is
+    # the real class — only its counters are in process — so what these tests exercise is
+    # the enforcement, not a stand-in for it.
+    throttle = limits or build_limits()
+    application.dependency_overrides[get_limiter] = lambda: throttle.limiter
     return application
 
 
@@ -441,7 +466,8 @@ async def proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
     resolver, authenticator, token = build_harness_parts(upstream)
     logs = build_logs()
     memory = build_memory()
-    application = build_proxy_app(resolver, authenticator, logs, memory)
+    limits = build_limits()
+    application = build_proxy_app(resolver, authenticator, logs, memory, limits)
 
     async with application.router.lifespan_context(application):
         transport = ASGITransport(app=application)
@@ -455,6 +481,7 @@ async def proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
                 token=token,
                 logs=logs,
                 memory=memory,
+                limits=limits,
             )
 
 
@@ -468,7 +495,8 @@ async def live_proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
     resolver, authenticator, token = build_harness_parts(upstream)
     logs = build_logs()
     memory = build_memory()
-    application = build_proxy_app(resolver, authenticator, logs, memory)
+    limits = build_limits()
+    application = build_proxy_app(resolver, authenticator, logs, memory, limits)
 
     async with (
         serve(application, lifespan="on") as base_url,
@@ -483,6 +511,7 @@ async def live_proxy(upstream: MockUpstream) -> AsyncIterator[ProxyHarness]:
             token=token,
             logs=logs,
             memory=memory,
+            limits=limits,
         )
 
 
@@ -556,6 +585,7 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     if distillation is not None:
         application.dependency_overrides[get_distillation_service] = lambda: distillation.service
     application.dependency_overrides[get_gateway_service] = lambda: auth.gateways
+    application.dependency_overrides[get_limits_service] = lambda: auth.limits
     preview = auth.preview
     if preview is not None:
         application.dependency_overrides[get_memory_preview] = lambda: preview
@@ -584,6 +614,7 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
         if fixture.distillation is not None:
             application.state.distillation_service = fixture.distillation.service
         application.state.gateway_service = fixture.gateways
+        application.state.limits_service = fixture.limits
         if fixture.preview is not None:
             application.state.memory_preview = fixture.preview
         application.state.monitoring_service = fixture.monitoring

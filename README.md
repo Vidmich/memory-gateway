@@ -8,7 +8,7 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 13 complete**. An organization goes from empty to a working
+Current state: **task 14 complete**. An organization goes from empty to a working
 OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream model,
 create a gateway, copy its URL, mint a key, call it — and every request through it is
 recorded and inspectable. **Connectors** ingest the documents customers actually have —
@@ -28,7 +28,10 @@ learning anything new; clicking a row shows the client's original messages, the 
 that went upstream with the injected regions marked, which chunks and facts were recalled at
 what score, and a timing waterfall. A gateway can also route over several models: a failover
 chain that survives an upstream outage, or a weighted A/B split whose result you read off
-the same charts.
+the same charts. And every endpoint can be given **rate limits** — requests and tokens per
+minute, a daily cap, concurrent requests, per gateway and per end user — enforced
+atomically over sliding windows, answered with a 429 an OpenAI SDK retries on its own, and
+shown as live bars on the editor beside the numbers that produced them.
 
 ## Quick start (Docker)
 
@@ -146,10 +149,10 @@ its own API keys, its own system prompt and its own parameter policy. Create one
 **Gateways → New**, pick a model, write a prompt, save — the screen shows the URL with a
 copy button, and **Create key** shows the secret exactly once.
 
-The editor is sectioned so later releases slot in without moving anything: *Identity*,
-*Routing*, *Memory* (task 10), *Prompt*, *Logging*, *Limits* (14), *Keys*. The two unbuilt
-sections render a real empty state naming what will fill them, rather than being hidden —
-a section that appears later moves everything below it.
+The editor is sectioned: *Identity*, *Routing*, *Memory*, *Prompt*, *Logging*, *Limits*,
+*Keys*. Each arrived as a real, styled empty state naming the release that would fill it
+rather than being hidden, because a section that appears later moves everything below it.
+Task 14 filled the last of them.
 
 **The slug is immutable.** It is a path segment on a URL customers have already deployed,
 and nothing here can tell them it changed, so a rename from a settings form would break
@@ -641,6 +644,92 @@ off. The request drawer shows every recalled fact with its score, marks the ones
 included regardless of the question, says why any were dropped, and links straight to that
 person's memory.
 
+## Rate limits and quotas
+
+SPEC §11. Four caps, at two scopes, all unlimited by default:
+
+```
+requests_per_minute   tokens_per_minute   requests_per_day   concurrent_requests
+```
+
+Set them in the editor's **Limits** section, per gateway and — the same four again — per
+end user. The second block is not a subdivision of the first: both are checked, and either
+one refuses, so a per-person cap on an otherwise unlimited gateway is a sensible thing to
+configure. Leave a field empty for no limit, which is what it means and what the
+placeholder says.
+
+**A refusal is a 429 in the OpenAI error shape**, with `Retry-After` and a message naming
+which cap was hit and whose it was. An OpenAI SDK raises `RateLimitError` and backs off on
+its own; no client change is needed to be throttled gracefully. The rejection is logged as
+metadata — so throttling appears on the error chart and in the "top throttled end users"
+list — with **no transcript**, because nothing was done with the body and no model saw it.
+
+**Every response carries the budget**, not only the refusals: `X-RateLimit-Limit`,
+`-Remaining` and `-Reset` for the *tightest* limit by fraction of headroom, so a client can
+pace itself before it is refused. Concurrency is never reported there — a slot frees when
+some other request finishes, which is not a time anybody can name, and `Reset` would be a
+lie. A gateway with no limits sends no headers at all rather than zeroes.
+
+**Each check is one Lua script, and it is all-or-nothing.** Not one script per rule: a
+request refused by the per-end-user cap must not have already spent the gateway's minute,
+and a read-modify-write split across commands leaks capacity under exactly the concurrency
+it exists to survive. The script weighs every rule first and commits only if all of them
+passed. There are two such checks — see *cheapest first* below — so a request refused on
+tokens has already spent a request against the minute. That is not a leak; it was a
+request.
+
+**The windows slide.** A fixed window lets a client send twice the limit across a
+boundary — ten at 11:59:59 and ten at 12:00:00 — so each bucket counts the previous one
+weighted by how much of it is still inside the trailing window. Two integers per rule
+rather than one member per request, which at `requests_per_day: 100000` is the difference
+between a hundred thousand entries per gateway and two. It assumes the previous window's
+traffic was spread evenly through it, so a burst in its final second is measured as though
+it had not been; what it cannot do is exceed the limit *sustainably*, which is what a rate
+limit is for.
+
+**Concurrency is a set of holders with a lease, not a counter.** `INCR` on entry and `DECR`
+in a `finally` is one lost process away from a gateway that is throttled forever, and the
+defensive `EXPIRE` usually suggested does not help — every new request refreshes it, so a
+busy gateway's leaked counter never expires at all. A sorted set scored by arrival time,
+pruned against a lease on every check, reclaims a dead holder's slot whether or not traffic
+continues. The slot is given back from the same callback that ends a stream, so it survives
+a client hanging up mid-generation and an upstream dying after the first frame.
+
+**Token limits are optimistic, and they count what the gateway added.** The assembled
+prompt — retrieved chunks, recalled facts and the system context included — is measured
+before dispatch and consumed; the provider's own reported usage settles the difference
+afterwards. That correction lands in whichever window is current when it happens, which is
+SPEC §11's "carried into the next window" falling out of the design rather than being
+arranged. A provider that reports no usage leaves the estimate standing: an unknown cost
+counted as the estimate is closer than an unknown cost counted as free.
+
+**Cheapest first.** Request counters are checked before routing, before retrieval and
+before a token has been counted, so a throttled caller pays for an authentication and one
+Redis round trip. Token limits *cannot* be checked that early — injected memory does not
+exist until retrieval has run — so they are weighed immediately before dispatch, with the
+concurrency slot, in the same atomic check.
+
+**It fails open, and that is a real trade.** When Redis cannot be reached the request is
+served and `rate_limit_unavailable_total` increments; during that window the shared
+upstream key is unprotected. The alternative turns a cache blip into an outage of every
+gateway at once. `RATE_LIMIT_FAIL_OPEN=false` chooses the other side — a 503 rather than a
+429, because the client did nothing wrong and nothing was counted.
+
+**Platform ceilings protect the operator's key.** A gateway routing to a **global catalog**
+model is spending the platform's credential, not the organization's (SPEC §8.4, §17.3), so
+`GLOBAL_MODEL_*` sets maxima an org_admin cannot raise: a higher value is refused with a
+422 naming the ceiling, and a gateway that has set *no* limit — the most exposed
+configuration there is — is enforced at it silently. A gateway on the organization's own
+models is untouched. The editor says which input a ceiling lowered, because otherwise the
+form looks like it discarded the save.
+
+**The bars are live counters, not a chart.** They read the same Redis buckets a request is
+checked against, so a bar at 100% and a 429 in a client's log are one fact rather than two
+systems that usually agree. The dashboard warns at 80%, while there is still time to raise
+the limit or find the loop; Monitoring adds a **top throttled end users** panel, counted
+from the request log so it covers the window the rest of the screen shows and survives a
+Redis restart.
+
 ## Request logging and monitoring
 
 Every request through a gateway becomes a row. **Monitoring** shows the request rate with
@@ -840,7 +929,10 @@ app/
               (permissions, directory, directory_store, pagination), the model
               catalog (catalog, catalog_store, model_probe, params, rate_limit),
               gateways and keys (gateways, gateway_store, gateway_probe), upstream
-              routing (routing), end-user identity and conversation memory
+              routing (routing), rate limits (limits — the rules and the
+              arithmetic, limit_store — the Lua script and its in-memory twin,
+              limiter — one request's passage through them, limits_service —
+              what the Limits screen reads), end-user identity and conversation memory
               (end_user, end_user_resolver, end_user_store, end_users,
               fact_vectors, facts), memory write-back (distillation — the prompt
               and the parser, distiller — one pass, reconciliation — dedupe,
@@ -871,7 +963,8 @@ web/          the React SPA
   src/layout/   the app shell — sidebar, user menu, support banner
   src/pages/    login, dashboard, organizations, members, org settings,
                 invitation acceptance, models (list and editor), gateways
-                (list, editor, routing and memory sections with Try retrieval,
+                (list, editor, routing, memory and limits sections with Try
+                retrieval and live utilisation bars,
                 keys), connectors (list, and a detail screen with the upload
                 zone, document table, chunk inspector, chunking panel and debug
                 search),
@@ -918,6 +1011,9 @@ first request. See [.env.example](.env.example) for the full list.
 | `POST /api/v1/gateways/{id}/prompt-preview` | The fully assembled system message for a question, layer by layer, with token counts. |
 | `GET`/`POST /api/v1/gateways/{id}/keys` | List keys (prefix only); mint one — the plaintext is returned once. |
 | `DELETE /api/v1/keys/{id}` | Revoke. Soft, and effective on the next request. |
+| `GET /api/v1/gateways/{id}/limits` | This gateway's caps, what is actually enforced after the platform ceiling, and how much is spent right now. |
+| `GET /api/v1/limits/pressure` | Gateways past 80% of a cap, worst first. The dashboard's warning card. |
+| `GET /api/v1/metrics/throttled` | Who was rate-limited most in a window. |
 | `GET /api/v1/metrics/summary` | Totals, percentiles, per-model traffic and the error taxonomy for a window. Cached 30 s. |
 | `GET /api/v1/metrics/timeseries` | Bucketed series. `metric` is `requests`, `latency`, `tokens` or `retrieval`; the server picks the bucket width. |
 | `GET /api/v1/logs` | The request table. Cursor-paginated, filterable by gateway, model, status class, end user, session, latency and error text. |

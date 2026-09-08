@@ -20,7 +20,7 @@ from prometheus_client import CollectorRegistry
 
 from app.core.ids import uuid7
 from app.core.metrics import LogMetrics, build_log_metrics
-from app.db.models import Organization, RequestLog, Transcript
+from app.db.models import EndUser, Organization, RequestLog, Transcript
 from app.services.log_store import MemoryLogWriter
 from app.services.memory_db import MemoryDatabase
 from app.services.metrics_store import MemoryMetricsRepository
@@ -235,18 +235,31 @@ def submitted(fixture: LogFixture) -> list[RequestRecord]:
 # apart, one of each status class.
 
 
+#: Where the rate-limit rejections live: three and a half hours past :data:`NOW`, well
+#: outside the window every other check uses. Task 14's rows would otherwise change the
+#: request counts, the percentiles and the error taxonomy that task 07's checks assert
+#: exact numbers for — and a fixture that has to be renumbered every time a task adds a
+#: row is a fixture nobody will keep correct.
+THROTTLED_AT = NOW + timedelta(hours=3, minutes=30)
+
+
 @dataclass(frozen=True)
 class MetricsSeed:
     """Rows to insert, and the ids the contract checks refer to."""
 
     logs: tuple[RequestLog, ...]
     transcripts: tuple[Transcript, ...]
+    #: Task 14's "top throttled end users" needs rows to join to. Two of Acme's, so the
+    #: ordering is a real ordering, plus one of Globex's so the scoping is testable.
+    end_users: tuple[EndUser, ...]
     acme_gateway_id: uuid.UUID
     other_gateway_id: uuid.UUID
     globex_gateway_id: uuid.UUID
     acme_log_id: uuid.UUID
     bodiless_log_id: uuid.UUID
     globex_log_id: uuid.UUID
+    noisy_end_user_id: uuid.UUID
+    quiet_end_user_id: uuid.UUID
 
 
 def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
@@ -321,8 +334,40 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
     globex_log = make_log_row(globex, gateway_id=globex_gateway_id, model_name="globex-gpt")
     logs.append(globex_log)
 
+    # SPEC §11's throttling, in its own window. Three rejections for one caller, one for
+    # another, one for nobody in particular, and one belonging to the other organization.
+    noisy = make_end_user(acme, "noisy-bot")
+    quiet = make_end_user(acme, "quiet-app")
+    intruder = make_end_user(globex, "globex-bot")
+    throttled: list[tuple[Organization, uuid.UUID, EndUser | None]] = [
+        (acme, acme_gateway_id, noisy),
+        (acme, acme_gateway_id, noisy),
+        (acme, other_gateway_id, noisy),
+        (acme, acme_gateway_id, quiet),
+        # Nobody identified this one. It must not become an "anonymous" bar, because that
+        # is not a caller anybody can go and talk to.
+        (acme, acme_gateway_id, None),
+        (globex, globex_gateway_id, intruder),
+    ]
+    for index, (owner, gateway_id, who) in enumerate(throttled):
+        logs.append(
+            make_log_row(
+                owner,
+                gateway_id=gateway_id,
+                created_at=THROTTLED_AT + timedelta(seconds=index),
+                status_code=429,
+                error_code="rate_limited",
+                error_message="Rate limit exceeded: 10 requests per minute for this gateway.",
+                bodies_omitted="rate_limited",
+                end_user_id=who.id if who is not None else None,
+            )
+        )
+
     return MetricsSeed(
         logs=tuple(logs),
+        end_users=(noisy, quiet, intruder),
+        noisy_end_user_id=noisy.id,
+        quiet_end_user_id=quiet.id,
         # Only the first row gets bodies, so "no transcript" and "no row" stay
         # distinguishable — which is exactly what the detail drawer has to tell apart.
         transcripts=(
@@ -347,8 +392,21 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
     )
 
 
+def make_end_user(organization: Organization, external_id: str) -> EndUser:
+    """An ``end_users`` row for a caller the log rows can point at."""
+    return EndUser(
+        id=uuid7(),
+        organization_id=organization.id,
+        external_id=external_id,
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+        request_count=1,
+    )
+
+
 __all__ = [
     "NOW",
+    "THROTTLED_AT",
     "BrokenSummaryCache",
     "FakeSummaryCache",
     "LogFixture",

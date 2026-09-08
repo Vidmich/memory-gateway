@@ -26,7 +26,7 @@ import pytest
 from app.core.tenancy import TenantScope
 from app.db.models import Organization
 from app.services.metrics_store import LogFilters, MetricsRepository
-from tests.monitoring_support import NOW
+from tests.monitoring_support import NOW, THROTTLED_AT
 
 #: 5, 10, … 100. Twenty samples, so ``percentile_disc`` lands on index
 #: ``ceil(fraction * 20) - 1`` — 9, 18 and 19 — which are 50, 95 and 100.
@@ -51,6 +51,16 @@ class Fixture:
     #: One of Acme's that does not, so "no transcript" is distinguishable from "no row".
     bodiless_log_id: uuid.UUID
     globex_log_id: uuid.UUID
+    #: Task 14's throttled callers: three rejections and one, so the order is real.
+    noisy_end_user_id: uuid.UUID
+    quiet_end_user_id: uuid.UUID
+
+    def throttling_window(self) -> LogFilters:
+        """The window the rate-limit rejections live in — deliberately not the one every
+        other check uses, so task 14's rows do not renumber task 07's expectations."""
+        return self.window(
+            start=THROTTLED_AT - timedelta(minutes=1), end=THROTTLED_AT + timedelta(minutes=1)
+        )
 
     @property
     def acme_scope(self) -> TenantScope:
@@ -542,6 +552,63 @@ async def memory_tokens_are_summed_separately_from_the_rest(fixture: Fixture) ->
 Check = Callable[[Fixture], Awaitable[None]]
 
 #: Every check, in one list, so neither implementation can be given a shorter exam.
+# ---------------------------------------------------------------------------
+# throttling (SPEC §11)
+# ---------------------------------------------------------------------------
+
+
+async def throttled_callers_are_ranked_by_how_often_they_were_refused(
+    fixture: Fixture,
+) -> None:
+    """Worst first, because the answer being looked for is "which integration"."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        rows = await transaction.throttled_end_users(fixture.throttling_window())
+
+    assert [(row.end_user_id, row.rejections) for row in rows] == [
+        (fixture.noisy_end_user_id, 3),
+        (fixture.quiet_end_user_id, 1),
+    ]
+
+
+async def throttling_is_scoped_to_one_organization(fixture: Fixture) -> None:
+    async with fixture.repository.begin(fixture.globex_scope) as transaction:
+        rows = await transaction.throttled_end_users(fixture.throttling_window())
+
+    assert len(rows) == 1
+    assert rows[0].end_user_id not in {fixture.noisy_end_user_id, fixture.quiet_end_user_id}
+
+
+async def an_unidentified_caller_is_not_a_row_on_the_list(fixture: Fixture) -> None:
+    """A gateway that identifies nobody would otherwise produce one enormous bar that is
+    not a caller and cannot be acted on."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        rows = await transaction.throttled_end_users(fixture.throttling_window())
+
+    assert all(row.end_user_id is not None for row in rows)
+    assert sum(row.rejections for row in rows) == 4
+
+
+async def only_rate_limit_rejections_count_as_throttling(fixture: Fixture) -> None:
+    """The window every other check uses is full of failures, and none of them is one."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        rows = await transaction.throttled_end_users(fixture.window())
+
+    assert rows == []
+
+
+async def throttling_can_be_narrowed_to_one_gateway(fixture: Fixture) -> None:
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        rows = await transaction.throttled_end_users(
+            fixture.window(
+                start=THROTTLED_AT - timedelta(minutes=1),
+                end=THROTTLED_AT + timedelta(minutes=1),
+                gateway_id=fixture.other_gateway_id,
+            )
+        )
+
+    assert [(row.end_user_id, row.rejections) for row in rows] == [(fixture.noisy_end_user_id, 1)]
+
+
 CHECKS: tuple[Check, ...] = (
     a_summary_counts_only_this_organization,
     a_platform_scope_sees_both,
@@ -584,4 +651,9 @@ CHECKS: tuple[Check, ...] = (
     a_retrieval_series_carries_the_rate_and_the_counts,
     a_retrieval_series_omits_the_rate_when_nothing_searched,
     memory_tokens_are_summed_separately_from_the_rest,
+    throttled_callers_are_ranked_by_how_often_they_were_refused,
+    throttling_is_scoped_to_one_organization,
+    an_unidentified_caller_is_not_a_row_on_the_list,
+    only_rate_limit_rejections_count_as_throttling,
+    throttling_can_be_narrowed_to_one_gateway,
 )

@@ -3,8 +3,10 @@ import { Link } from 'react-router-dom'
 
 import { useConnectors } from '@/api/connectors'
 import { useGateways } from '@/api/gateways'
+import { useLimitPressure } from '@/api/limits'
 import { resolveRange, useSummary } from '@/api/monitoring'
 import { useAuth } from '@/auth/AuthContext'
+import { pressureSummary } from '@/pages/limits'
 
 /**
  * SPEC §13.1's dashboard: the org's last 24 hours in six numbers.
@@ -22,6 +24,13 @@ import { useAuth } from '@/auth/AuthContext'
  * *Documents indexed* now has a real number behind it, and it swaps its subtitle for the
  * failure count when there is one. A dashboard that reports 900 indexed and says nothing
  * about the 40 that could not be read is reporting the half nobody needs to act on.
+ *
+ * The **near-limit card** (SPEC §13.1's "any degraded state") is the same idea one step
+ * earlier. A gateway that is being throttled shows up on the error chart as a wall of
+ * 429s *after* its customers have started seeing them; this appears at 80%, while there
+ * is still time to raise the limit or find the loop. It renders only when something is
+ * actually under pressure, because a card that says "nothing is near a limit" every day
+ * for a year is a card nobody reads on the day it changes.
  */
 export function DashboardPage() {
   const { user } = useAuth()
@@ -29,6 +38,7 @@ export function DashboardPage() {
   const summary = useSummary(window)
   const gateways = useGateways()
   const connectors = useConnectors()
+  const pressure = useLimitPressure()
 
   const enabled = (gateways.data?.items ?? []).filter((gateway) => gateway.enabled).length
   const indexed = (connectors.data?.items ?? []).reduce(
@@ -104,6 +114,28 @@ export function DashboardPage() {
         />
         <MetricCard title="Memory facts stored" detail="Arrives with distillation." />
       </div>
+
+      {(pressure.data?.items ?? []).length > 0 ? (
+        <section className="mt-8 rounded-lg border border-amber-200 bg-amber-50 p-5">
+          <h2 className="text-sm font-semibold text-amber-900">Close to a rate limit</h2>
+          <p className="mt-1 text-sm text-amber-900">
+            These endpoints are above 80% of one of their caps. Past 100% the gateway
+            answers 429 and the request never reaches a model.
+          </p>
+          <ul className="mt-3 space-y-1 text-sm">
+            {(pressure.data?.items ?? []).map((item) => (
+              <li key={item.gateway_id}>
+                <Link
+                  to={`/gateways/${item.gateway_id}`}
+                  className="font-medium text-amber-900 underline"
+                >
+                  {pressureSummary(item.name, item.worst)}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {summary.data && summary.data.requests === 0 ? (
         <section className="mt-8 rounded-lg border border-slate-200 bg-white p-6">

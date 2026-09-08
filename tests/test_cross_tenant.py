@@ -92,6 +92,11 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
         f"/api/v1/gateways/{FOREIGN_GATEWAY}/prompt-preview",
         {"query": "what is the refund policy"},
     ),
+    ScopedEndpoint(
+        "GET",
+        f"/api/v1/gateways/{FOREIGN_GATEWAY}/limits",
+        note="another org's rate limits and how much of them they are using",
+    ),
     ScopedEndpoint("GET", f"/api/v1/gateways/{FOREIGN_GATEWAY}/keys"),
     ScopedEndpoint(
         "POST",

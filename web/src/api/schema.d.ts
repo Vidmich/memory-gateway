@@ -591,6 +591,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/gateways/{gateway_id}/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Gateway Limits
+         * @description This gateway's caps, what is actually enforced, and how much is spent right now.
+         *
+         *     The usage is read live from the same buckets a request is checked against, so a bar
+         *     at 100% and a 429 in the client's log are the same fact rather than two systems that
+         *     usually agree.
+         */
+        get: operations["get_gateway_limits_api_v1_gateways__gateway_id__limits_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/gateways/{gateway_id}/prompt-preview": {
         parameters: {
             query?: never;
@@ -773,6 +797,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/limits/pressure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Limit Pressure
+         * @description Gateways currently past 80% of one of their caps, worst first.
+         *
+         *     The dashboard's warning card. Usually empty, which is why it is one request for the
+         *     whole organization rather than one per gateway.
+         */
+        get: operations["get_limit_pressure_api_v1_limits_pressure_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/logs": {
         parameters: {
             query?: never;
@@ -879,6 +926,30 @@ export interface paths {
          *     top of the monitoring screen comes from here, so it is the one query worth caching.
          */
         get: operations["metrics_summary_api_v1_metrics_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/metrics/throttled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Throttled
+         * @description Who was rate-limited most in this window (SPEC §11).
+         *
+         *     Read from the log rather than from the live counters, so it covers the window the
+         *     rest of the screen is showing rather than the current minute — and survives a Redis
+         *     restart, which the counters do not.
+         */
+        get: operations["metrics_throttled_api_v1_metrics_throttled_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1597,6 +1668,29 @@ export interface components {
             /** Targets */
             targets?: components["schemas"]["GatewayTargetRequest"][] | null;
         };
+        /** GatewayLimitsResponse */
+        GatewayLimitsResponse: {
+            /** Capped */
+            capped: string[];
+            ceilings: components["schemas"]["QuotaResponse"];
+            configured: components["schemas"]["QuotaResponse"];
+            configured_per_end_user: components["schemas"]["QuotaResponse"];
+            enforced: components["schemas"]["QuotaResponse"];
+            enforced_per_end_user: components["schemas"]["QuotaResponse"];
+            /**
+             * Gateway Id
+             * Format: uuid
+             */
+            gateway_id: string;
+            /** Global Models */
+            global_models: boolean;
+            /** Name */
+            name: string;
+            /** Slug */
+            slug: string;
+            /** Usage */
+            usage: components["schemas"]["LimitUsageResponse"][];
+        };
         /** GatewayResponse */
         GatewayResponse: {
             /**
@@ -1841,14 +1935,47 @@ export interface components {
             invitation: components["schemas"]["InvitationResponse"];
         };
         /**
+         * LimitUsageResponse
+         * @description One cap's live bar.
+         */
+        LimitUsageResponse: {
+            /** Capped */
+            capped: boolean;
+            /** Limit */
+            limit: string;
+            /** Remaining */
+            remaining: number;
+            /** Reset Seconds */
+            reset_seconds: number;
+            /** Scope */
+            scope: string;
+            /** Used */
+            used: number;
+            /** Utilization */
+            utilization: number;
+            /** Value */
+            value: number;
+        };
+        /**
          * LimitsConfig
-         * @description SPEC §11. ``None`` means unlimited, which is the v1 default — task 14 enforces
-         *     these, and a limit that quietly existed before anyone set one would be a surprise
-         *     outage rather than a policy.
+         * @description SPEC §11. Unlimited by default, which is the v1 default and not an oversight — a
+         *     limit that quietly existed before anyone set one would be a surprise outage rather
+         *     than a policy.
+         *
+         *     The four gateway-scope fields are at the top level rather than under a ``gateway``
+         *     key, because they were written that way before ``per_end_user`` existed and moving
+         *     them would silently unset the limits of every gateway already configured. The shape
+         *     is a little lopsided; a migration of live traffic limits is worse.
+         *
+         *     ``per_end_user`` applies the same four caps to one ``X-Gateway-User`` at a time. It
+         *     is not a subdivision of the gateway's budget — both are checked, and either refuses —
+         *     so a per-person cap on an otherwise unlimited gateway is a sensible configuration and
+         *     is not silently raised to meet it.
          */
         LimitsConfig: {
             /** Concurrent Requests */
             concurrent_requests?: number | null;
+            per_end_user?: components["schemas"]["Quota"];
             /** Requests Per Day */
             requests_per_day?: number | null;
             /** Requests Per Minute */
@@ -2707,6 +2834,31 @@ export interface components {
             p99?: number | null;
         };
         /**
+         * PressureListResponse
+         * @description Deliberately not a page. The question is "is anything under pressure right now",
+         *     and an answer split across pages is a different question.
+         */
+        PressureListResponse: {
+            /** Items */
+            items: components["schemas"]["PressureResponse"][];
+        };
+        /**
+         * PressureResponse
+         * @description One gateway currently running close to one of its caps.
+         */
+        PressureResponse: {
+            /**
+             * Gateway Id
+             * Format: uuid
+             */
+            gateway_id: string;
+            /** Name */
+            name: string;
+            /** Slug */
+            slug: string;
+            worst: components["schemas"]["LimitUsageResponse"];
+        };
+        /**
          * ProbeResponse
          * @description The four things the button reports. Not an error envelope: "the upstream said 401"
          *     is the successful answer to "does this work", and the UI renders it in red itself.
@@ -2759,6 +2911,38 @@ export interface components {
             system_message: string;
             /** Total Tokens */
             total_tokens: number;
+        };
+        /**
+         * Quota
+         * @description SPEC §11's four caps. ``None`` means unlimited, everywhere.
+         *
+         *     A separate model from :class:`LimitsConfig` because the same four fields are asked
+         *     twice — once of the endpoint and once of each person using it — and writing them
+         *     twice is how the two drift apart.
+         */
+        Quota: {
+            /** Concurrent Requests */
+            concurrent_requests?: number | null;
+            /** Requests Per Day */
+            requests_per_day?: number | null;
+            /** Requests Per Minute */
+            requests_per_minute?: number | null;
+            /** Tokens Per Minute */
+            tokens_per_minute?: number | null;
+        };
+        /**
+         * QuotaResponse
+         * @description SPEC §11's four caps. ``null`` is unlimited, at every level.
+         */
+        QuotaResponse: {
+            /** Concurrent Requests */
+            concurrent_requests?: number | null;
+            /** Requests Per Day */
+            requests_per_day?: number | null;
+            /** Requests Per Minute */
+            requests_per_minute?: number | null;
+            /** Tokens Per Minute */
+            tokens_per_minute?: number | null;
         };
         /**
          * RequestDetailResponse
@@ -3039,6 +3223,33 @@ export interface components {
              * @default 100
              */
             weight: number;
+        };
+        /**
+         * ThrottledEndUserResponse
+         * @description One caller on the "top throttled end users" list.
+         *
+         *     ``external_id`` is whatever the customer's integration sent in ``X-Gateway-User``, so
+         *     it is untrusted text — carried as a string and rendered as one.
+         */
+        ThrottledEndUserResponse: {
+            /**
+             * End User Id
+             * Format: uuid
+             */
+            end_user_id: string;
+            /** External Id */
+            external_id: string | null;
+            /** Rejections */
+            rejections: number;
+        };
+        /**
+         * ThrottledEndUsersResponse
+         * @description Deliberately not a page: the question is "who is causing this", and the answer is
+         *     one or two integrations rather than a list to scroll.
+         */
+        ThrottledEndUsersResponse: {
+            /** Items */
+            items: components["schemas"]["ThrottledEndUserResponse"][];
         };
         /**
          * TranscriptResponse
@@ -4231,6 +4442,37 @@ export interface operations {
             };
         };
     };
+    get_gateway_limits_api_v1_gateways__gateway_id__limits_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GatewayLimitsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     prompt_preview_api_v1_gateways__gateway_id__prompt_preview_post: {
         parameters: {
             query?: never;
@@ -4525,6 +4767,26 @@ export interface operations {
             };
         };
     };
+    get_limit_pressure_api_v1_limits_pressure_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PressureListResponse"];
+                };
+            };
+        };
+    };
     list_logs_api_v1_logs_get: {
         parameters: {
             query?: {
@@ -4749,6 +5011,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_throttled_api_v1_metrics_throttled_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+                gateway_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThrottledEndUsersResponse"];
                 };
             };
             /** @description Validation Error */

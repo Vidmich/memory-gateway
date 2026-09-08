@@ -29,6 +29,8 @@ def fixture() -> Fixture:
         database.request_logs[row.id] = row
     for transcript in seed.transcripts:
         database.transcripts[transcript.request_log_id] = transcript
+    for end_user in seed.end_users:
+        database.end_users[end_user.id] = end_user
 
     return Fixture(
         repository=MemoryMetricsRepository(database),
@@ -40,6 +42,8 @@ def fixture() -> Fixture:
         acme_log_id=seed.acme_log_id,
         bodiless_log_id=seed.bodiless_log_id,
         globex_log_id=seed.globex_log_id,
+        noisy_end_user_id=seed.noisy_end_user_id,
+        quiet_end_user_id=seed.quiet_end_user_id,
     )
 
 

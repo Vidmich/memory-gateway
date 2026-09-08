@@ -163,6 +163,40 @@ class DistillationMetrics:
 
 
 @dataclass(frozen=True)
+class RateLimitMetrics:
+    """Throttling, as four numbers (SPEC §11, task 14).
+
+    ``rejections`` is labelled by which cap was hit and whose it was, because the two need
+    different answers: a gateway hitting its own requests-per-minute is a customer to talk
+    to about capacity, and one end user hitting theirs is usually a runaway loop in one
+    integration. Four limit names by two scopes is eight series, which is a chart rather
+    than a cardinality problem.
+
+    ``near_limit`` is the same pair counted at 80% instead of at 100% — the signal that
+    arrives before anybody is refused, and the one the dashboard warning card is built on.
+
+    ``unavailable`` is labelled by *policy* rather than being a bare counter, so the graph
+    says what the deployment did about it. Fail-open is the default and it means the shared
+    upstream key is unprotected for as long as the line is above zero; that is a thing to
+    alert on, not a debug counter.
+
+    ``duration`` is what task 14's "< 2 ms p95" is checked against in production. It has no
+    labels: the question is about the mechanism, not about which gateway asked, and one
+    histogram is what makes the percentile answerable at all.
+
+    Deliberately **not** here: per-gateway utilisation. A gauge labelled by gateway id is
+    unbounded cardinality on a multi-tenant platform, and the number is needed by a screen
+    rather than by an alert — the Limits section reads it live from the buckets themselves,
+    which is also the only way it can be accurate to the second.
+    """
+
+    rejections: Counter
+    near_limit: Counter
+    unavailable: Counter
+    duration: Histogram
+
+
+@dataclass(frozen=True)
 class Metrics:
     registry: CollectorRegistry
     http_requests: Counter
@@ -175,6 +209,7 @@ class Metrics:
     retrieval: RetrievalMetrics
     extraction: ExtractionMetrics
     distillation: DistillationMetrics
+    rate_limits: RateLimitMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -220,6 +255,40 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         retrieval=build_retrieval_metrics(registry),
         extraction=build_extraction_metrics(registry),
         distillation=build_distillation_metrics(registry),
+        rate_limits=build_rate_limit_metrics(registry),
+    )
+
+
+def build_rate_limit_metrics(registry: CollectorRegistry) -> RateLimitMetrics:
+    return RateLimitMetrics(
+        rejections=Counter(
+            "rate_limit_rejections_total",
+            "Requests refused by a limit, by which limit and whose.",
+            labelnames=("limit", "scope"),
+            registry=registry,
+        ),
+        near_limit=Counter(
+            "rate_limit_near_limit_total",
+            "Requests served while already past 80% of a limit, by which limit and whose.",
+            labelnames=("limit", "scope"),
+            registry=registry,
+        ),
+        unavailable=Counter(
+            "rate_limit_unavailable_total",
+            "Checks that could not reach their counters, by what the deployment did: "
+            "fail_open served the request, fail_closed refused it.",
+            labelnames=("policy",),
+            registry=registry,
+        ),
+        duration=Histogram(
+            "rate_limit_check_duration_seconds",
+            "How long one check-and-consume took, Redis round trip included.",
+            # An order of magnitude below every other histogram here, because the budget
+            # being watched is 2 ms and the default buckets would put every observation
+            # in the first bin.
+            buckets=(0.0001, 0.00025, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.1),
+            registry=registry,
+        ),
     )
 
 

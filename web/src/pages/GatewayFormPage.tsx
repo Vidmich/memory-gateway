@@ -19,8 +19,16 @@ import { Field, Form, SubmitButton, TextArea, TextInput } from '@/components/For
 import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { useToast } from '@/components/Toast'
 import { GatewayKeys } from '@/pages/GatewayKeys'
+import { LimitsSection } from '@/pages/GatewayLimits'
 import { MemorySection } from '@/pages/GatewayMemory'
 import { RoutingSection } from '@/pages/GatewayRouting'
+import {
+  limitProblems,
+  limitsBody,
+  limitsChanged,
+  limitsForm,
+  type LimitsForm,
+} from '@/pages/limits'
 import { memoryBody, memoryChanged, memoryForm, memoryProblem, type MemoryForm } from '@/pages/memory'
 import { chainBody, chainProblem, rowsOf, sameChain, type ChainRow } from '@/pages/routing'
 import { suggestSlug } from '@/pages/slug'
@@ -54,6 +62,10 @@ type FormState = {
   //  a card-number pattern silently stops matching.
   redactionPatterns: string
   enableDistillation: boolean
+  //  Its own sub-object for the same reason as `memory`: the Limits section reads the
+  //  gateway scope and the per-end-user scope as one shape, and eight more flat fields
+  //  would be reassembled at every call site.
+  limits: LimitsForm
 }
 
 const BLANK: FormState = {
@@ -74,16 +86,17 @@ const BLANK: FormState = {
   metadataRetentionDays: '365',
   redactionPatterns: '',
   enableDistillation: true,
+  limits: limitsForm(undefined),
 }
 
 /**
  * The gateway editor — one route for create and edit (SPEC §13.1).
  *
- * The section order is the information architecture every later task extends: Identity,
- * Routing, Memory (10), Prompt, Logging (07), Limits (14), Keys. The three unbuilt ones
- * render a real, styled empty state naming the release that fills them, rather than being
- * hidden — a section that appears later moves everything below it, and a demo that shows
- * the shape of the finished screen is worth more than one that hides its gaps.
+ * The section order is the information architecture every task since 06 has extended:
+ * Identity, Routing, Memory (10), Prompt, Logging (07), Limits (14), Keys. Each arrived
+ * as a styled empty state naming the release that would fill it, rather than being
+ * hidden, because a section that appears later moves everything below it. Task 14 filled
+ * the last of them, so there are none left.
  *
  * Three details worth stating.
  *
@@ -190,6 +203,10 @@ export function GatewayFormPage() {
           .filter(Boolean),
         enable_distillation: state.enableDistillation,
       },
+      // SPEC §11. Sent whole rather than as a patch of the fields that changed, because
+      // an empty input *is* a value here — it means "unlimited" — and a partial body
+      // could not express clearing a limit.
+      limits: limitsBody(state.limits),
     }
 
     try {
@@ -400,9 +417,10 @@ export function GatewayFormPage() {
           <LoggingSection state={state} set={set} />
 
           {/* 6. Limits --------------------------------------------------- */}
-          <Placeholder
-            title="Limits"
-            what="Requests and tokens per minute, concurrent requests, and daily quotas — per gateway and per end user."
+          <LimitsSection
+            gatewayId={gatewayId}
+            form={state.limits}
+            onChange={(limits) => set('limits', limits)}
           />
         </fieldset>
 
@@ -410,7 +428,11 @@ export function GatewayFormPage() {
           {writes ? (
             <SubmitButton
               busy={create.isPending || update.isPending}
-              disabled={routingProblem !== null || memoryIssue !== null}
+              disabled={
+                routingProblem !== null ||
+                memoryIssue !== null ||
+                limitProblems(state.limits).length > 0
+              }
               className="w-auto"
             >
               {isNew ? 'Create gateway' : 'Save changes'}
@@ -687,26 +709,6 @@ function Section({
   )
 }
 
-/**
- * A real, styled empty state naming what will fill it.
- *
- * Hidden sections would make the editor look finished and then move everything below them
- * when they arrive. Naming the contents also makes the gap reviewable: if a later task
- * ships something different from what this promised, the difference is visible here.
- */
-function Placeholder({ title, what }: { title: string; what: string }) {
-  return (
-    <section className="mb-8 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5">
-      <div className="flex items-center gap-2">
-        <h2 className="text-sm font-semibold text-slate-500">{title}</h2>
-        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-xs font-medium text-slate-600">
-          Coming soon
-        </span>
-      </div>
-      <p className="mt-1 text-sm text-slate-500">{what}</p>
-    </section>
-  )
-}
 
 function EndpointBanner({ gateway }: { gateway: GatewayResponse }) {
   return (
@@ -916,6 +918,11 @@ function stateOf(gateway: GatewayResponse): FormState {
     metadataRetentionDays: String(gateway.logging_config.metadata_retention_days),
     redactionPatterns: (gateway.logging_config.redaction_patterns ?? []).join(NEWLINE),
     enableDistillation: gateway.logging_config.enable_distillation,
+    //  From the gateway row rather than from `GET /limits`: this is what was *saved*,
+    //  which is what the inputs show. What is *enforced* — the ceiling, the live bars —
+    //  comes from the limits endpoint, and the difference between the two is the thing
+    //  the section exists to explain.
+    limits: limitsForm(gateway.limits),
   }
 }
 
@@ -927,8 +934,9 @@ function sameState(left: FormState, right: FormState): boolean {
   return (
     sameChain(left.targets, right.targets) &&
     !memoryChanged(left.memory, memoryConfigOf(right.memory)) &&
+    !limitsChanged(left.limits, right.limits) &&
     (Object.keys(left) as (keyof FormState)[])
-      .filter((key) => key !== 'targets' && key !== 'memory')
+      .filter((key) => key !== 'targets' && key !== 'memory' && key !== 'limits')
       .every((key) => left[key] === right[key])
   )
 }

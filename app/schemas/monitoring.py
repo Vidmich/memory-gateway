@@ -27,7 +27,7 @@ from app.db.models import RequestLog, Transcript
 from app.schemas.routing import AttemptResponse
 from app.services.distillation_service import ManualPass
 from app.services.distillation_store import MemoryHealth
-from app.services.metrics_store import Bucket, LogDetail, Summary
+from app.services.metrics_store import Bucket, LogDetail, Summary, ThrottledEndUser
 from app.services.monitoring import Series
 
 _CONFIG = ConfigDict(extra="forbid")
@@ -101,6 +101,37 @@ class SummaryResponse(BaseModel):
             models=[ModelTrafficResponse(**asdict(model)) for model in summary.models],
             error_groups=[ErrorGroupResponse(**asdict(group)) for group in summary.error_groups],
         )
+
+
+class ThrottledEndUserResponse(BaseModel):
+    """One caller on the "top throttled end users" list.
+
+    ``external_id`` is whatever the customer's integration sent in ``X-Gateway-User``, so
+    it is untrusted text — carried as a string and rendered as one.
+    """
+
+    model_config = _CONFIG
+
+    end_user_id: uuid.UUID
+    external_id: str | None
+    rejections: int
+
+    @classmethod
+    def of(cls, row: ThrottledEndUser) -> Self:
+        return cls(
+            end_user_id=row.end_user_id,
+            external_id=row.external_id,
+            rejections=row.rejections,
+        )
+
+
+class ThrottledEndUsersResponse(BaseModel):
+    """Deliberately not a page: the question is "who is causing this", and the answer is
+    one or two integrations rather than a list to scroll."""
+
+    model_config = _CONFIG
+
+    items: list[ThrottledEndUserResponse]
 
 
 class BucketResponse(BaseModel):

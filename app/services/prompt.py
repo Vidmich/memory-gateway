@@ -401,6 +401,18 @@ def assemble(
     )
 
 
+def prompt_tokens(messages: Sequence[ChatMessage], *, tokenizer: Tokenizer) -> int:
+    """What the provider is being asked to read, in tokens.
+
+    Over the *assembled* messages, so the retrieved documents and the recalled facts are
+    counted along with what the client sent — which is the whole distinction SPEC §11
+    draws when it says token limits include injected memory. Structured content is
+    flattened by :func:`as_text` first, the same way the budgeting inside
+    :func:`assemble` flattens it.
+    """
+    return sum(count(tokenizer, as_text(message.content)) for message in messages)
+
+
 def _layer(name: str, label: str, text: str, tokenizer: Tokenizer) -> Layer:
     return Layer(name, label, text, count(tokenizer, text) if text else 0)
 
@@ -461,6 +473,7 @@ __all__ = [
     "assemble",
     "fit_documents",
     "fit_facts",
+    "prompt_tokens",
     "render_documents",
     "render_entry",
     "render_facts",

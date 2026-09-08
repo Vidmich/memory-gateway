@@ -12,6 +12,7 @@ import {
   makeApiKey,
   makeConnector,
   makeGateway,
+  makeGatewayLimits,
   makeGatewayProbe,
   makeIssuedKey,
   makeModel,
@@ -80,6 +81,8 @@ function fakeServer(options: ServerOptions = {}) {
     if (path.endsWith('/test') && method === 'POST') {
       return Promise.resolve(json(options.probe ?? makeGatewayProbe()))
     }
+    // Task 14's Limits section, which every render of the editor asks for.
+    if (path.endsWith('/limits')) return Promise.resolve(json(makeGatewayLimits()))
     if (path.endsWith('/keys') && method === 'POST') {
       return Promise.resolve(json(options.issued ?? makeIssuedKey(), 201))
     }
@@ -312,9 +315,10 @@ describe('creating a gateway', () => {
 })
 
 describe('the editor', () => {
-  it('shows every section, including the ones later releases fill', async () => {
+  it('shows every section', async () => {
     // Hidden sections would make the editor look finished and then move everything below
-    // them when they arrive.
+    // them when they arrive, so each unbuilt one used to render a styled empty state.
+    // Task 14 filled the last of them.
     const { client } = fakeServer()
     renderAt(client, '/gateways/g1')
 
@@ -322,9 +326,7 @@ describe('the editor', () => {
     for (const name of ['Routing', 'Memory', 'Prompt', 'Logging', 'Limits', 'Keys']) {
       expect(screen.getByRole('heading', { name })).toBeInTheDocument()
     }
-    // Limits alone, now that Logging and Memory are built. The count is asserted rather
-    // than left implicit so filling one in has to come here and say so.
-    expect(screen.getAllByText('Coming soon')).toHaveLength(1)
+    expect(screen.queryByText('Coming soon')).not.toBeInTheDocument()
   })
 
   it('makes the slug read-only and says why', async () => {

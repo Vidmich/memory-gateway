@@ -332,6 +332,23 @@ class RequestRecorder:
         content = first.message.content if first is not None and first.message else None
         self.completed(status_code=200, text=content, usage=response.usage)
 
+    def throttled(self) -> None:
+        """A limit refused this request: keep the row, drop the transcript.
+
+        SPEC §11 wants throttling visible per gateway, so the metadata row is the point —
+        it is what puts a rate-limit series on the error chart and the caller in the "top
+        throttled end users" list. The bodies are not: nothing was done with them, no
+        model saw them, and storing end-user text for a request that never happened is
+        cost and exposure with no reader.
+
+        Recorded as a *reason* rather than by simply not collecting, because the drawer
+        has to be able to say why a row it is showing has no transcript.
+        """
+        self._record.request_body = None
+        self._record.assembled_prompt = None
+        self._record.response_body = None
+        self._record.bodies_omitted = "rate_limited"
+
     def failed(self, error: BaseException, *, status_code: int | None = None) -> None:
         """Record a failure. Called from the route's ``except``, before re-raising."""
         if isinstance(error, AppError):

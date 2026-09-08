@@ -1076,6 +1076,72 @@
         "title": "GatewayCreateRequest",
         "type": "object"
       },
+      "GatewayLimitsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "capped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capped",
+            "type": "array"
+          },
+          "ceilings": {
+            "$ref": "#/components/schemas/QuotaResponse"
+          },
+          "configured": {
+            "$ref": "#/components/schemas/QuotaResponse"
+          },
+          "configured_per_end_user": {
+            "$ref": "#/components/schemas/QuotaResponse"
+          },
+          "enforced": {
+            "$ref": "#/components/schemas/QuotaResponse"
+          },
+          "enforced_per_end_user": {
+            "$ref": "#/components/schemas/QuotaResponse"
+          },
+          "gateway_id": {
+            "format": "uuid",
+            "title": "Gateway Id",
+            "type": "string"
+          },
+          "global_models": {
+            "title": "Global Models",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "usage": {
+            "items": {
+              "$ref": "#/components/schemas/LimitUsageResponse"
+            },
+            "title": "Usage",
+            "type": "array"
+          }
+        },
+        "required": [
+          "gateway_id",
+          "slug",
+          "name",
+          "configured",
+          "configured_per_end_user",
+          "enforced",
+          "enforced_per_end_user",
+          "capped",
+          "ceilings",
+          "global_models",
+          "usage"
+        ],
+        "title": "GatewayLimitsResponse",
+        "type": "object"
+      },
       "GatewayResponse": {
         "properties": {
           "created_at": {
@@ -1658,8 +1724,58 @@
         "title": "IssuedInvitationResponse",
         "type": "object"
       },
+      "LimitUsageResponse": {
+        "additionalProperties": false,
+        "description": "One cap's live bar.",
+        "properties": {
+          "capped": {
+            "title": "Capped",
+            "type": "boolean"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "string"
+          },
+          "remaining": {
+            "title": "Remaining",
+            "type": "integer"
+          },
+          "reset_seconds": {
+            "title": "Reset Seconds",
+            "type": "integer"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "used": {
+            "title": "Used",
+            "type": "integer"
+          },
+          "utilization": {
+            "title": "Utilization",
+            "type": "number"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "limit",
+          "scope",
+          "value",
+          "used",
+          "remaining",
+          "reset_seconds",
+          "utilization",
+          "capped"
+        ],
+        "title": "LimitUsageResponse",
+        "type": "object"
+      },
       "LimitsConfig": {
-        "description": "SPEC \u00a711. ``None`` means unlimited, which is the v1 default \u2014 task 14 enforces\nthese, and a limit that quietly existed before anyone set one would be a surprise\noutage rather than a policy.",
+        "description": "SPEC \u00a711. Unlimited by default, which is the v1 default and not an oversight \u2014 a\nlimit that quietly existed before anyone set one would be a surprise outage rather\nthan a policy.\n\nThe four gateway-scope fields are at the top level rather than under a ``gateway``\nkey, because they were written that way before ``per_end_user`` existed and moving\nthem would silently unset the limits of every gateway already configured. The shape\nis a little lopsided; a migration of live traffic limits is worse.\n\n``per_end_user`` applies the same four caps to one ``X-Gateway-User`` at a time. It\nis not a subdivision of the gateway's budget \u2014 both are checked, and either refuses \u2014\nso a per-person cap on an otherwise unlimited gateway is a sensible configuration and\nis not silently raised to meet it.",
         "properties": {
           "concurrent_requests": {
             "anyOf": [
@@ -1672,6 +1788,9 @@
               }
             ],
             "title": "Concurrent Requests"
+          },
+          "per_end_user": {
+            "$ref": "#/components/schemas/Quota"
           },
           "requests_per_day": {
             "anyOf": [
@@ -3602,6 +3721,54 @@
         "title": "PercentilesResponse",
         "type": "object"
       },
+      "PressureListResponse": {
+        "additionalProperties": false,
+        "description": "Deliberately not a page. The question is \"is anything under pressure right now\",\nand an answer split across pages is a different question.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PressureResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PressureListResponse",
+        "type": "object"
+      },
+      "PressureResponse": {
+        "additionalProperties": false,
+        "description": "One gateway currently running close to one of its caps.",
+        "properties": {
+          "gateway_id": {
+            "format": "uuid",
+            "title": "Gateway Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "worst": {
+            "$ref": "#/components/schemas/LimitUsageResponse"
+          }
+        },
+        "required": [
+          "gateway_id",
+          "slug",
+          "name",
+          "worst"
+        ],
+        "title": "PressureResponse",
+        "type": "object"
+      },
       "ProbeResponse": {
         "description": "The four things the button reports. Not an error envelope: \"the upstream said 401\"\nis the successful answer to \"does this work\", and the UI renders it in red itself.",
         "properties": {
@@ -3760,6 +3927,113 @@
           "retrieval"
         ],
         "title": "PromptPreviewResponse",
+        "type": "object"
+      },
+      "Quota": {
+        "description": "SPEC \u00a711's four caps. ``None`` means unlimited, everywhere.\n\nA separate model from :class:`LimitsConfig` because the same four fields are asked\ntwice \u2014 once of the endpoint and once of each person using it \u2014 and writing them\ntwice is how the two drift apart.",
+        "properties": {
+          "concurrent_requests": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Concurrent Requests"
+          },
+          "requests_per_day": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests Per Day"
+          },
+          "requests_per_minute": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests Per Minute"
+          },
+          "tokens_per_minute": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens Per Minute"
+          }
+        },
+        "title": "Quota",
+        "type": "object"
+      },
+      "QuotaResponse": {
+        "additionalProperties": false,
+        "description": "SPEC \u00a711's four caps. ``null`` is unlimited, at every level.",
+        "properties": {
+          "concurrent_requests": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Concurrent Requests"
+          },
+          "requests_per_day": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests Per Day"
+          },
+          "requests_per_minute": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests Per Minute"
+          },
+          "tokens_per_minute": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens Per Minute"
+          }
+        },
+        "title": "QuotaResponse",
         "type": "object"
       },
       "RequestDetailResponse": {
@@ -4540,6 +4814,57 @@
           "organization_id"
         ],
         "title": "TargetSummary",
+        "type": "object"
+      },
+      "ThrottledEndUserResponse": {
+        "additionalProperties": false,
+        "description": "One caller on the \"top throttled end users\" list.\n\n``external_id`` is whatever the customer's integration sent in ``X-Gateway-User``, so\nit is untrusted text \u2014 carried as a string and rendered as one.",
+        "properties": {
+          "end_user_id": {
+            "format": "uuid",
+            "title": "End User Id",
+            "type": "string"
+          },
+          "external_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Id"
+          },
+          "rejections": {
+            "title": "Rejections",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "end_user_id",
+          "external_id",
+          "rejections"
+        ],
+        "title": "ThrottledEndUserResponse",
+        "type": "object"
+      },
+      "ThrottledEndUsersResponse": {
+        "additionalProperties": false,
+        "description": "Deliberately not a page: the question is \"who is causing this\", and the answer is\none or two integrations rather than a list to scroll.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ThrottledEndUserResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ThrottledEndUsersResponse",
         "type": "object"
       },
       "TranscriptResponse": {
@@ -6527,6 +6852,50 @@
         ]
       }
     },
+    "/api/v1/gateways/{gateway_id}/limits": {
+      "get": {
+        "description": "This gateway's caps, what is actually enforced, and how much is spent right now.\n\nThe usage is read live from the same buckets a request is checked against, so a bar\nat 100% and a 429 in the client's log are the same fact rather than two systems that\nusually agree.",
+        "operationId": "get_gateway_limits_api_v1_gateways__gateway_id__limits_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayLimitsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Gateway Limits",
+        "tags": [
+          "limits"
+        ]
+      }
+    },
     "/api/v1/gateways/{gateway_id}/prompt-preview": {
       "post": {
         "description": "The fully assembled system message for a sample question, layer by layer.\n\nDistinct from ``/test``, which sends a real completion and reports what the provider\nreceived. This one costs a retrieval and no tokens, so it is the one you press while\nediting; ``/test`` is the one that proves the whole path.",
@@ -6973,6 +7342,28 @@
         "summary": "Revoke Key",
         "tags": [
           "gateways"
+        ]
+      }
+    },
+    "/api/v1/limits/pressure": {
+      "get": {
+        "description": "Gateways currently past 80% of one of their caps, worst first.\n\nThe dashboard's warning card. Usually empty, which is why it is one request for the\nwhole organization rather than one per gateway.",
+        "operationId": "get_limit_pressure_api_v1_limits_pressure_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PressureListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Limit Pressure",
+        "tags": [
+          "limits"
         ]
       }
     },
@@ -7565,6 +7956,91 @@
           }
         },
         "summary": "Metrics Summary",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
+    "/api/v1/metrics/throttled": {
+      "get": {
+        "description": "Who was rate-limited most in this window (SPEC \u00a711).\n\nRead from the log rather than from the live counters, so it covers the window the\nrest of the screen is showing rather than the current minute \u2014 and survives a Redis\nrestart, which the counters do not.",
+        "operationId": "metrics_throttled_api_v1_metrics_throttled_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "gateway_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Gateway Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThrottledEndUsersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Throttled",
         "tags": [
           "monitoring"
         ]

@@ -46,8 +46,9 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import INTERVAL, array
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.errors import RateLimited
 from app.core.tenancy import TenantScope
-from app.db.models import RequestLog, Transcript
+from app.db.models import EndUser, RequestLog, Transcript
 from app.db.scoping import ScopedRepository, scoped
 from app.services.memory_db import MemoryDatabase
 
@@ -170,6 +171,32 @@ class Summary:
         return (self.retrieval_empty / self.retrieval_attempts) if self.retrieval_attempts else 0.0
 
 
+#: The gateway error code a throttled request is recorded under. Taken from the exception
+#: itself rather than written out, because this is the join between what the limiter
+#: raises and what the monitoring screens count — and two string literals that have to
+#: agree eventually stop agreeing.
+RATE_LIMITED_CODE = RateLimited.code
+
+#: Rows on the "top throttled end users" list. Short on purpose: it answers "who is
+#: causing this", and a runaway integration is one or two callers, not a page of them.
+MAX_THROTTLED_END_USERS = 10
+
+
+@dataclass(frozen=True, slots=True)
+class ThrottledEndUser:
+    """One caller and how often they were refused in the window.
+
+    ``external_id`` is carried alongside the row id because the id means nothing to the
+    person reading the screen — the answer they need is which of their customers to go and
+    talk to. It is untrusted caller input (SPEC §6.2), so it is rendered as text and never
+    as markup.
+    """
+
+    end_user_id: uuid.UUID
+    external_id: str | None
+    rejections: int
+
+
 @dataclass(frozen=True, slots=True)
 class Bucket:
     """One point on the x-axis, with every series' value at it.
@@ -218,6 +245,20 @@ class MetricsTransaction(Protocol):
 
     async def log(self, log_id: uuid.UUID, filters: LogFilters) -> LogDetail | None:
         """One request, or ``None`` — including when it belongs to another organization."""
+
+    async def throttled_end_users(
+        self, filters: LogFilters, *, limit: int = MAX_THROTTLED_END_USERS
+    ) -> Sequence[ThrottledEndUser]:
+        """Who was rate-limited most in this window, worst first.
+
+        Counted from the log rather than from the live buckets, deliberately: the buckets
+        hold the current minute and are lost on a Redis restart, while the question being
+        asked — "who has been causing this" — is about a window that has already happened.
+
+        Rows with no ``end_user_id`` are excluded rather than grouped as "anonymous". A
+        gateway that identifies nobody would otherwise produce one enormous bar that is
+        not a caller and cannot be acted on.
+        """
 
     async def erase_transcripts(self, end_user_id: uuid.UUID) -> int:
         """Delete every stored body belonging to one end user. Returns the row count.
@@ -410,6 +451,29 @@ class PostgresMetricsTransaction:
         )
         return LogDetail(log=row, transcript=transcript)
 
+    async def throttled_end_users(
+        self, filters: LogFilters, *, limit: int = MAX_THROTTLED_END_USERS
+    ) -> Sequence[ThrottledEndUser]:
+        rows = (
+            await self._session.execute(
+                select(RequestLog.end_user_id, EndUser.external_id, func.count())
+                .join(EndUser, EndUser.id == RequestLog.end_user_id)
+                .where(
+                    self._scope.clause(RequestLog),
+                    *_conditions(filters),
+                    RequestLog.error_code == RATE_LIMITED_CODE,
+                )
+                .group_by(RequestLog.end_user_id, EndUser.external_id)
+                .order_by(func.count().desc())
+                .limit(limit)
+                .execution_options(**scoped())
+            )
+        ).all()
+        return [
+            ThrottledEndUser(end_user_id=row[0], external_id=row[1], rejections=row[2])
+            for row in rows
+        ]
+
     async def erase_transcripts(self, end_user_id: uuid.UUID) -> int:
         # Two statements rather than a correlated delete: `request_logs` and
         # `transcripts` are both partitioned, and PostgreSQL plans a `DELETE ... USING`
@@ -573,6 +637,25 @@ class MemoryMetricsTransaction:
         if row is None or not self._matches(row, filters):
             return None
         return LogDetail(log=row, transcript=self._db.transcripts.get(log_id))
+
+    async def throttled_end_users(
+        self, filters: LogFilters, *, limit: int = MAX_THROTTLED_END_USERS
+    ) -> Sequence[ThrottledEndUser]:
+        counts: dict[uuid.UUID, int] = {}
+        for row in self._rows(filters):
+            if row.error_code != RATE_LIMITED_CODE or row.end_user_id is None:
+                continue
+            counts[row.end_user_id] = counts.get(row.end_user_id, 0) + 1
+
+        ordered = sorted(counts.items(), key=lambda item: (-item[1], str(item[0])))
+        return [
+            ThrottledEndUser(
+                end_user_id=end_user_id,
+                external_id=getattr(self._db.end_users.get(end_user_id), "external_id", None),
+                rejections=rejections,
+            )
+            for end_user_id, rejections in ordered[:limit]
+        ]
 
     async def erase_transcripts(self, end_user_id: uuid.UUID) -> int:
         wanted = [

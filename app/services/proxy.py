@@ -29,7 +29,7 @@ from app.api.proxy.errors import (
 from app.schemas.openai import ChatRequest, ChatResponse, StreamFrame
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.params import Resolved, resolve_params
-from app.services.prompt import Assembled, assemble
+from app.services.prompt import Assembled, assemble, prompt_tokens
 from app.services.retrieval import Recall
 from app.services.sse import DONE, format_event
 from app.services.tokenizer import Tokenizer, WordTokenizer
@@ -89,6 +89,35 @@ class StreamObserver(Protocol):
     def done(self, error: BaseException | None) -> None:
         """Called exactly once, whatever ended the stream — including a client hang-up,
         which arrives as :class:`asyncio.CancelledError`."""
+
+
+@dataclass(frozen=True, slots=True)
+class Observers:
+    """Several observers as one, called in order.
+
+    Order is the point rather than a detail: task 14's limiter settles its token estimate
+    against the usage the request log's observer has just extracted from the final frame,
+    so the two are not independent and a set would be the wrong container.
+
+    Each is isolated from the others — one that raises does not stop the rest — because
+    the alternative is a bug in an observer becoming a truncated stream for a client.
+    """
+
+    members: tuple[StreamObserver, ...]
+
+    def frame(self, frame: StreamFrame) -> None:
+        for member in self.members:
+            try:
+                member.frame(frame)
+            except Exception:  # pragma: no cover - an observer that raises is a bug
+                logger.warning("stream observer failed on a frame", exc_info=True)
+
+    def done(self, error: BaseException | None) -> None:
+        for member in self.members:
+            try:
+                member.done(error)
+            except Exception:  # pragma: no cover - never at the client's expense
+                logger.warning("stream observer failed at the end of a stream", exc_info=True)
 
 
 class ProxyService:
@@ -158,6 +187,20 @@ class ProxyService:
             target=target,
             assembly=assembly,
         )
+
+    def estimate_tokens(self, prepared: Prepared) -> int:
+        """Prompt tokens for an assembled request, injected memory included (SPEC §11).
+
+        Measured with the *same* tokenizer :meth:`prepare` budgeted with, which is what
+        makes a gateway's ``tokens_per_minute`` and its ``doc_max_tokens`` two numbers in
+        one unit rather than two units with one name.
+
+        An estimate, and not apologetically so: the provider's tokenizer is its own, and
+        the only exact count is the one it reports afterwards. Task 14 settles against
+        that; this is what has to be known *before* the request is sent, which no exact
+        method can give.
+        """
+        return prompt_tokens(prepared.request.messages, tokenizer=self._tokenizer)
 
     # -- non-streaming -------------------------------------------------------
 

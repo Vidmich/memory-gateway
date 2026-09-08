@@ -51,6 +51,7 @@ from app.core.tenancy import Actor
 from app.db.models import ApiKey, Gateway, UpstreamModel
 from app.db.models.gateway import MAX_SLUG_LENGTH, MIN_SLUG_LENGTH, ROUTING_MODES
 from app.schemas.gateway_config import (
+    LIMIT_NAMES,
     LimitsConfig,
     LoggingConfig,
     MemoryConfig,
@@ -60,6 +61,7 @@ from app.schemas.gateway_config import (
 from app.services.gateway_probe import GatewayProbe, GatewayProbeResult
 from app.services.gateway_resolver import ConfigCache
 from app.services.gateway_store import Chain, GatewayStore, GatewayTransaction
+from app.services.limits import LIMIT_LABELS, Ceilings
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
 from app.services.params import validate_params
 from app.services.rate_limit import FixedWindowLimiter
@@ -288,7 +290,11 @@ class GatewayService:
                     draft.logging_config,
                     field="logging_config",
                 ),
-                limits=merge_config(LimitsConfig, {}, draft.limits, field="limits"),
+                limits=_checked_limits(
+                    merge_config(LimitsConfig, {}, draft.limits, field="limits"),
+                    chain,
+                    Ceilings.of(self._settings),
+                ),
             )
             await transaction.add_gateway(gateway)
             await transaction.set_targets(gateway, chain)
@@ -332,7 +338,7 @@ class GatewayService:
                     field="logging_config",
                 )
             if not isinstance(patch.limits, _Unset):
-                gateway.limits = merge_config(
+                merged_limits = merge_config(
                     LimitsConfig, gateway.limits, patch.limits, field="limits"
                 )
 
@@ -348,6 +354,13 @@ class GatewayService:
                 chain = await self._resolve_chain(transaction, patch.targets)
                 _check_chain(gateway.routing_mode, chain)
                 await transaction.set_targets(gateway, chain)
+
+            # After the chain, because the ceiling only applies to a gateway that reaches
+            # a global catalog model and the request may be changing both halves at once.
+            # A save that swapped in a global model *and* raised the limit has to be
+            # refused as one act; checking the limit first would let it through.
+            if not isinstance(patch.limits, _Unset):
+                gateway.limits = _checked_limits(merged_limits, chain, Ceilings.of(self._settings))
 
             await transaction.commit()
             counts = await transaction.key_counts([gateway.id])
@@ -574,6 +587,45 @@ class GatewayService:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _checked_limits(
+    limits: dict[str, Any], chain: Sequence[Chain], ceilings: Ceilings
+) -> dict[str, Any]:
+    """Refuse a limit above the platform ceiling (SPEC §11, §17.3).
+
+    Only for a gateway that reaches a **global catalog** model, and only against a value
+    somebody actually typed. A gateway that leaves a limit unset is not refused — it is
+    silently *enforced* at the ceiling by
+    :func:`app.services.limits.effective`, which is the difference between a maximum and a
+    default and is the whole reason the ceiling exists: the exposure it guards against is
+    the operator's credential, and an unset limit is the most exposed configuration there
+    is.
+
+    Refused rather than clamped. A form that silently rewrote 5000 to 600 would leave
+    somebody believing they had configured something they had not; the 422 names the
+    number and why it cannot be that.
+
+    Only the gateway scope, for the reason in :func:`app.services.limits.effective`: a
+    per-end-user cap above the gateway's is a number that never binds rather than a way
+    around it.
+    """
+    if ceilings.empty or not any(model.scope == "global" for model, _ in chain):
+        return limits
+
+    config = LimitsConfig.load(limits)
+    for name in LIMIT_NAMES:
+        ceiling = getattr(ceilings, name, None)
+        value = getattr(config.gateway, name)
+        if ceiling is None or value is None or value <= ceiling:
+            continue
+        raise Validation(
+            f"This gateway routes to a model from the global catalog, which runs on the "
+            f"platform's own credential. {LIMIT_LABELS[name].capitalize()} is capped at "
+            f"{ceiling} for such a gateway; {value} is above that.",
+            param=f"limits.{name}",
+        )
+    return limits
 
 
 def _check_slug(slug: str) -> str:

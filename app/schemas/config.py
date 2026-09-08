@@ -95,15 +95,28 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _reject_unknown(schema: type[ConfigBlob], merged: Mapping[str, Any], *, field: str) -> None:
-    known = set(schema.model_fields)
-    for key in merged:
+def _reject_unknown(schema: type[BaseModel], merged: Mapping[str, Any], *, field: str) -> None:
+    """Refuse a key the schema does not define, at any depth.
+
+    Recursive because :func:`_deep_merge` is: task 14's ``limits.per_end_user`` is the
+    first nested object in the product, and a check that stopped at the top level would
+    let ``{"per_end_user": {"requests_per_minutes": 60}}`` through — accepted, stored,
+    and silently never applied, which is the exact failure this function exists to
+    prevent one level up.
+    """
+    known = schema.model_fields
+    for key, value in merged.items():
         if key not in known:
             raise Validation(
                 f"'{key}' is not a setting on this section. "
-                f"Allowed: {', '.join(sorted(known - {'version'}))}.",
+                f"Allowed: {', '.join(sorted(set(known) - {'version'}))}.",
                 param=f"{field}.{key}",
             )
+        nested = known[key].annotation
+        if not isinstance(value, Mapping) or not isinstance(nested, type):
+            continue
+        if issubclass(nested, BaseModel):
+            _reject_unknown(nested, value, field=f"{field}.{key}")
 
 
 def _first_problem(exc: Exception) -> tuple[str, str]:

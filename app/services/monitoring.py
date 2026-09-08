@@ -53,6 +53,7 @@ from app.services.metrics_store import (
     ModelTraffic,
     Percentiles,
     Summary,
+    ThrottledEndUser,
 )
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
 
@@ -213,6 +214,19 @@ class MonitoringService:
                 filters, metric=metric, group_by=group_by, interval_seconds=interval
             )
         return Series(interval_seconds=interval, buckets=tuple(buckets))
+
+    async def throttled_end_users(
+        self, actor: Actor, filters: LogFilters
+    ) -> Sequence[ThrottledEndUser]:
+        """SPEC §11's "an org can see when it is being throttled", by caller.
+
+        Not cached, unlike the summary. It is asked once when somebody opens the panel
+        rather than on every dashboard refresh, and the thirty seconds of staleness that
+        are harmless on a total are not harmless when the question is "is the loop I just
+        stopped still being refused".
+        """
+        async with self._repository.begin(actor.scope) as transaction:
+            return await transaction.throttled_end_users(filters)
 
     async def list_logs(
         self,

@@ -57,6 +57,10 @@ async def fixture(
     await db_session.flush()
 
     seed = metrics_seed(acme, globex)
+    # Before the logs: the throttled-caller query joins ``end_users``, and a foreign key
+    # is a foreign key.
+    db_session.add_all(list(seed.end_users))
+    await db_session.flush()
     db_session.add_all(list(seed.logs))
     db_session.add_all(list(seed.transcripts))
     await db_session.flush()
@@ -71,6 +75,8 @@ async def fixture(
         acme_log_id=seed.acme_log_id,
         bodiless_log_id=seed.bodiless_log_id,
         globex_log_id=seed.globex_log_id,
+        noisy_end_user_id=seed.noisy_end_user_id,
+        quiet_end_user_id=seed.quiet_end_user_id,
     )
 
 

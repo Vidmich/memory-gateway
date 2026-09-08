@@ -26,6 +26,9 @@ from app.services.directory_store import MemoryDirectoryStore
 from app.services.gateway_probe import GatewayProbe
 from app.services.gateway_store import MemoryGatewayStore
 from app.services.gateways import GatewayService
+from app.services.limit_store import MemoryLimitStore
+from app.services.limits import Ceilings
+from app.services.limits_service import LimitsService
 from app.services.login_throttle import LoginThrottle, MemoryThrottleStore
 from app.services.memory_db import MemoryDatabase
 from app.services.memory_preview import MemoryPreview
@@ -83,6 +86,10 @@ class AuthFixture:
     directory: DirectoryService
     catalog: CatalogService
     gateways: GatewayService
+    #: Task 14's read side, over the same gateway rows. Its buckets are exposed beside it
+    #: so a test can put a gateway under pressure without sending a request through it.
+    limits: LimitsService
+    limit_buckets: MemoryLimitStore
     #: Task 09's whole ingestion stack over the same rows, so a cross-tenant test can aim
     #: at a connector and a document that genuinely exist.
     connectors: ConnectorFixture | None
@@ -221,11 +228,14 @@ def build_auth(
         if organization is not None and end_users is not None
         else None
     )
+    limit_buckets = MemoryLimitStore()
     return AuthFixture(
         service=service,
         directory=directory,
         catalog=catalog,
         gateways=gateways,
+        limits=LimitsService(gateway_store, buckets=limit_buckets, ceilings=Ceilings.of(settings)),
+        limit_buckets=limit_buckets,
         connectors=connectors,
         preview=preview,
         end_users=end_users,

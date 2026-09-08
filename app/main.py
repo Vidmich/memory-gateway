@@ -53,6 +53,10 @@ from app.services.gateway_resolver import (
 )
 from app.services.gateway_store import PostgresGatewayStore
 from app.services.gateways import GatewayService
+from app.services.limit_store import RedisLimitStore
+from app.services.limiter import RateLimiter
+from app.services.limits import Ceilings
+from app.services.limits_service import LimitsService
 from app.services.log_store import PostgresLogWriter
 from app.services.login_throttle import LoginThrottle, RedisThrottleStore
 from app.services.memory_preview import MemoryPreview
@@ -108,6 +112,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             metrics=metrics.routing,
         )
         app.state.upstream_router = upstream_router
+        # SPEC §11. One store for every gateway, and the ceilings that protect the
+        # operator's own credential read from configuration rather than from a database:
+        # they are the platform's policy, not a tenant's setting, and a tenant must not be
+        # able to raise them.
+        limit_store = RedisLimitStore(clients.redis)
+        rate_limiter = RateLimiter(
+            limit_store,
+            ceilings=Ceilings.of(settings),
+            fail_open=settings.rate_limit_fail_open,
+            metrics=metrics.rate_limits,
+        )
+        app.state.rate_limiter = rate_limiter
 
         # Ingestion. Built here, in the API process, because two of its operations are
         # synchronous — deleting a document and reconciling a connector — and the worker
@@ -235,6 +251,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings=settings,
         )
         gateway_store = PostgresGatewayStore(clients.session_factory)
+        # The Limits screen and the dashboard's near-limit card. The configuration comes
+        # from the database rather than the cached payload, and the usage comes straight
+        # out of the buckets the limiter consumes from — see the module docstring for why
+        # those two sources are deliberately different.
+        app.state.limits_service = LimitsService(
+            gateway_store, buckets=limit_store, ceilings=Ceilings.of(settings)
+        )
         # The editor's Memory section: the same retriever and the same assembler the data
         # plane uses, so what it shows is what a request would inject.
         app.state.memory_preview = MemoryPreview(
@@ -303,7 +326,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_credentials=True,  # the refresh cookie
             allow_methods=["*"],
             allow_headers=["authorization", "content-type"],
-            expose_headers=["x-gateway-request-id"],
+            expose_headers=[
+                "x-gateway-request-id",
+                # SPEC §11's budget headers. Without these a browser client can read the
+                # 429 and not the numbers that would have let it avoid one.
+                "x-ratelimit-limit",
+                "x-ratelimit-remaining",
+                "x-ratelimit-reset",
+                "retry-after",
+            ],
         )
 
     register_exception_handlers(app)

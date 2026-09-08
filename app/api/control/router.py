@@ -19,6 +19,7 @@ from app.api.control import (
     distillation,
     end_users,
     gateways,
+    limits,
     models,
     monitoring,
 )
@@ -39,6 +40,7 @@ authenticated_router.include_router(auth.router)
 authenticated_router.include_router(directory.router)
 authenticated_router.include_router(models.router)
 authenticated_router.include_router(gateways.router)
+authenticated_router.include_router(limits.router)
 authenticated_router.include_router(connectors.router)
 authenticated_router.include_router(monitoring.router)
 authenticated_router.include_router(end_users.router)

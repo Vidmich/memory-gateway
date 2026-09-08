@@ -87,6 +87,24 @@ class GatewayUnavailable(ProxyError):
     openai_type = "server_error"
 
 
+class RateLimitUnavailable(ProxyError):
+    """The limiter could not reach its counters and this deployment fails closed.
+
+    503 rather than 429, because the client did nothing wrong: nothing has been counted,
+    no budget has been exceeded, and the gateway is declining to serve traffic it cannot
+    account for. A 429 would tell the caller to slow down, which is not the fix and would
+    put the blame on the wrong side of the connection. ``Retry-After`` is short because a
+    Redis blip is measured in seconds.
+    """
+
+    status_code = 503
+    code = "rate_limit_unavailable"
+    openai_type = "server_error"
+
+    def __init__(self, message: str, *, retry_after_seconds: int = 5) -> None:
+        super().__init__(message, headers={"retry-after": str(max(1, retry_after_seconds))})
+
+
 class UpstreamTimeout(ProxyError):
     status_code = 504
     code = "upstream_timeout"

@@ -17,8 +17,11 @@ import type {
   DocumentChunk,
   DocumentResponse,
   EndUserResponse,
+  GatewayLimits,
   GatewayResponse,
   GatewayTestResponse,
+  LimitQuota,
+  LimitUsage,
   InvitationResponse,
   IssuedApiKeyResponse,
   MemberResponse,
@@ -34,6 +37,7 @@ import type {
   SearchHit,
   SeriesResponse,
   SummaryResponse,
+  ThrottledEndUser,
 } from '@/api/types'
 
 const NOW = '2026-09-06T12:00:00Z'
@@ -224,6 +228,12 @@ export function makeGateway(overrides: Partial<GatewayResponse> = {}): GatewayRe
       tokens_per_minute: null,
       concurrent_requests: null,
       requests_per_day: null,
+      per_end_user: {
+        requests_per_minute: null,
+        tokens_per_minute: null,
+        concurrent_requests: null,
+        requests_per_day: null,
+      },
     },
     key_count: 1,
     created_at: NOW,
@@ -595,4 +605,51 @@ export function makeMemoryHealth(overrides: Partial<MemoryHealth> = {}): MemoryH
     average_facts_per_end_user: 0,
     ...overrides,
   }
+}
+
+
+const NO_QUOTA: LimitQuota = {
+  requests_per_minute: null,
+  tokens_per_minute: null,
+  requests_per_day: null,
+  concurrent_requests: null,
+}
+
+export function makeLimitUsage(overrides: Partial<LimitUsage> = {}): LimitUsage {
+  const value = overrides.value ?? 10
+  const remaining = overrides.remaining ?? 6
+  return {
+    limit: 'requests_per_minute',
+    scope: 'gateway',
+    value,
+    used: value - remaining,
+    remaining,
+    reset_seconds: 37,
+    utilization: (value - remaining) / value,
+    capped: false,
+    ...overrides,
+  }
+}
+
+export function makeGatewayLimits(overrides: Partial<GatewayLimits> = {}): GatewayLimits {
+  return {
+    gateway_id: 'g1',
+    slug: 'acme-support',
+    name: 'Support Bot',
+    configured: NO_QUOTA,
+    configured_per_end_user: NO_QUOTA,
+    enforced: NO_QUOTA,
+    enforced_per_end_user: NO_QUOTA,
+    capped: [],
+    ceilings: NO_QUOTA,
+    global_models: false,
+    usage: [],
+    ...overrides,
+  }
+}
+
+export function makeThrottledEndUser(
+  overrides: Partial<ThrottledEndUser> = {},
+): ThrottledEndUser {
+  return { end_user_id: 'eu1', external_id: 'noisy-bot', rejections: 12, ...overrides }
 }

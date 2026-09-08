@@ -26,6 +26,7 @@ import {
 import { DataTable, type Column } from '@/components/DataTable'
 import { StatusBadge } from '@/components/StatusBadge'
 import { MemoryHealthPanel } from '@/pages/MemoryHealthPanel'
+import { ThrottledPanel } from '@/pages/ThrottledPanel'
 import { RequestDrawer } from '@/pages/RequestDrawer'
 
 /**
@@ -244,6 +245,15 @@ export function MonitoringPage() {
             }))}
           />
         </ChartFrame>
+
+        {/* SPEC §11. `rate_limited` is already a bar on the chart above — throttling is a
+            gateway error like any other — but that bar says how much, and the only useful
+            next question is whose. */}
+        <ThrottledPanel
+          window={window}
+          gatewayId={filters.gateway_id}
+          rateLimited={rateLimitedCount(summary.data)}
+        />
       </div>
 
       <div className="mt-4">
@@ -433,6 +443,14 @@ function Cards({
 }
 
 /** ``null`` and ``0`` are different answers, and only one of them is a number. */
+/** Rate-limit rejections in this window, from the error taxonomy already on the page.
+ *  Reused rather than re-queried: it decides which of the throttled panel's two empty
+ *  states applies, and one number does not deserve a round trip. */
+function rateLimitedCount(summary: SummaryResponse | undefined): number {
+  return (summary?.error_groups ?? []).find((group) => group.error_code === 'rate_limited')
+    ?.requests ?? 0
+}
+
 function formatMs(value: number | null | undefined): string {
   return value === null || value === undefined ? '—' : `${value} ms`
 }

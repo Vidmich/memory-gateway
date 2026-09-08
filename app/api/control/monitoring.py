@@ -30,6 +30,8 @@ from app.schemas.monitoring import (
     RequestLogResponse,
     SeriesResponse,
     SummaryResponse,
+    ThrottledEndUserResponse,
+    ThrottledEndUsersResponse,
 )
 from app.services.monitoring import MonitoringService, build_filters, check_metric
 from app.services.permissions import Capability
@@ -115,6 +117,29 @@ async def metrics_timeseries(
         actor, filters, metric=chosen, group_by=grouping, interval_seconds=interval
     )
     return SeriesResponse.of(series)
+
+
+@router.get("/metrics/throttled", dependencies=[_reads])
+async def metrics_throttled(
+    actor: CurrentActor,
+    service: _Service,
+    start: _From = None,
+    to: _To = None,
+    gateway_id: _Gateway = None,
+) -> ThrottledEndUsersResponse:
+    """Who was rate-limited most in this window (SPEC §11).
+
+    Read from the log rather than from the live counters, so it covers the window the
+    rest of the screen is showing rather than the current minute — and survives a Redis
+    restart, which the counters do not.
+    """
+    filters = build_filters(start=start, end=to, gateway_id=gateway_id)
+    return ThrottledEndUsersResponse(
+        items=[
+            ThrottledEndUserResponse.of(row)
+            for row in await service.throttled_end_users(actor, filters)
+        ]
+    )
 
 
 @router.get("/logs", dependencies=[_reads])

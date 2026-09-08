@@ -23,6 +23,7 @@ from app.services.directory import DirectoryService
 from app.services.distillation_service import DistillationService
 from app.services.end_users import EndUserService
 from app.services.gateways import GatewayService
+from app.services.limits_service import LimitsService
 from app.services.memory_preview import MemoryPreview
 from app.services.monitoring import MonitoringService
 from app.services.permissions import Capability, allows
@@ -73,6 +74,11 @@ def get_distillation_service(request: Request) -> DistillationService:
 
 def get_gateway_service(request: Request) -> GatewayService:
     service: GatewayService = request.app.state.gateway_service
+    return service
+
+
+def get_limits_service(request: Request) -> LimitsService:
+    service: LimitsService = request.app.state.limits_service
     return service
 
 

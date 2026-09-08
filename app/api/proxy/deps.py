@@ -13,6 +13,7 @@ from fastapi import Request
 from app.services.api_keys import KeyAuthenticator
 from app.services.end_user_resolver import EndUserResolver
 from app.services.gateway_resolver import GatewayResolver
+from app.services.limiter import RateLimiter
 from app.services.proxy import ProxyService
 from app.services.request_log import RequestLogService
 from app.services.retrieval import MemoryService
@@ -66,6 +67,18 @@ def get_end_users(request: Request) -> EndUserResolver:
     """
     resolver: EndUserResolver = request.app.state.end_user_resolver
     return resolver
+
+
+def get_limiter(request: Request) -> RateLimiter:
+    """SPEC §11's enforcement, over one shared Redis.
+
+    A dependency like the rest, and here it earns its keep twice over: a test proves
+    "exactly N admitted under concurrent load" against an in-process store with no Redis
+    in sight, and proves "with Redis down, requests still succeed" by substituting a
+    store whose every method raises.
+    """
+    limiter: RateLimiter = request.app.state.rate_limiter
+    return limiter
 
 
 def get_memory(request: Request) -> MemoryService:

@@ -15,10 +15,20 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.patterns import UnsafePattern, check_pattern
 from app.schemas.config import CONFIG_VERSION, ConfigBlob, merge_config
+
+#: SPEC §11's four caps, in the order they are checked and shown. Requests before
+#: tokens before concurrency: counting is free, estimating tokens is not, and a slot is
+#: the only one of the four that has to be given back afterwards.
+LIMIT_NAMES: tuple[str, ...] = (
+    "requests_per_minute",
+    "requests_per_day",
+    "tokens_per_minute",
+    "concurrent_requests",
+)
 
 MAX_REDACTION_PATTERNS = 20
 MAX_REDACTION_PATTERN_LENGTH = 200
@@ -127,15 +137,64 @@ class LoggingConfig(ConfigBlob):
         return self
 
 
+class Quota(BaseModel):
+    """SPEC §11's four caps. ``None`` means unlimited, everywhere.
+
+    A separate model from :class:`LimitsConfig` because the same four fields are asked
+    twice — once of the endpoint and once of each person using it — and writing them
+    twice is how the two drift apart.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    requests_per_minute: int | None = Field(default=None, ge=1)
+    #: Prompt **plus** completion, per SPEC §11 — so a gateway answering with essays is
+    #: throttled by the same number as one being asked them.
+    tokens_per_minute: int | None = Field(default=None, ge=1)
+    concurrent_requests: int | None = Field(default=None, ge=1)
+    requests_per_day: int | None = Field(default=None, ge=1)
+
+    @property
+    def unlimited(self) -> bool:
+        return all(getattr(self, name) is None for name in LIMIT_NAMES)
+
+
 class LimitsConfig(ConfigBlob):
-    """SPEC §11. ``None`` means unlimited, which is the v1 default — task 14 enforces
-    these, and a limit that quietly existed before anyone set one would be a surprise
-    outage rather than a policy."""
+    """SPEC §11. Unlimited by default, which is the v1 default and not an oversight — a
+    limit that quietly existed before anyone set one would be a surprise outage rather
+    than a policy.
+
+    The four gateway-scope fields are at the top level rather than under a ``gateway``
+    key, because they were written that way before ``per_end_user`` existed and moving
+    them would silently unset the limits of every gateway already configured. The shape
+    is a little lopsided; a migration of live traffic limits is worse.
+
+    ``per_end_user`` applies the same four caps to one ``X-Gateway-User`` at a time. It
+    is not a subdivision of the gateway's budget — both are checked, and either refuses —
+    so a per-person cap on an otherwise unlimited gateway is a sensible configuration and
+    is not silently raised to meet it.
+    """
 
     requests_per_minute: int | None = Field(default=None, ge=1)
     tokens_per_minute: int | None = Field(default=None, ge=1)
     concurrent_requests: int | None = Field(default=None, ge=1)
     requests_per_day: int | None = Field(default=None, ge=1)
+    per_end_user: Quota = Field(default_factory=Quota)
+
+    @property
+    def gateway(self) -> Quota:
+        """The top-level four, as the same shape as :attr:`per_end_user`.
+
+        Everything downstream — planning, the ceiling, the utilisation screen — works in
+        terms of two quotas, so the lopsidedness described above stops here rather than
+        being threaded through six more modules.
+        """
+        return Quota(
+            requests_per_minute=self.requests_per_minute,
+            tokens_per_minute=self.tokens_per_minute,
+            concurrent_requests=self.concurrent_requests,
+            requests_per_day=self.requests_per_day,
+        )
 
 
 def organization_logging_defaults(settings: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -158,11 +217,13 @@ def organization_logging_defaults(settings: Mapping[str, Any] | None) -> dict[st
 
 __all__ = [
     "CONFIG_VERSION",
+    "LIMIT_NAMES",
     "ORG_LOGGING_DEFAULTS",
     "ConfigBlob",
     "LimitsConfig",
     "LoggingConfig",
     "MemoryConfig",
+    "Quota",
     "merge_config",
     "organization_logging_defaults",
 ]

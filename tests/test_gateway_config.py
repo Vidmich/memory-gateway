@@ -249,10 +249,17 @@ async def test_logging_defaults_to_full_capture() -> None:
 
 async def test_limits_default_to_unlimited() -> None:
     """Task 14 enforces these. A limit that quietly existed before anyone set one would be
-    a surprise outage rather than a policy."""
+    a surprise outage rather than a policy — which is why the per-end-user block defaults
+    the same way rather than inheriting the gateway's numbers."""
     assert LimitsConfig().model_dump(exclude={"version"}) == {
         "requests_per_minute": None,
         "tokens_per_minute": None,
         "concurrent_requests": None,
         "requests_per_day": None,
+        "per_end_user": {
+            "requests_per_minute": None,
+            "tokens_per_minute": None,
+            "concurrent_requests": None,
+            "requests_per_day": None,
+        },
     }

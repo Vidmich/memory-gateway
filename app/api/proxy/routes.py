@@ -20,7 +20,9 @@ from pydantic import ValidationError
 from app.api.proxy.deps import (
     get_authenticator,
     get_end_users,
+    get_limiter,
     get_memory,
+    get_proxy_service,
     get_request_logs,
     get_resolver,
     get_router,
@@ -31,7 +33,8 @@ from app.api.proxy.errors import (
     PermissionDenied,
     UnsupportedField,
 )
-from app.core import keys
+from app.core import background, keys
+from app.core.errors import AppError, RateLimited
 from app.core.logging import get_request_id
 from app.schemas.openai import ChatRequest, ModelCard, ModelList
 from app.services.api_keys import AuthenticatedKey, KeyAuthenticator
@@ -39,10 +42,11 @@ from app.services.end_user import EndUserIdentity, resolve_identity, session_key
 from app.services.end_user_resolver import EndUserResolver, ResolvedEndUser
 from app.services.facts import ANONYMOUS_NOT_ALLOWED, NO_IDENTITY
 from app.services.gateway_resolver import GatewayResolver, ResolvedGateway
-from app.services.proxy import Prepared
+from app.services.limiter import RateLimiter, RequestLimits
+from app.services.proxy import Observers, Prepared, ProxyService
 from app.services.request_log import RequestLogService, RequestRecorder, StreamRecorder
 from app.services.retrieval import MemoryService, Recall
-from app.services.routing import Attempts, Router, plan
+from app.services.routing import Attempts, Router, RoutingPlan, plan
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +81,8 @@ Routing = Annotated[Router, Depends(get_router)]
 Logs = Annotated[RequestLogService, Depends(get_request_logs)]
 Memory = Annotated[MemoryService, Depends(get_memory)]
 EndUsers = Annotated[EndUserResolver, Depends(get_end_users)]
+Limiter = Annotated[RateLimiter, Depends(get_limiter)]
+Proxy = Annotated[ProxyService, Depends(get_proxy_service)]
 
 
 @router.post("/chat/completions")
@@ -89,6 +95,8 @@ async def chat_completions(
     logs: Logs,
     memory: Memory,
     end_users: EndUsers,
+    limiter: Limiter,
+    proxy: Proxy,
 ) -> Response:
     """Forward a chat completion, streaming or not."""
     key, gateway = await _authorize(request, slug, resolver, authenticator)
@@ -106,6 +114,13 @@ async def chat_completions(
     )
 
     attempts = Attempts(on_prepared=_record_prompt(recorder))
+    # Created before the body is parsed so that the `except` and `finally` below always
+    # have something to talk to. It enforces nothing until `requests()` is called, and on
+    # a gateway with no limits configured it never touches Redis at all.
+    limits = limiter.begin(gateway, end_user_id=None, holder=recorder.record.id.hex)
+    # Set once the stream observer owns the concurrency slot, which is the one path where
+    # this function returns while the request is still in flight.
+    handed_off = False
     try:
         chat = _parse_body(await _read_body(request))
         recorder.client_request(chat)
@@ -131,6 +146,17 @@ async def chat_completions(
             ),
         )
 
+        # SPEC §11's cheap half, before routing, before retrieval, before a single token
+        # has been counted: a throttled caller pays for an authentication, an identity
+        # lookup and one Redis round trip. Rebuilt rather than mutated because the
+        # per-end-user buckets need the row id that only exists now.
+        limits = limiter.begin(
+            gateway,
+            end_user_id=who.id if who is not None else None,
+            holder=recorder.record.id.hex,
+        )
+        await limits.requests()
+
         # Which upstream, and what happens when it does not answer (SPEC §8.1). Resolved
         # before any time is spent so that a misconfigured gateway fails identically in
         # all three modes, and so the attempt list is fixed before the first call.
@@ -148,6 +174,12 @@ async def chat_completions(
         # the same failure as a diagnostic instead of a 503.
         recall.enforce(gateway.memory.on_retrieval_error)
 
+        # The expensive half, and it has to be here: SPEC §11 counts *injected* memory,
+        # which does not exist until retrieval has run. The concurrency slot is taken in
+        # the same atomic check and released the moment the upstream call is over, so it
+        # measures calls in flight rather than requests in the building.
+        await limits.tokens(_estimate(proxy, chat, gateway, routing, recall, limits))
+
         recorder.upstream_call_started()
         if chat.stream:
             # Opening the stream sends the request and checks the status *before* any
@@ -159,18 +191,25 @@ async def chat_completions(
                 gateway,
                 routing,
                 attempts,
-                observer=StreamRecorder(recorder),
+                # Ordered: the log's observer fills in the usage the limiter then
+                # settles against, and a composite is what makes that ordering a fact
+                # rather than a convention.
+                observer=Observers((StreamRecorder(recorder), _StreamLimits(limits, recorder))),
                 recall=recall,
             )
             recorder.attempts(attempts.as_json())
             memory.injected(opened.prepared.memory_tokens)
             # Deliberately not submitted here: the observer owns the record from now on
-            # and submits it when the stream ends, however it ends.
+            # and submits it when the stream ends, however it ends. The same is true of
+            # the concurrency slot: `_StreamLimits` gives it back from the same `done`
+            # callback, which fires on a clean finish, an upstream failure and a client
+            # hang-up alike.
+            handed_off = True
             return StreamingResponse(
                 opened.stream.frames(),
                 media_type="text/event-stream",
                 headers={
-                    **_headers(opened.prepared, recall),
+                    **_headers(opened.prepared, recall, limits),
                     "cache-control": "no-cache",
                     # Tells nginx not to buffer the response; without it an ingress can
                     # hold the whole stream and hand the client one lump at the end.
@@ -183,9 +222,19 @@ async def chat_completions(
         memory.injected(completed.prepared.memory_tokens)
         recorder.from_response(completed.response)
         recorder.submit()
+        # Inline rather than in the background, because the answer is already built and
+        # two Redis round trips on a request that just waited on a provider are not the
+        # latency worth optimising — and a settlement that happens deterministically is a
+        # settlement that can be tested.
+        await limits.release()
+        usage = completed.response.usage
+        await limits.settle(
+            prompt_tokens=usage.prompt_tokens if usage is not None else None,
+            completion_tokens=usage.completion_tokens if usage is not None else None,
+        )
         return JSONResponse(
             content=completed.response.model_dump(exclude_none=True),
-            headers=_headers(completed.prepared, recall),
+            headers=_headers(completed.prepared, recall, limits),
         )
     except BaseException as error:
         # Every failure after authorization is somebody's, and the row is the only place
@@ -194,9 +243,25 @@ async def chat_completions(
         # attempts go on first: a chain that exhausted itself is the whole explanation,
         # and it lives in the object the raise passed straight through.
         recorder.attempts(attempts.as_json())
+        if isinstance(error, RateLimited):
+            # SPEC §11 wants throttling visible in monitoring, and task 14 wants the row
+            # to be metadata only. The client did send a body; nothing was done with it,
+            # and storing a transcript of a request that never reached a model would put
+            # end-user text in the log for no reader's benefit.
+            recorder.throttled()
         recorder.failed(error)
         recorder.submit()
+        if isinstance(error, AppError):
+            # Every response carries the budget, refusals included — a client that only
+            # learns its limit after exceeding it cannot pace itself. Merged rather than
+            # replacing, because `RateLimited` arrives with its own `Retry-After`.
+            error.headers = {**limits.headers(), **error.headers}
         raise
+    finally:
+        # The one slot that has to be given back. Not on the streaming path, where the
+        # observer owns it: this function returns while that request is still running.
+        if not handed_off:
+            await limits.release()
 
 
 @router.get("/models")
@@ -219,10 +284,72 @@ async def list_models(
     )
 
 
-def _headers(prepared: Prepared, recall: Recall) -> dict[str, str]:
-    """Which model answered, what memory added, and what this gateway refused to let the
-    client change."""
-    headers = {MODEL_HEADER: prepared.target.name}
+class _StreamLimits:
+    """Releases the concurrency slot and settles tokens when a stream ends.
+
+    A :class:`~app.services.proxy.StreamObserver` because that is the only callback the
+    proxy guarantees fires **exactly once however the stream ended** — a clean finish, an
+    upstream that died mid-generation, and a client that walked away all arrive here. A
+    slot released anywhere else would be a slot leaked in one of those three cases, and a
+    leaked concurrency counter is the failure task 14 is explicit about designing against.
+
+    The work is spawned rather than awaited because ``done`` is called from inside the
+    body iterator, synchronously, between two frames.
+    """
+
+    def __init__(self, limits: RequestLimits, recorder: RequestRecorder) -> None:
+        self._limits = limits
+        self._recorder = recorder
+
+    def frame(self, frame: Any) -> None:
+        """Nothing to do per frame. The token settlement is one correction at the end,
+        not an accumulating one — a stream that sends a thousand frames should cost one
+        Redis write, not a thousand."""
+
+    def done(self, error: BaseException | None) -> None:
+        background.spawn(self._finish(), name="rate-limit-settle")
+
+    async def _finish(self) -> None:
+        await self._limits.release()
+        # Read off the record, which the log's observer has already filled in from the
+        # provider's own usage frame. Several providers send none for a stream, and the
+        # settlement correctly does nothing in that case — see `RequestLimits.settle`.
+        record = self._recorder.record
+        await self._limits.settle(
+            prompt_tokens=record.prompt_tokens,
+            completion_tokens=record.completion_tokens,
+        )
+
+
+def _estimate(
+    proxy: ProxyService,
+    chat: ChatRequest,
+    gateway: ResolvedGateway,
+    routing: RoutingPlan,
+    recall: Recall,
+    limits: RequestLimits,
+) -> int:
+    """Prompt tokens for the request about to be sent, injected memory included.
+
+    Assembled a second time, deliberately and only when a token limit actually applies:
+    the router assembles per *attempt* and this has to happen before the first attempt
+    starts, so there is no result to reuse. It is pure CPU over messages already in
+    memory, and it buys the one thing SPEC §11 asks for that a client-side count cannot
+    give — the cost of what the gateway added.
+
+    The first target, because that is the one about to be called: a failover to a model
+    with a different context window would inject a different amount, and the settlement
+    afterwards corrects the difference either way.
+    """
+    if not limits.needs_estimate or not routing.targets:
+        return 0
+    return proxy.estimate_tokens(proxy.prepare(chat, gateway, routing.targets[0], recall=recall))
+
+
+def _headers(prepared: Prepared, recall: Recall, limits: RequestLimits) -> dict[str, str]:
+    """Which model answered, what memory added, what this gateway refused to let the
+    client change, and how much of its budget is left."""
+    headers = {MODEL_HEADER: prepared.target.name, **limits.headers()}
     if prepared.params.overridden:
         # The gateway ignored something the client explicitly asked for. Saying so is the
         # difference between "this endpoint ignores temperature" as a bug report and as a

@@ -888,19 +888,45 @@ describe('the memory section', () => {
     expect(body.doc_min_score).toBe(0.5)
   })
 
-  it('does not send the conversation-memory half, which task 12 owns', async () => {
+  it('saves both halves of memory together, and still sends a partial', async () => {
     // The blob is deep-merged server-side, so a key this form omits is a key it cannot
-    // wipe — which is what lets two sections of one editor save independently.
+    // wipe. That is what lets a later task add a field to the same blob without this
+    // section resetting it on every save.
     const { client, requests } = fakeServer()
     renderAt(client, '/gateways/g1')
     const person = userEvent.setup()
 
     await person.clear(await screen.findByLabelText('Chunks to retrieve'))
     await person.type(screen.getByLabelText('Chunks to retrieve'), '8')
+    await person.clear(screen.getByLabelText('Facts to recall'))
+    await person.type(screen.getByLabelText('Facts to recall'), '4')
     await person.click(screen.getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(requests.some((r) => r.method === 'PATCH')).toBe(true))
-    expect(lastBody(requests, 'PATCH').memory_config).not.toHaveProperty('memory_top_k')
+    const body = lastBody(requests, 'PATCH').memory_config as Record<string, unknown>
+    expect(body.doc_top_k).toBe(8)
+    expect(body.memory_top_k).toBe(4)
+    expect(body).not.toHaveProperty('dedupe_threshold')
+  })
+
+  it('warns that conversation memory needs an identity the caller has to send', async () => {
+    // The silent failure it prevents: memory on, every request anonymous, nothing ever
+    // stored, and no error anywhere to explain it.
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+
+    expect(await screen.findByText(/Send X-Gateway-User/)).toBeInTheDocument()
+  })
+
+  it('hides the conversation-memory knobs when it is switched off', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+    await screen.findByLabelText('Facts to recall')
+
+    await person.click(screen.getByLabelText(/Remember the person asking/))
+
+    expect(screen.queryByLabelText('Facts to recall')).not.toBeInTheDocument()
   })
 
   it('refuses to save a score the server would reject, before the round trip', async () => {

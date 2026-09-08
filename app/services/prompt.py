@@ -44,6 +44,7 @@ from app.schemas.openai import ChatMessage
 from app.services.tokenizer import Tokenizer, WordTokenizer, count
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle: retrieval imports `as_text` from here
+    from app.services.facts import Fact
     from app.services.retrieval import Chunk
 
 SYSTEM_ROLE = "system"
@@ -69,6 +70,9 @@ COMPLETION_RESERVE_TOKENS = 256
 #: "the answer ignored the pricing page" has an answer that is not a guess.
 DROPPED_BUDGET = "doc_max_tokens"
 DROPPED_CONTEXT = "context_window"
+#: The same, one layer down. A fact dropped by the memory budget and a chunk dropped by
+#: the document budget are two different settings to raise, so they are two codes.
+DROPPED_MEMORY_BUDGET = "memory_max_tokens"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +102,12 @@ class Assembled:
     layers: tuple[Layer, ...] = ()
     injected: tuple[Chunk, ...] = ()
     dropped: tuple[tuple[Chunk, str], ...] = ()
+    #: Layer 4's half of the same account. Kept in its own pair of fields rather than
+    #: merged into the two above, because the request log stores the two memories in two
+    #: columns and a caller asking "what did retrieval find" is not asking "what does it
+    #: know about me".
+    injected_facts: tuple[Fact, ...] = ()
+    dropped_facts: tuple[tuple[Fact, str], ...] = ()
     #: Tokens contributed by layers 3 and 4 together — the whole rendered blocks, which
     #: is what the provider actually charges for.
     memory_tokens: int = 0
@@ -123,6 +133,16 @@ class Assembled:
             *(
                 chunk.as_log_entry(injected=False, dropped_reason=reason)
                 for chunk, reason in self.dropped
+            ),
+        ]
+
+    def fact_log(self) -> list[dict[str, Any]]:
+        """Every recalled fact, injected or not, as ``retrieved_fact_ids`` stores them."""
+        return [
+            *(fact.as_log_entry(injected=True) for fact in self.injected_facts),
+            *(
+                fact.as_log_entry(injected=False, dropped_reason=reason)
+                for fact, reason in self.dropped_facts
             ),
         ]
 
@@ -159,13 +179,32 @@ def render_documents(chunks: Sequence[Chunk]) -> str:
     return "\n\n".join([header, *entries])
 
 
-def render_facts(facts: Sequence[str]) -> str:
-    """Layer 4. Task 12 supplies the facts; the rendering is settled here so that the
-    layer ordering and the empty-layer rule are exercised by tests today."""
-    lines = [f"- {fact.strip()}" for fact in facts if fact and fact.strip()]
+def render_facts(facts: Sequence[Fact]) -> str:
+    """Layer 4, in the shape SPEC §7 prints: a heading and one bullet per fact.
+
+    Empty in, empty out — never a heading with nothing under it, for the same reason the
+    document block is never rendered empty: telling a model it knows things about this
+    user and then listing none is an invitation to invent some.
+
+    Only the fact's *text* is rendered. Not its kind, not its confidence, not the id that
+    selected it, and above all not the end user's ``external_id`` — this block is data the
+    model reads, it originated in an end user's own conversation, and the less of our
+    internal vocabulary appears inside it, the less there is for a crafted fact to
+    imitate.
+
+    Each bullet is flattened to one line. A fact containing a newline could otherwise
+    close the list visually and start what looks like a new section of the system message,
+    which is the cheapest injection there is against a bulleted block and one line of code
+    to remove.
+    """
+    lines = [f"- {flat}" for fact in facts if (flat := _one_line(fact.text))]
     if not lines:
         return ""
     return "\n".join([MEMORY_HEADING, *lines])
+
+
+def _one_line(text: str) -> str:
+    return " ".join(text.split())
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +216,14 @@ def render_facts(facts: Sequence[str]) -> str:
 class Budgeted:
     kept: tuple[Chunk, ...]
     dropped: tuple[Chunk, ...]
+    text: str
+    tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetedFacts:
+    kept: tuple[Fact, ...]
+    dropped: tuple[Fact, ...]
     text: str
     tokens: int
 
@@ -215,6 +262,41 @@ def fit_documents(chunks: Sequence[Chunk], *, budget: int, tokenizer: Tokenizer)
     )
 
 
+def fit_facts(facts: Sequence[Fact], *, budget: int, tokenizer: Tokenizer) -> BudgetedFacts:
+    """The longest prefix of ``facts`` whose rendered block fits in ``budget`` tokens.
+
+    A prefix, exactly as :func:`fit_documents` is, and for a sharper reason. The order it
+    preserves puts the always-include facts first — see :mod:`app.services.facts` — so
+    truncating from the tail is what makes "these apply to every turn" true under a tight
+    budget rather than only when there happens to be room. Dropping the longest fact, or
+    the least similar one, would spend the budget better and quietly lose the constraint
+    that changes the answer.
+
+    The whole block is measured, heading included, so ``memory_max_tokens`` means what a
+    customer can verify by counting what arrived at the provider — the same reading of
+    "hard cap" that :func:`fit_documents` uses.
+    """
+    if not facts or budget <= 0:
+        return BudgetedFacts(kept=(), dropped=tuple(facts), text="", tokens=0)
+
+    best = 0
+    best_text = ""
+    best_tokens = 0
+    for size in range(1, len(facts) + 1):
+        text = render_facts(facts[:size])
+        tokens = count(tokenizer, text)
+        if tokens > budget:
+            break
+        best, best_text, best_tokens = size, text, tokens
+
+    return BudgetedFacts(
+        kept=tuple(facts[:best]),
+        dropped=tuple(facts[best:]),
+        text=best_text,
+        tokens=best_tokens,
+    )
+
+
 # ---------------------------------------------------------------------------
 # assembly
 # ---------------------------------------------------------------------------
@@ -226,7 +308,7 @@ def assemble(
     model_context: str | None = None,
     gateway_context: str | None = None,
     chunks: Sequence[Chunk] = (),
-    facts: Sequence[str] = (),
+    facts: Sequence[Fact] = (),
     doc_max_tokens: int = 0,
     memory_max_tokens: int = 0,
     context_window: int | None = None,
@@ -272,18 +354,25 @@ def assemble(
     documents = fit_documents(chunks, budget=budget, tokenizer=tokenizer)
 
     # SPEC §7: the document block is truncated first, then the memory block, so what is
-    # left of the window after documents is what memory may use.
+    # left of the window after documents is what memory may use. The order is the SPEC's
+    # and it is the right way round — a document is retrieved for *this* question and is
+    # useless once the conversation moves on, while a fact about the person asking is
+    # true for every turn, so the block worth keeping when the window is tight is the
+    # second one. Documents going first means memory is what survives.
     memory_room = max(0, min(memory_max_tokens, room - documents.tokens))
-    memory_text = render_facts(facts)
-    memory_tokens = count(tokenizer, memory_text) if memory_text else 0
-    if memory_tokens > memory_room:
-        memory_text, memory_tokens = "", 0
+    memory = fit_facts(facts, budget=memory_room, tokenizer=tokenizer)
+    # Which constraint bound, per fact, exactly as the document block records it: an
+    # operator reading "dropped: context_window" goes and looks at the client's own
+    # messages, and one reading "dropped: memory_max_tokens" goes and raises a number.
+    memory_reason = (
+        DROPPED_CONTEXT if room - documents.tokens < memory_max_tokens else DROPPED_MEMORY_BUDGET
+    )
 
     rendered = (
         model_layer,
         gateway_layer,
         Layer("documents", "Documents", documents.text, documents.tokens),
-        Layer("memory", "Memory", memory_text, memory_tokens),
+        Layer("memory", "Memory", memory.text, memory.tokens),
         client_layer,
     )
     overflowed = room == 0 and bool(chunks or facts)
@@ -305,7 +394,9 @@ def assemble(
         layers=rendered,
         injected=documents.kept,
         dropped=tuple((chunk, reason) for chunk in documents.dropped),
-        memory_tokens=documents.tokens + memory_tokens,
+        injected_facts=memory.kept,
+        dropped_facts=tuple((fact, memory_reason) for fact in memory.dropped),
+        memory_tokens=documents.tokens + memory.tokens,
         overflowed=overflowed,
     )
 
@@ -358,15 +449,18 @@ __all__ = [
     "COMPLETION_RESERVE_TOKENS",
     "DROPPED_BUDGET",
     "DROPPED_CONTEXT",
+    "DROPPED_MEMORY_BUDGET",
     "MEMORY_HEADING",
     "REFERENCE_HEADING",
     "REFERENCE_INSTRUCTION",
     "Assembled",
     "Budgeted",
+    "BudgetedFacts",
     "Layer",
     "as_text",
     "assemble",
     "fit_documents",
+    "fit_facts",
     "render_documents",
     "render_entry",
     "render_facts",

@@ -668,6 +668,65 @@
         "title": "DocumentResponse",
         "type": "object"
       },
+      "EndUserResponse": {
+        "description": "One identity, with the two numbers the list screen sorts by.",
+        "properties": {
+          "anonymous": {
+            "title": "Anonymous",
+            "type": "boolean"
+          },
+          "external_id": {
+            "title": "External Id",
+            "type": "string"
+          },
+          "fact_count": {
+            "title": "Fact Count",
+            "type": "integer"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "title": "First Seen At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "request_count": {
+            "title": "Request Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "external_id",
+          "label",
+          "first_seen_at",
+          "last_seen_at",
+          "request_count",
+          "fact_count",
+          "anonymous"
+        ],
+        "title": "EndUserResponse",
+        "type": "object"
+      },
       "ErrorGroupResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1608,6 +1667,11 @@
       "MemoryConfig": {
         "description": "SPEC \u00a76.3 \u2014 what this gateway retrieves, and what happens when it cannot.\n\n``connector_ids`` is empty by default, which means no document memory \u2014 a gateway\nthat silently started reading every connector in the organization would be a\ndisclosure bug, so the safe default is \"nothing\". Empty is also a *fast* path rather\nthan a filter that matches nothing: :mod:`app.services.retrieval` skips the embedding\nand the vector call entirely, so an unconfigured gateway costs no latency at all.\n\n``on_retrieval_error`` is the only field here that is about the product rather than\nabout quality, and it is a real choice with no safe default. ``fail_open`` serves an\nungrounded answer when the index is unreachable, which is right for a support bot\nthat is better than nothing; ``fail_closed`` returns 503, which is right for an\nassistant whose whole value is that it only answers from the handbook. The platform\ndefault is ``fail_open`` because availability is the more common preference, and the\neditor says in words what the other one does.",
         "properties": {
+          "allow_anonymous_memory": {
+            "default": false,
+            "title": "Allow Anonymous Memory",
+            "type": "boolean"
+          },
           "connector_ids": {
             "items": {
               "format": "uuid",
@@ -1637,6 +1701,13 @@
             "title": "Doc Top K",
             "type": "integer"
           },
+          "max_facts_per_user": {
+            "default": 500,
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Max Facts Per User",
+            "type": "integer"
+          },
           "memory_enabled": {
             "default": true,
             "title": "Memory Enabled",
@@ -1648,6 +1719,13 @@
             "minimum": 0.0,
             "title": "Memory Max Tokens",
             "type": "integer"
+          },
+          "memory_min_score": {
+            "default": 0.3,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Memory Min Score",
+            "type": "number"
           },
           "memory_top_k": {
             "default": 8,
@@ -1697,6 +1775,200 @@
         "title": "MemoryConfig",
         "type": "object"
       },
+      "MemoryFactCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "kind": {
+            "default": "fact",
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "MemoryFactCreateRequest",
+        "type": "object"
+      },
+      "MemoryFactResponse": {
+        "properties": {
+          "confidence": {
+            "title": "Confidence",
+            "type": "number"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "end_user_id": {
+            "format": "uuid",
+            "title": "End User Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "source_log_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Log Id"
+          },
+          "superseded_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded At"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "end_user_id",
+          "text",
+          "kind",
+          "confidence",
+          "source_log_id",
+          "superseded_at",
+          "expires_at",
+          "created_at",
+          "last_seen_at"
+        ],
+        "title": "MemoryFactResponse",
+        "type": "object"
+      },
+      "MemoryFactUpdateRequest": {
+        "additionalProperties": false,
+        "description": "Partial. See the module docstring on ``expires_at`` and ``null``.",
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "superseded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "title": "MemoryFactUpdateRequest",
+        "type": "object"
+      },
       "MemoryPreviewRequest": {
         "additionalProperties": false,
         "description": "A question to try, optionally against settings that have not been saved.\n\n``memory_config`` is the same partial blob ``PATCH`` accepts and is merged the same\nway, so the tuning loop is: change a number, press Try, read the scores \u2014 without\nchanging what live callers of this endpoint are getting between attempts.",
@@ -1724,6 +1996,85 @@
           "query"
         ],
         "title": "MemoryPreviewRequest",
+        "type": "object"
+      },
+      "MemoryPurgeResponse": {
+        "properties": {
+          "facts": {
+            "title": "Facts",
+            "type": "integer"
+          },
+          "transcripts": {
+            "title": "Transcripts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "facts",
+          "transcripts"
+        ],
+        "title": "MemoryPurgeResponse",
+        "type": "object"
+      },
+      "MemorySearchHit": {
+        "properties": {
+          "fact": {
+            "$ref": "#/components/schemas/MemoryFactResponse"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "fact",
+          "score"
+        ],
+        "title": "MemorySearchHit",
+        "type": "object"
+      },
+      "MemorySearchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 10,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "MemorySearchRequest",
+        "type": "object"
+      },
+      "MemorySearchResponse": {
+        "properties": {
+          "embedding_model": {
+            "title": "Embedding Model",
+            "type": "string"
+          },
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/MemorySearchHit"
+            },
+            "title": "Hits",
+            "type": "array"
+          }
+        },
+        "required": [
+          "hits",
+          "embedding_model"
+        ],
+        "title": "MemorySearchResponse",
         "type": "object"
       },
       "ModelCard": {
@@ -2569,6 +2920,33 @@
         "title": "Page[DocumentResponse]",
         "type": "object"
       },
+      "Page_EndUserResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EndUserResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[EndUserResponse]",
+        "type": "object"
+      },
       "Page_GatewayResponse_": {
         "properties": {
           "items": {
@@ -2648,6 +3026,33 @@
           "items"
         ],
         "title": "Page[MemberResponse]",
+        "type": "object"
+      },
+      "Page_MemoryFactResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryFactResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[MemoryFactResponse]",
         "type": "object"
       },
       "Page_ModelResponse_": {
@@ -4819,6 +5224,382 @@
         ]
       }
     },
+    "/api/v1/end-users": {
+      "get": {
+        "description": "Everyone this organization's gateways have seen, newest first.",
+        "operationId": "list_end_users_api_v1_end_users_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_EndUserResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List End Users",
+        "tags": [
+          "end-users"
+        ]
+      }
+    },
+    "/api/v1/end-users/{end_user_id}": {
+      "get": {
+        "operationId": "get_end_user_api_v1_end_users__end_user_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "end_user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "End User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get End User",
+        "tags": [
+          "end-users"
+        ]
+      }
+    },
+    "/api/v1/end-users/{end_user_id}/memory": {
+      "delete": {
+        "description": "SPEC \u00a76.5's right to erasure: every fact, every vector, optionally the transcripts.\n\nThe end-user row itself stays. It is what makes an existing request log say who a\nrequest belonged to, and removing it would rewrite the record of things that happened\nrather than forget what was learned from them.\n\n``include_transcripts`` is a query parameter rather than a body: a DELETE with a body\nis legal and unevenly supported \u2014 intermediaries drop it \u2014 and a flag silently lost in\ntransit on an erasure endpoint is the wrong thing to be clever about.",
+        "operationId": "purge_memory_api_v1_end_users__end_user_id__memory_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "end_user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "End User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_transcripts",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Transcripts",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryPurgeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Purge Memory",
+        "tags": [
+          "end-users"
+        ]
+      },
+      "get": {
+        "description": "What the assistant believes about this person.\n\nSuperseded and expired facts are included unless ``live_only`` is set: the browser's\njob includes explaining an answer the assistant gave last month, and the fact that\nexplains it is usually the one that has since been replaced.",
+        "operationId": "list_memory_api_v1_end_users__end_user_id__memory_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "end_user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "End User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "live_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Live Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 200,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MemoryFactResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Memory",
+        "tags": [
+          "end-users"
+        ]
+      },
+      "post": {
+        "description": "Write a fact by hand.\n\nWhat makes conversation memory demonstrable before task 13's distillation exists, and\nwhat stays afterwards: \"it keeps forgetting we are in the EU\" needs an answer that is\nnot \"wait for the next distillation pass\".",
+        "operationId": "create_memory_fact_api_v1_end_users__end_user_id__memory_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "end_user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "End User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryFactCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryFactResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Memory Fact",
+        "tags": [
+          "end-users"
+        ]
+      }
+    },
+    "/api/v1/end-users/{end_user_id}/memory/search": {
+      "post": {
+        "description": "Semantic search over one person's memory \u2014 the same search a request runs.\n\nA POST rather than a GET because the query is free text that would otherwise sit in a\nURL, and a URL is the one place a query about a named individual should not be: it\nreaches the access log, the browser's history and any proxy in between.",
+        "operationId": "search_memory_api_v1_end_users__end_user_id__memory_search_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "end_user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "End User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemorySearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemorySearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Memory",
+        "tags": [
+          "end-users"
+        ]
+      }
+    },
     "/api/v1/gateways": {
       "get": {
         "operationId": "list_gateways_api_v1_gateways_get",
@@ -5971,6 +6752,95 @@
         "summary": "Update Member",
         "tags": [
           "directory"
+        ]
+      }
+    },
+    "/api/v1/memory-facts/{fact_id}": {
+      "delete": {
+        "description": "The row and its vector. Synchronous: it is two small deletes and somebody is\nlooking at the fact they just removed.",
+        "operationId": "delete_memory_fact_api_v1_memory_facts__fact_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Fact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Memory Fact",
+        "tags": [
+          "end-users"
+        ]
+      },
+      "patch": {
+        "description": "Correct a fact, retract it, or bring it back.",
+        "operationId": "update_memory_fact_api_v1_memory_facts__fact_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Fact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryFactUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryFactResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Memory Fact",
+        "tags": [
+          "end-users"
         ]
       }
     },

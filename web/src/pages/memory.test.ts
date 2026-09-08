@@ -6,7 +6,9 @@ import {
   attachable,
   connectorLabel,
   contextUsage,
+  conversationSummary,
   formatScore,
+  identityWarning,
   memoryBody,
   memoryChanged,
   memoryForm,
@@ -60,9 +62,27 @@ describe('the memory form', () => {
     })
   })
 
-  it('sends only the document half, so task 12 can own the rest of the blob', () => {
-    // The server deep-merges, so a key this form does not send is a key it cannot wipe.
-    expect(Object.keys(memoryBody(memoryForm(stored)))).not.toContain('memory_top_k')
+  it('sends both halves of memory, because this section now renders both', () => {
+    expect(memoryBody(memoryForm(stored))).toMatchObject({
+      memory_enabled: true,
+      memory_top_k: 8,
+      memory_max_tokens: 600,
+      memory_min_score: 0.3,
+      allow_anonymous_memory: false,
+      max_facts_per_user: 500,
+    })
+  })
+
+  it('still sends a partial, so a field a later task adds is not wiped', () => {
+    // The server deep-merges, so a key this form does not send is a key it cannot reset.
+    expect(Object.keys(memoryBody(memoryForm(stored)))).not.toContain('dedupe_threshold')
+  })
+
+  it('notices a change to the conversation-memory half', () => {
+    const form = memoryForm(stored)
+
+    expect(memoryChanged({ ...form, memoryEnabled: false }, stored)).toBe(true)
+    expect(memoryChanged({ ...form, memoryTopK: '3' }, stored)).toBe(true)
   })
 
   it('sees no change when nothing was typed', () => {
@@ -227,5 +247,51 @@ describe('the connector list', () => {
     expect(
       connectorLabel(makeConnector({ document_count: 2, counts: { embedding: 2 } })),
     ).toContain('none indexed yet')
+  })
+})
+
+describe('the conversation-memory warning', () => {
+  const base = memoryForm(stored)
+
+  it('says nothing when memory is switched off', () => {
+    expect(identityWarning({ ...base, memoryEnabled: false })).toBeNull()
+  })
+
+  it('names the header when memory is on and only identified callers count', () => {
+    // The silent failure it prevents: memory enabled, every caller anonymous, nothing
+    // ever stored, and no error anywhere.
+    const warning = identityWarning({ ...base, memoryEnabled: true })
+
+    expect(warning).toContain('X-Gateway-User')
+  })
+
+  it('says nothing once anonymous callers are remembered too', () => {
+    const form = { ...base, memoryEnabled: true, allowAnonymousMemory: true }
+
+    expect(identityWarning(form)).toBeNull()
+  })
+})
+
+describe('conversationSummary', () => {
+  const base = memoryForm(stored)
+
+  it('says what "off" means rather than only that it is off', () => {
+    expect(conversationSummary({ ...base, memoryEnabled: false })).toContain(
+      'Nothing is recalled',
+    )
+  })
+
+  it('names the budget and what happens to unidentified callers', () => {
+    const line = conversationSummary(base)
+
+    expect(line).toContain('8 facts')
+    expect(line).toContain('600 tokens')
+    expect(line).toContain('not remembered at all')
+  })
+
+  it('changes when anonymous callers are allowed', () => {
+    const line = conversationSummary({ ...base, allowAnonymousMemory: true })
+
+    expect(line).toContain('API key and address')
   })
 })

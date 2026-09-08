@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from app.api.proxy.deps import (
     get_authenticator,
+    get_end_users,
     get_memory,
     get_request_logs,
     get_resolver,
@@ -34,7 +35,9 @@ from app.core import keys
 from app.core.logging import get_request_id
 from app.schemas.openai import ChatRequest, ModelCard, ModelList
 from app.services.api_keys import AuthenticatedKey, KeyAuthenticator
-from app.services.end_user import end_user_key
+from app.services.end_user import EndUserIdentity, resolve_identity, session_key
+from app.services.end_user_resolver import EndUserResolver, ResolvedEndUser
+from app.services.facts import ANONYMOUS_NOT_ALLOWED, NO_IDENTITY
 from app.services.gateway_resolver import GatewayResolver, ResolvedGateway
 from app.services.proxy import Prepared
 from app.services.request_log import RequestLogService, RequestRecorder, StreamRecorder
@@ -58,6 +61,11 @@ MEMORY_OFF = "off"
 #: "why did it not use my documents".
 CHUNKS_HEADER = "X-Gateway-Memory-Chunks"
 RETRIEVAL_MS_HEADER = "X-Gateway-Retrieval-Ms"
+#: How many durable facts about this caller went into the prompt. Present only when
+#: conversation memory actually ran, so its absence answers "why does it not know me" with
+#: the same evidence its presence gives: nobody identified the caller, or this gateway has
+#: memory switched off.
+FACTS_HEADER = "X-Gateway-Memory-Facts"
 #: Names the locked parameters that replaced a value the client asked for. Present only
 #: when something was actually overridden — a header on every response would be noise,
 #: and the one case it matters is a caller wondering why `temperature` had no effect.
@@ -68,6 +76,7 @@ Authenticator = Annotated[KeyAuthenticator, Depends(get_authenticator)]
 Routing = Annotated[Router, Depends(get_router)]
 Logs = Annotated[RequestLogService, Depends(get_request_logs)]
 Memory = Annotated[MemoryService, Depends(get_memory)]
+EndUsers = Annotated[EndUserResolver, Depends(get_end_users)]
 
 
 @router.post("/chat/completions")
@@ -79,6 +88,7 @@ async def chat_completions(
     router_: Routing,
     logs: Logs,
     memory: Memory,
+    end_users: EndUsers,
 ) -> Response:
     """Forward a chat completion, streaming or not."""
     key, gateway = await _authorize(request, slug, resolver, authenticator)
@@ -108,18 +118,35 @@ async def chat_completions(
                 f"This gateway exposes '{gateway.virtual_model}'."
             )
 
+        # Who is asking (SPEC §6.2). Before routing, because sticky A/B selection hashes
+        # the same identity, and before recall, because recall needs the row this creates.
+        identity = _identify(chat, request, gateway, key)
+        who = await end_users.resolve(organization_id=gateway.organization_id, identity=identity)
+        recorder.end_user(
+            end_user_id=who.id if who is not None else None,
+            session_id=session_key(
+                chat.messages,
+                request.headers,
+                external_id=identity.external_id if identity is not None else None,
+            ),
+        )
+
         # Which upstream, and what happens when it does not answer (SPEC §8.1). Resolved
         # before any time is spent so that a misconfigured gateway fails identically in
         # all three modes, and so the attempt list is fixed before the first call.
-        routing = plan(gateway, end_user_key=end_user_key(chat, request.headers))
+        #
+        # The *explicit* identity only: an IP-derived id moves when somebody changes
+        # network, and a caller who slid from A to B mid-experiment is the one thing
+        # sticky routing exists to prevent. See `app.services.end_user`.
+        routing = plan(gateway, end_user_key=_sticky_key(identity))
 
         # Memory, once for the whole request — before routing, because every attempt in a
         # failover chain assembles the same retrieved documents into a different prompt.
-        recall = await _recall(memory, gateway, chat, request.headers)
-        recorder.retrieval(latency_ms=recall.documents.latency_ms if _ran(recall) else None)
+        recall = await _recall(memory, gateway, chat, request.headers, who=who, identity=identity)
+        recorder.retrieval(latency_ms=recall.latency_ms if recall.attempted else None)
         # SPEC §6.3. Raised here rather than inside the retriever so the editor can render
-        # the same failure as a diagnostic instead of a 503 — see `app.services.retrieval`.
-        recall.documents.enforce(gateway.memory.on_retrieval_error)
+        # the same failure as a diagnostic instead of a 503.
+        recall.enforce(gateway.memory.on_retrieval_error)
 
         recorder.upstream_call_started()
         if chat.stream:
@@ -201,16 +228,38 @@ def _headers(prepared: Prepared, recall: Recall) -> dict[str, str]:
         # difference between "this endpoint ignores temperature" as a bug report and as a
         # documented policy the caller can read off the response.
         headers[LOCKED_HEADER] = ",".join(prepared.params.overridden)
-    if _ran(recall):
+    if recall.documents.attempted:
         # Zero is a real and useful value here: retrieval looked and found nothing above
         # the score floor. Absent means it never looked.
         headers[CHUNKS_HEADER] = str(prepared.injected_chunks)
-        headers[RETRIEVAL_MS_HEADER] = str(recall.documents.latency_ms)
+    if recall.memory.attempted:
+        headers[FACTS_HEADER] = str(prepared.injected_facts)
+    if recall.attempted:
+        # The wall clock for both halves together, which is the number the caller waited.
+        headers[RETRIEVAL_MS_HEADER] = str(recall.latency_ms)
     return headers
 
 
-def _ran(recall: Recall) -> bool:
-    return recall.documents.attempted
+def _identify(
+    chat: ChatRequest,
+    request: Request,
+    gateway: ResolvedGateway,
+    key: AuthenticatedKey,
+) -> EndUserIdentity | None:
+    """SPEC §6.2, with the anonymous fallback gated on this gateway's setting."""
+    return resolve_identity(
+        chat,
+        request.headers,
+        api_key_id=key.id,
+        client_ip=request.client.host if request.client else None,
+        allow_anonymous=gateway.memory.allow_anonymous_memory,
+    )
+
+
+def _sticky_key(identity: EndUserIdentity | None) -> str | None:
+    if identity is None or identity.anonymous:
+        return None
+    return identity.external_id
 
 
 async def _recall(
@@ -218,13 +267,18 @@ async def _recall(
     gateway: ResolvedGateway,
     chat: ChatRequest,
     headers: Mapping[str, str],
+    *,
+    who: ResolvedEndUser | None,
+    identity: EndUserIdentity | None,
 ) -> Recall:
     """Everything the memory subsystem found, or nothing because the caller said so.
 
     ``X-Gateway-Memory: off`` short-circuits before the call rather than discarding the
     result afterwards. That is what makes the A/B honest: the comparison is between a
     request that paid for retrieval and one that did not, so the latency difference is
-    part of what is being measured.
+    part of what is being measured. It suppresses **both** halves — documents and facts —
+    because the question it exists to answer is "what does memory contribute", and an
+    answer that still carried what the gateway knows about this person would not be it.
     """
     if headers.get(MEMORY_HEADER, "").strip().lower() == MEMORY_OFF:
         return Recall()
@@ -232,7 +286,21 @@ async def _recall(
         organization_id=gateway.organization_id,
         config=gateway.memory,
         messages=chat.messages,
+        end_user_id=who.id if who is not None else None,
+        identity_reason=_why_no_identity(identity, gateway),
     )
+
+
+def _why_no_identity(identity: EndUserIdentity | None, gateway: ResolvedGateway) -> str:
+    """Which of the two "nobody to remember" cases this is.
+
+    Only the route can tell them apart, and they need different fixes: one is the
+    customer's integration not sending ``X-Gateway-User``, the other is this gateway
+    declining to keep memory about an unidentified caller.
+    """
+    if identity is not None or gateway.memory.allow_anonymous_memory:
+        return NO_IDENTITY
+    return ANONYMOUS_NOT_ALLOWED
 
 
 def _record_prompt(recorder: RequestRecorder) -> Callable[[Prepared], None]:
@@ -250,6 +318,7 @@ def _record_prompt(recorder: RequestRecorder) -> Callable[[Prepared], None]:
             recorder.injected(
                 tokens=prepared.assembly.memory_tokens,
                 chunks=prepared.assembly.chunk_log(),
+                facts=prepared.assembly.fact_log(),
             )
 
     return record

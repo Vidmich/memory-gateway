@@ -15,7 +15,9 @@ import {
   attachable,
   connectorLabel,
   contextUsage,
+  conversationSummary,
   formatScore,
+  identityWarning,
   memoryBody,
   memoryProblem,
   memoryWarning,
@@ -256,10 +258,155 @@ export function MemorySection({
         </Field>
       </div>
 
+      <ConversationMemory form={form} set={set} />
+
       {problem ? <p className="mb-4 text-sm text-red-700">{problem}</p> : null}
 
       <TryRetrieval gatewayId={gatewayId} form={form} stored={stored} disabled={problem !== null} />
     </section>
+  )
+}
+
+/**
+ * The other half of memory: what this endpoint remembers about the person asking.
+ *
+ * Folded into the same section rather than given its own, because the two are one budget
+ * and one timeout from the caller's point of view — and because the question somebody
+ * arrives with is "what goes into the prompt", which both halves answer.
+ *
+ * The identity warning is the important control here and it is *conditional on nothing
+ * this screen can see*. A gateway cannot tell whether the customer's application sends
+ * `X-Gateway-User`; what it can do is say plainly that memory does nothing without one,
+ * at the moment somebody switches it on. The silent failure it prevents — memory enabled,
+ * every caller anonymous, nothing ever stored, no error anywhere — is the kind that is
+ * diagnosed weeks later as "the memory feature does not work".
+ */
+function ConversationMemory({
+  form,
+  set,
+}: {
+  form: MemoryForm
+  set: <K extends keyof MemoryForm>(key: K, value: MemoryForm[K]) => void
+}) {
+  const warning = identityWarning(form)
+
+  return (
+    <div className="mb-4 rounded-md border border-slate-200 p-4">
+      <label className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          checked={form.memoryEnabled}
+          onChange={(event) => set('memoryEnabled', event.target.checked)}
+          className="mt-1 rounded border-slate-300"
+        />
+        <span>
+          <span className="text-sm font-medium text-slate-700">
+            Remember the person asking
+          </span>
+          <span className="block text-xs text-slate-500">{conversationSummary(form)}</span>
+        </span>
+      </label>
+
+      {form.memoryEnabled ? (
+        <>
+          {warning ? (
+            <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              {warning}
+            </p>
+          ) : null}
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            <Field
+              name="memory_config.memory_top_k"
+              label="Facts to recall"
+              hint="How many are fetched before the token budget cuts them down."
+            >
+              {(props) => (
+                <TextInput
+                  {...props}
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={form.memoryTopK}
+                  onChange={(event) => set('memoryTopK', event.target.value)}
+                />
+              )}
+            </Field>
+            <Field
+              name="memory_config.memory_min_score"
+              label="Minimum fact score"
+              hint="Lower than the document floor on purpose: a fact is one sentence and shares far less wording with a question than a chunk does."
+            >
+              {(props) => (
+                <TextInput
+                  {...props}
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  max={1}
+                  value={form.memoryMinScore}
+                  onChange={(event) => set('memoryMinScore', event.target.value)}
+                />
+              )}
+            </Field>
+            <Field
+              name="memory_config.memory_max_tokens"
+              label="Memory token budget"
+              hint="A hard cap on the whole block. Documents are truncated first, then this."
+            >
+              {(props) => (
+                <TextInput
+                  {...props}
+                  type="number"
+                  min={0}
+                  value={form.memoryMaxTokens}
+                  onChange={(event) => set('memoryMaxTokens', event.target.value)}
+                />
+              )}
+            </Field>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              name="memory_config.max_facts_per_user"
+              label="Facts kept per person"
+              hint="Past this, the lowest-scoring facts are evicted. A memory of more than a few hundred sentences has stopped being memory."
+            >
+              {(props) => (
+                <TextInput
+                  {...props}
+                  type="number"
+                  min={1}
+                  max={10000}
+                  value={form.maxFactsPerUser}
+                  onChange={(event) => set('maxFactsPerUser', event.target.value)}
+                />
+              )}
+            </Field>
+            <div className="mb-4 self-end">
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.allowAnonymousMemory}
+                  onChange={(event) => set('allowAnonymousMemory', event.target.checked)}
+                  className="mt-1 rounded border-slate-300"
+                />
+                <span>
+                  <span className="text-sm font-medium text-slate-700">
+                    Remember unidentified callers too
+                  </span>
+                  <span className="block text-xs text-slate-500">
+                    Identifies them by API key and IP address. Everyone behind one office
+                    network becomes one person, and one person on two networks becomes two.
+                    Off unless you have decided you want that.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+        </>
+      ) : null}
+    </div>
   )
 }
 

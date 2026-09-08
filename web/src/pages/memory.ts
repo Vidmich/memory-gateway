@@ -19,6 +19,15 @@ export type MemoryForm = {
   queryNTurns: string
   retrievalTimeoutMs: string
   onRetrievalError: string
+  // Conversation memory (SPEC §6.1 B). Booleans stay booleans rather than becoming
+  // strings like the rest: a checkbox holds one, and round-tripping it through "true"
+  // is where a form quietly starts saving the string.
+  memoryEnabled: boolean
+  memoryTopK: string
+  memoryMaxTokens: string
+  memoryMinScore: string
+  allowAnonymousMemory: boolean
+  maxFactsPerUser: string
 }
 
 /** Mirrors the server's `MemoryConfig` bounds. Kept in step by `memory.test.ts`. */
@@ -28,6 +37,7 @@ export const LIMITS = {
   maxTokens: { min: 0, max: 100_000 },
   nTurns: { min: 1, max: 20 },
   timeoutMs: { min: 50, max: 5000 },
+  factsPerUser: { min: 1, max: 10_000 },
 } as const
 
 export function memoryForm(config: MemoryConfig): MemoryForm {
@@ -40,13 +50,21 @@ export function memoryForm(config: MemoryConfig): MemoryForm {
     queryNTurns: String(config.query_n_turns ?? 3),
     retrievalTimeoutMs: String(config.retrieval_timeout_ms ?? 800),
     onRetrievalError: config.on_retrieval_error ?? 'fail_open',
+    memoryEnabled: config.memory_enabled ?? true,
+    memoryTopK: String(config.memory_top_k ?? 8),
+    memoryMaxTokens: String(config.memory_max_tokens ?? 600),
+    memoryMinScore: String(config.memory_min_score ?? 0.3),
+    allowAnonymousMemory: config.allow_anonymous_memory ?? false,
+    maxFactsPerUser: String(config.max_facts_per_user ?? 500),
   }
 }
 
 /**
- * The partial blob to send. Only the document half — the conversation-memory knobs
- * belong to task 12 and are deep-merged server-side, so not sending them is how this
- * section avoids overwriting a section it does not render.
+ * The blob to send: both halves of memory, because this section now renders both.
+ *
+ * Still a *partial* — it is deep-merged server-side by the same function the save path
+ * uses — so a field added in a later task is carried through untouched rather than reset
+ * to its default by a form that has never heard of it.
  */
 export function memoryBody(form: MemoryForm): Record<string, unknown> {
   return {
@@ -58,6 +76,12 @@ export function memoryBody(form: MemoryForm): Record<string, unknown> {
     query_n_turns: Number(form.queryNTurns),
     retrieval_timeout_ms: Number(form.retrievalTimeoutMs),
     on_retrieval_error: form.onRetrievalError,
+    memory_enabled: form.memoryEnabled,
+    memory_top_k: Number(form.memoryTopK),
+    memory_max_tokens: Number(form.memoryMaxTokens),
+    memory_min_score: Number(form.memoryMinScore),
+    allow_anonymous_memory: form.allowAnonymousMemory,
+    max_facts_per_user: Number(form.maxFactsPerUser),
   }
 }
 
@@ -117,6 +141,26 @@ export function memoryProblem(form: MemoryForm): string | null {
   ) {
     return `Retrieval timeout is between ${LIMITS.timeoutMs.min} and ${LIMITS.timeoutMs.max} ms.`
   }
+  const facts = Number(form.memoryTopK)
+  if (!Number.isInteger(facts) || facts < LIMITS.topK.min || facts > LIMITS.topK.max) {
+    return `Facts to recall is between ${LIMITS.topK.min} and ${LIMITS.topK.max}.`
+  }
+  const factScore = Number(form.memoryMinScore)
+  if (!Number.isFinite(factScore) || factScore < 0 || factScore > 1) {
+    return 'Minimum fact score is a cosine similarity between 0 and 1.'
+  }
+  const factTokens = Number(form.memoryMaxTokens)
+  if (!Number.isInteger(factTokens) || factTokens < LIMITS.maxTokens.min) {
+    return 'Memory token budget is a whole number of tokens.'
+  }
+  const cap = Number(form.maxFactsPerUser)
+  if (
+    !Number.isInteger(cap) ||
+    cap < LIMITS.factsPerUser.min ||
+    cap > LIMITS.factsPerUser.max
+  ) {
+    return `Facts kept per person is between ${LIMITS.factsPerUser.min} and ${LIMITS.factsPerUser.max}.`
+  }
   return null
 }
 
@@ -139,6 +183,33 @@ export function memoryWarning(form: MemoryForm): string | null {
     return 'A minimum score this high rejects almost everything. If Try retrieval comes back empty, this is usually why.'
   }
   return null
+}
+
+/**
+ * The warning the work item asks for: memory is on, and nothing will ever be remembered.
+ *
+ * Conversation memory needs an *identity*, and the identity comes from the caller — a
+ * header or the OpenAI `user` field. This gateway cannot tell whether the integration
+ * sends one, so the honest warning is conditional: it says what has to be true on the
+ * other side, and names the switch that would otherwise be needed. Without it, the
+ * failure is silent — memory is enabled, every request is anonymous, nothing is ever
+ * stored, and no screen says why.
+ */
+export function identityWarning(form: MemoryForm): string | null {
+  if (!form.memoryEnabled) return null
+  if (form.allowAnonymousMemory) return null
+  return 'Conversation memory only applies to callers your application identifies. Send X-Gateway-User (or the OpenAI “user” field) with each request, or nothing will ever be remembered.'
+}
+
+/** What conversation memory will actually do, in one sentence. */
+export function conversationSummary(form: MemoryForm): string {
+  if (!form.memoryEnabled) {
+    return 'Off. Nothing is recalled about the person asking, and nothing new is learned.'
+  }
+  const anonymous = form.allowAnonymousMemory
+    ? 'Unidentified callers are remembered by API key and address.'
+    : 'Unidentified callers are not remembered at all.'
+  return `Up to ${form.memoryTopK} facts, capped at ${form.memoryMaxTokens} tokens. ${anonymous}`
 }
 
 /** A cosine similarity, as two decimals. `0.7100000000000001` in a table is noise. */

@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
+from app.services.facts import Fact
 from app.services.retrieval import Chunk
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
@@ -63,4 +65,27 @@ def chunk(
     )
 
 
-__all__ = ["GOLDEN_DIR", "UPDATE", "assert_golden", "chunk"]
+def fact(
+    text: str,
+    *,
+    kind: str = "preference",
+    confidence: float = 1.0,
+    similarity: float = 0.7,
+    score: float | None = None,
+    always: bool = False,
+    identifier: str = "33333333-3333-5333-8333-333333333333",
+) -> Fact:
+    """A recalled fact, with stable ids so a golden file is reproducible."""
+    return Fact(
+        id=identifier,
+        text=text,
+        kind=kind,
+        confidence=confidence,
+        similarity=similarity,
+        score=similarity * confidence if score is None else score,
+        always=always,
+        last_seen_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+
+
+__all__ = ["GOLDEN_DIR", "UPDATE", "assert_golden", "chunk", "fact"]

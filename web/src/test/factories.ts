@@ -16,11 +16,14 @@ import type {
   CurrentUser,
   DocumentChunk,
   DocumentResponse,
+  EndUserResponse,
   GatewayResponse,
   GatewayTestResponse,
   InvitationResponse,
   IssuedApiKeyResponse,
   MemberResponse,
+  MemoryFactResponse,
+  MemorySearchHit,
   ModelResponse,
   OrganizationResponse,
   ProbeResponse,
@@ -195,6 +198,9 @@ export function makeGateway(overrides: Partial<GatewayResponse> = {}): GatewayRe
       memory_enabled: true,
       memory_top_k: 8,
       memory_max_tokens: 600,
+      memory_min_score: 0.3,
+      allow_anonymous_memory: false,
+      max_facts_per_user: 500,
       query_strategy: 'last_user_message',
       query_n_turns: 3,
       retrieval_timeout_ms: 800,
@@ -500,6 +506,48 @@ export function makePromptPreview(
     model_name: 'acme-gpt',
     overflowed: false,
     retrieval: makeRetrievalPreview(),
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// end users and their memory (task 12)
+// ---------------------------------------------------------------------------
+
+export function makeEndUser(overrides: Partial<EndUserResponse> = {}): EndUserResponse {
+  return {
+    id: 'eu1',
+    external_id: 'alice',
+    label: null,
+    first_seen_at: NOW,
+    last_seen_at: NOW,
+    request_count: 12,
+    fact_count: 2,
+    anonymous: false,
+    ...overrides,
+  }
+}
+
+export function makeFact(overrides: Partial<MemoryFactResponse> = {}): MemoryFactResponse {
+  return {
+    id: 'f1',
+    end_user_id: 'eu1',
+    text: 'Works in the EU and needs GDPR-compliant answers.',
+    kind: 'constraint',
+    confidence: 1.0,
+    source_log_id: null,
+    superseded_at: null,
+    expires_at: null,
+    created_at: NOW,
+    last_seen_at: NOW,
+    ...overrides,
+  }
+}
+
+export function makeMemoryHit(overrides: Partial<MemorySearchHit> = {}): MemorySearchHit {
+  return {
+    fact: makeFact(),
+    score: 0.71,
     ...overrides,
   }
 }

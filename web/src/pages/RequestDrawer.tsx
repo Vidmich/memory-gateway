@@ -16,9 +16,11 @@ import {
     contentOf,
     countInjected,
     droppedReason,
+    recalledFacts,
     retrievedChunks,
     roleOf,
     toneFor,
+    type RecalledFact,
     type RetrievedChunk,
 } from '@/pages/requestDetail'
 
@@ -232,6 +234,7 @@ function Detail({
           subtitle="What retrieval found for this request, and what became of it."
         >
           <Retrieved log={log} entries={detail.retrieved_chunk_ids} />
+          <Recalled log={log} entries={detail.retrieved_fact_ids} />
         </Panel>
       </div>
     </>
@@ -289,6 +292,94 @@ function Retrieved({
     </>
   )
 }
+
+/**
+ * The facts recalled about the end user, with what happened to each.
+ *
+ * Separate from the chunks above rather than merged into one list, because they answer
+ * different questions: "what did it read" and "what does it know about me". Merging them
+ * would also make the scores incomparable — a chunk's is cosine similarity, a fact's is
+ * similarity multiplied by confidence and recency.
+ */
+function Recalled({
+  log,
+  entries,
+}: {
+  log: RequestLogResponse
+  entries: readonly unknown[]
+}) {
+  const facts = recalledFacts(entries)
+
+  if (log.end_user_id === null) {
+    return (
+      <p className="mt-4 border-t border-slate-200 pt-4 text-sm text-slate-500">
+        This request identified no end user, so no conversation memory was recalled. Send
+        <code className="mx-1 font-mono">X-Gateway-User</code> to attribute it to somebody.
+      </p>
+    )
+  }
+
+  if (facts.length === 0) {
+    return (
+      <p className="mt-4 border-t border-slate-200 pt-4 text-sm text-slate-700">
+        Nothing is stored about this end user yet, so the prompt carried no facts about
+        them.{' '}
+        <Link to={`/memory/${log.end_user_id}`} className="font-medium underline">
+          Open their memory
+        </Link>
+      </p>
+    )
+  }
+
+  const injected = facts.filter((fact) => fact.injected).length
+  return (
+    <div className="mt-4 border-t border-slate-200 pt-4">
+      <p className="text-sm text-slate-700">
+        {injected} of {facts.length} fact{facts.length === 1 ? '' : 's'} about this end
+        user injected ·{' '}
+        <Link to={`/memory/${log.end_user_id}`} className="font-medium underline">
+          open their memory
+        </Link>
+      </p>
+      <ol className="mt-2 space-y-1">
+        {facts.map((fact, index) => (
+          <FactRow key={`${fact.id}-${index}`} fact={fact} />
+        ))}
+      </ol>
+    </div>
+  )
+}
+
+function FactRow({ fact }: { fact: RecalledFact }) {
+  const reason = droppedReason(fact.dropped)
+  return (
+    <li
+      className={`rounded-md border p-2 text-xs ${
+        fact.injected
+          ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+          : 'border-slate-200 bg-slate-50 text-slate-500'
+      }`}
+    >
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="font-mono tabular-nums">
+          {fact.score === null ? '—' : fact.score.toFixed(2)}
+        </span>
+        <span className="min-w-0 flex-1">{fact.text}</span>
+        {fact.always ? (
+          <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-medium text-emerald-800">
+            always included
+          </span>
+        ) : null}
+        {fact.injected ? null : (
+          <span className="rounded bg-slate-200 px-1.5 py-0.5 font-medium text-slate-700">
+            dropped{reason ? ` — ${reason}` : ''}
+          </span>
+        )}
+      </div>
+    </li>
+  )
+}
+
 
 function ChunkRow({ chunk }: { chunk: RetrievedChunk }) {
   const reason = droppedReason(chunk.dropped)

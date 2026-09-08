@@ -2,8 +2,10 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useReducer,
+  useRef,
   type ReactNode,
 } from 'react'
 
@@ -43,6 +45,19 @@ const VISIBLE_MS = 4000
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, dispatch] = useReducer(reducer, [])
+  //  Every pending auto-dismiss, so unmounting cancels them. Without this a toast raised
+  //  in the last second of a page's life dispatches into a tree that is no longer there —
+  //  harmless in a browser, and in a test runner an unhandled `window is not defined`
+  //  attributed to whichever file happened to be running when the timer fired.
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
+
+  useEffect(
+    () => () => {
+      timers.current.forEach(clearTimeout)
+      timers.current = []
+    },
+    [],
+  )
 
   const dismiss = useCallback((id: string) => dispatch({ type: 'dismiss', id }), [])
 
@@ -50,7 +65,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     (message: string, tone: ToastTone = 'success') => {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
       dispatch({ type: 'push', toast: { id, tone, message } })
-      setTimeout(() => dispatch({ type: 'dismiss', id }), VISIBLE_MS)
+      timers.current.push(setTimeout(() => dispatch({ type: 'dismiss', id }), VISIBLE_MS))
     },
     [],
   )

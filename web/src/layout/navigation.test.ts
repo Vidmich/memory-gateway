@@ -36,6 +36,15 @@ describe('navigation', () => {
     expect(labels(viewer)).toContain('Gateways')
   })
 
+  it('shows Memory to every role, including a viewer', () => {
+    // Reading what the assistant remembers about somebody is how a support question gets
+    // answered; needing the permission to reconfigure production for that would mean the
+    // person answering the ticket cannot.
+    const viewer = makeUser({ role: 'org_viewer', capabilities: ['org:read'] })
+
+    expect(labels(viewer)).toContain('Memory')
+  })
+
   it('shows nothing that needs a capability before the user is known', () => {
     expect(labels(null)).not.toContain('Organizations')
   })

@@ -12,7 +12,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.api.control import auth, connectors, directory, gateways, models, monitoring
+from app.api.control import (
+    auth,
+    connectors,
+    directory,
+    end_users,
+    gateways,
+    models,
+    monitoring,
+)
 from app.api.control.deps import require_identity
 
 API_PREFIX = "/api/v1"
@@ -32,6 +40,7 @@ authenticated_router.include_router(models.router)
 authenticated_router.include_router(gateways.router)
 authenticated_router.include_router(connectors.router)
 authenticated_router.include_router(monitoring.router)
+authenticated_router.include_router(end_users.router)
 
 
 def build_control_router() -> APIRouter:

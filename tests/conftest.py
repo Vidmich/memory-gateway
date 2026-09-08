@@ -38,6 +38,7 @@ from app.api.control.deps import (
     get_catalog_service,
     get_connector_service,
     get_directory_service,
+    get_end_user_service,
     get_gateway_service,
     get_memory_preview,
     get_monitoring_service,
@@ -45,15 +46,22 @@ from app.api.control.deps import (
 )
 from app.api.proxy.deps import (
     get_authenticator,
+    get_end_users,
     get_memory,
     get_request_logs,
     get_resolver,
 )
 from app.core.clients import Clients
 from app.core.config import Settings, get_settings
+from app.core.tenancy import TenantScope
 from app.main import create_app
 from app.services.embeddings import HashEmbedder
+from app.services.end_user_resolver import EndUserResolver, RequestCounters
+from app.services.end_user_store import FactDraft, MemoryEndUserStore
+from app.services.fact_vectors import FactPoint, MemoryFactVectorStore, fact_payload
+from app.services.facts import FactRecaller
 from app.services.gateway_resolver import ResolvedGateway
+from app.services.memory_db import MemoryDatabase
 from app.services.retrieval import MemoryService, Retriever
 from app.services.vector_store import ChunkPoint, MemoryVectorStore
 from tests.auth_support import PASSWORD, AuthFixture, build_auth
@@ -244,11 +252,61 @@ class MemoryFixture:
     Wired into every proxy harness rather than only the memory tests, so that the data
     plane never reaches for Qdrant even by accident — a gateway with connectors attached
     and no override would otherwise open a socket in the middle of a routing test.
+
+    Both halves, since task 12: the document index and the conversation-memory one, over
+    the same embedder. A proxy test that seeds a fact and a chunk is therefore exercising
+    the same ``asyncio.gather`` a real request runs, not one branch of it.
     """
 
     service: MemoryService
     vectors: MemoryVectorStore
     embedder: HashEmbedder
+    facts: MemoryFactVectorStore
+    end_users: MemoryEndUserStore
+    resolver: EndUserResolver
+    database: MemoryDatabase
+
+    async def learn(
+        self,
+        organization_id: uuid.UUID,
+        external_id: str,
+        *texts: str,
+        kind: str = "fact",
+        confidence: float = 1.0,
+    ) -> uuid.UUID:
+        """Remember some facts about somebody, the way the control plane would, and hand
+        back the end user's id."""
+        scope = TenantScope.of_organization(organization_id)
+        async with self.end_users.begin(scope) as transaction:
+            end_user = await transaction.touch(external_id)
+            rows = [
+                await transaction.add_fact(
+                    end_user, FactDraft(text=text, kind=kind, confidence=confidence)
+                )
+                for text in texts
+            ]
+            await transaction.commit()
+
+        await self.facts.ensure_collection(organization_id, dimension=MEMORY_DIMENSION)
+        vectors = await self.embedder.embed([row.text for row in rows])
+        await self.facts.upsert(
+            organization_id,
+            [
+                FactPoint(
+                    id=str(row.id),
+                    vector=list(vector),
+                    payload=fact_payload(
+                        organization_id=organization_id,
+                        end_user_id=end_user.id,
+                        kind=row.kind,
+                        confidence=float(row.confidence),
+                        created_at=row.created_at.timestamp(),
+                    ),
+                )
+                for row, vector in zip(rows, vectors, strict=True)
+            ],
+        )
+        return end_user.id
 
     async def index(
         self,
@@ -288,8 +346,23 @@ class MemoryFixture:
 def build_memory() -> MemoryFixture:
     embedder = HashEmbedder(dimension=MEMORY_DIMENSION, model="hash-bow")
     vectors = MemoryVectorStore()
+    facts = MemoryFactVectorStore()
+    database = MemoryDatabase()
+    end_users = MemoryEndUserStore(database)
     retriever = Retriever(embedder, vectors)
-    return MemoryFixture(service=MemoryService(retriever), vectors=vectors, embedder=embedder)
+    return MemoryFixture(
+        service=MemoryService(retriever, recaller=FactRecaller(embedder, facts, end_users)),
+        vectors=vectors,
+        embedder=embedder,
+        facts=facts,
+        end_users=end_users,
+        # No timer: a proxy test that cares about counters flushes by hand, and a loop
+        # running under the others is a source of ordering flakes.
+        resolver=EndUserResolver(
+            end_users, counters=RequestCounters(end_users, interval_seconds=3600.0)
+        ),
+        database=database,
+    )
 
 
 @dataclass
@@ -345,8 +418,10 @@ def build_proxy_app(
     # Same reasoning one service along: the real one talks to Qdrant. Defaulted rather
     # than required, so a test that has no interest in memory does not have to build one
     # — and still cannot reach a socket by forgetting to.
-    service = (memory or build_memory()).service
-    application.dependency_overrides[get_memory] = lambda: service
+    fixture = memory or build_memory()
+    application.dependency_overrides[get_memory] = lambda: fixture.service
+    # Same reasoning again: the real resolver writes an end-user row on first sight.
+    application.dependency_overrides[get_end_users] = lambda: fixture.resolver
     return application
 
 
@@ -473,6 +548,9 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     connectors = auth.connectors
     if connectors is not None:
         application.dependency_overrides[get_connector_service] = lambda: connectors.service
+    end_users = auth.end_users
+    if end_users is not None:
+        application.dependency_overrides[get_end_user_service] = lambda: end_users.service
     application.dependency_overrides[get_gateway_service] = lambda: auth.gateways
     preview = auth.preview
     if preview is not None:
@@ -497,6 +575,8 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
         application.state.catalog_service = fixture.catalog
         if fixture.connectors is not None:
             application.state.connector_service = fixture.connectors.service
+        if fixture.end_users is not None:
+            application.state.end_user_service = fixture.end_users.service
         application.state.gateway_service = fixture.gateways
         if fixture.preview is not None:
             application.state.memory_preview = fixture.preview
@@ -561,6 +641,8 @@ async def directory() -> AsyncIterator[DirectoryHarness]:
         application.state.catalog_service = world.catalog
         if world.auth.connectors is not None:
             application.state.connector_service = world.auth.connectors.service
+        if world.auth.end_users is not None:
+            application.state.end_user_service = world.auth.end_users.service
         application.state.gateway_service = world.gateways
         if world.auth.preview is not None:
             application.state.memory_preview = world.auth.preview

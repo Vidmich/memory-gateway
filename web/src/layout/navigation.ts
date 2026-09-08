@@ -35,6 +35,10 @@ export const NAVIGATION: readonly NavEntry[] = [
   // Readable by every role: the person triaging a support ticket should not need the
   // permission to reconfigure production in order to answer it.
   { to: '/monitoring', label: 'Monitoring' },
+  // What the assistant remembers about the people on the far side of a customer's app.
+  // Same reasoning again: reading it is how a support question gets answered, and the
+  // write controls inside the screen are what `resources:write` gates.
+  { to: '/memory', label: 'Memory' },
   { to: '/settings', label: 'Organization', section: 'Settings' },
   { to: '/settings/members', label: 'Members' },
   {

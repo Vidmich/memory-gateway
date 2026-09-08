@@ -268,7 +268,7 @@ class QdrantVectorStore:
         if not await self._client.collection_exists(name):
             return None
         info = await self._client.get_collection(name)
-        size = _vector_size(info)
+        size = vector_size(info)
         if size is not None:
             self._widths[name] = size
         return size
@@ -356,7 +356,7 @@ class QdrantVectorStore:
         return int(result.count)
 
 
-def _vector_size(info: Any) -> int | None:
+def vector_size(info: Any) -> int | None:
     """The width out of a Qdrant ``CollectionInfo``, whichever shape it is in.
 
     A collection can be configured with a single unnamed vector or a mapping of named
@@ -447,7 +447,7 @@ class MemoryVectorStore:
         points = self.collections.get(collection_for(organization_id), {})
         wanted = {str(value) for value in connector_ids}
         scored = [
-            Match(id=point.id, score=_cosine(vector, point.vector), payload=dict(point.payload))
+            Match(id=point.id, score=cosine(vector, point.vector), payload=dict(point.payload))
             for point in points.values()
             if not wanted or str(point.payload.get("connector_id")) in wanted
         ]
@@ -488,7 +488,7 @@ class MemoryVectorStore:
         return len(points)
 
 
-def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
+def cosine(left: Sequence[float], right: Sequence[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right, strict=False))
     left_norm = math.sqrt(sum(a * a for a in left))
     right_norm = math.sqrt(sum(b * b for b in right))
@@ -508,5 +508,7 @@ __all__ = [
     "Stored",
     "VectorStore",
     "collection_for",
+    "cosine",
     "point_id",
+    "vector_size",
 ]

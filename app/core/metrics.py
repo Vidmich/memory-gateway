@@ -96,11 +96,21 @@ class RetrievalMetrics:
     deliberate choice.
 
     ``injected_tokens`` is what memory costs, per request, in the unit providers bill in.
+
+    ``recalls`` and ``recall_duration`` are the same two numbers for the *other* memory —
+    conversation facts (task 12). Separate series rather than a ``kind`` label on the
+    document ones, because the two answer different questions and share no meaningful
+    aggregate: a document retrieval that finds nothing is usually a misconfiguration,
+    while a fact recall that finds nothing is the ordinary state of a new end user.
+    Summing them would make the empty-retrieval rate — the one signal that catches a
+    broken knowledge base — climb every time a customer acquires a user.
     """
 
     attempts: Counter
     duration: Histogram
     injected_tokens: Histogram
+    recalls: Counter
+    recall_duration: Histogram
 
 
 @dataclass(frozen=True)
@@ -232,6 +242,20 @@ def build_retrieval_metrics(registry: CollectorRegistry) -> RetrievalMetrics:
             "retrieval_injected_tokens",
             "Tokens of memory added to a prompt, per request.",
             buckets=(0, 100, 250, 500, 1000, 2000, 4000, 8000),
+            registry=registry,
+        ),
+        recalls=Counter(
+            "memory_recalls_total",
+            "Conversation-memory recalls by outcome: hit, empty, timeout, error, skipped.",
+            labelnames=("outcome",),
+            registry=registry,
+        ),
+        recall_duration=Histogram(
+            "memory_recall_duration_seconds",
+            "How long conversation-memory recall took, for requests where it ran.",
+            # The same edges as document retrieval, so the two can be read on one chart
+            # and the slower half of `asyncio.gather` is obvious at a glance.
+            buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.5, 0.8, 1.5, 3.0),
             registry=registry,
         ),
     )

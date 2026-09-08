@@ -10,6 +10,8 @@ import { AcceptInvitationPage } from '@/pages/AcceptInvitationPage'
 import { ConnectorDetailPage } from '@/pages/ConnectorDetailPage'
 import { ConnectorsPage } from '@/pages/ConnectorsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
+import { EndUserDetailPage } from '@/pages/EndUserDetailPage'
+import { EndUsersPage } from '@/pages/EndUsersPage'
 import { GatewayFormPage } from '@/pages/GatewayFormPage'
 import { GatewaysPage } from '@/pages/GatewaysPage'
 import { LoginPage } from '@/pages/LoginPage'
@@ -65,6 +67,8 @@ export function AppRoutes() {
         <Route path="/connectors" element={<ConnectorsPage />} />
         <Route path="/connectors/:connectorId" element={<ConnectorDetailPage />} />
         <Route path="/monitoring" element={<MonitoringPage />} />
+        <Route path="/memory" element={<EndUsersPage />} />
+        <Route path="/memory/:endUserId" element={<EndUserDetailPage />} />
         <Route path="/settings" element={<OrganizationSettingsPage />} />
         <Route path="/settings/members" element={<MembersPage />} />
         {/* Rendering is gated by capability; the API is what actually refuses. */}

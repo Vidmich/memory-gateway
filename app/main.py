@@ -39,6 +39,11 @@ from app.services.catalog_store import PostgresCatalogStore
 from app.services.connectors import ConnectorService
 from app.services.directory import DirectoryService
 from app.services.directory_store import PostgresDirectoryStore
+from app.services.end_user_resolver import EndUserResolver, RequestCounters
+from app.services.end_user_store import PostgresEndUserStore
+from app.services.end_users import EndUserService
+from app.services.fact_vectors import QdrantFactVectorStore
+from app.services.facts import FactRecaller
 from app.services.gateway_probe import ProxyGatewayProbe
 from app.services.gateway_resolver import (
     CachedGatewayResolver,
@@ -113,8 +118,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         request_logs.start()
         app.state.request_logs = request_logs
+        metrics_repository = PostgresMetricsRepository(clients.session_factory)
         app.state.monitoring_service = MonitoringService(
-            PostgresMetricsRepository(clients.session_factory),
+            metrics_repository,
             cache=RedisSummaryCache(clients.redis),
         )
 
@@ -129,7 +135,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # which is what makes "did my upload become searchable" and "does the gateway see
         # it" the same question rather than two systems that agree by convention.
         retriever = Retriever(ingestion.embedder, ingestion.vectors, metrics=metrics.retrieval)
-        app.state.memory_service = MemoryService(retriever, metrics=metrics.retrieval)
+
+        # Conversation memory (SPEC §6.1 B). Its own store, its own collection, and its
+        # own resolver in front — identity is not memory, so a gateway that has memory
+        # switched off still attributes its traffic on the end-users screen.
+        end_user_store = PostgresEndUserStore(clients.session_factory)
+        fact_vectors = QdrantFactVectorStore(clients.qdrant)
+        counters = RequestCounters(end_user_store)
+        counters.start()
+        app.state.end_user_counters = counters
+        app.state.end_user_resolver = EndUserResolver(end_user_store, counters=counters)
+        app.state.memory_service = MemoryService(
+            retriever,
+            recaller=FactRecaller(
+                ingestion.embedder, fact_vectors, end_user_store, metrics=metrics.retrieval
+            ),
+            metrics=metrics.retrieval,
+        )
+        app.state.end_user_service = EndUserService(
+            end_user_store,
+            vectors=fact_vectors,
+            # The same embedder recall uses. A memory browser searching with a different
+            # model would be a screen that agrees with itself and disagrees with what a
+            # request actually retrieves.
+            embedder=ingestion.embedder,
+            logs=metrics_repository,
+        )
         app.state.connector_service = ConnectorService(
             ingestion.store,
             objects=ingestion.objects,
@@ -201,6 +232,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # closes, so the last half-second of traffic has to reach the database before
             # the connections it needs are taken away.
             await request_logs.stop()
+            # Same reasoning one table along: the last window of end-user sightings has to
+            # reach the database before the connections it needs are taken away.
+            await counters.stop()
             # Fire-and-forget writes (`last_used_at`) get a moment to land before the
             # pools they need are closed underneath them.
             await background.drain()

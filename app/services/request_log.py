@@ -239,6 +239,17 @@ class RequestRecorder:
         self._record.upstream_model_id = target.id
         self._record.model_name = target.name
 
+    def end_user(self, *, end_user_id: uuid.UUID | None, session_id: str | None) -> None:
+        """Who this request belongs to, and which conversation (SPEC §6.2).
+
+        Both nullable and both meaning "not known", which is different from "nobody":
+        a caller who sent no identity, or a gateway that declines to invent one, leaves
+        these null and the row is still complete. Task 13 reads exactly this pair to
+        decide what to distil, so a request with no end user is one it correctly skips.
+        """
+        self._record.end_user_id = end_user_id
+        self._record.session_id = session_id
+
     def retrieval(self, *, latency_ms: int | None) -> None:
         """How long the memory subsystem took, when it ran at all.
 
@@ -249,7 +260,13 @@ class RequestRecorder:
         """
         self._record.latency_retrieval_ms = latency_ms
 
-    def injected(self, *, tokens: int, chunks: Sequence[Mapping[str, Any]]) -> None:
+    def injected(
+        self,
+        *,
+        tokens: int,
+        chunks: Sequence[Mapping[str, Any]],
+        facts: Sequence[Mapping[str, Any]] = (),
+    ) -> None:
         """What memory put into the prompt, per routing attempt.
 
         Plain mappings rather than a retrieval type, for the same reason
@@ -263,6 +280,7 @@ class RequestRecorder:
         """
         self._record.memory_tokens = tokens
         self._record.retrieved_chunk_ids = [dict(chunk) for chunk in chunks]
+        self._record.retrieved_fact_ids = [dict(fact) for fact in facts]
 
     def attempts(self, records: Sequence[Mapping[str, Any]]) -> None:
         """The routing chain, already in its JSON form.

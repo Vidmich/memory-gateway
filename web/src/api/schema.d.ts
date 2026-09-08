@@ -328,6 +328,111 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/end-users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List End Users
+         * @description Everyone this organization's gateways have seen, newest first.
+         */
+        get: operations["list_end_users_api_v1_end_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/end-users/{end_user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get End User */
+        get: operations["get_end_user_api_v1_end_users__end_user_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/end-users/{end_user_id}/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Memory
+         * @description What the assistant believes about this person.
+         *
+         *     Superseded and expired facts are included unless ``live_only`` is set: the browser's
+         *     job includes explaining an answer the assistant gave last month, and the fact that
+         *     explains it is usually the one that has since been replaced.
+         */
+        get: operations["list_memory_api_v1_end_users__end_user_id__memory_get"];
+        put?: never;
+        /**
+         * Create Memory Fact
+         * @description Write a fact by hand.
+         *
+         *     What makes conversation memory demonstrable before task 13's distillation exists, and
+         *     what stays afterwards: "it keeps forgetting we are in the EU" needs an answer that is
+         *     not "wait for the next distillation pass".
+         */
+        post: operations["create_memory_fact_api_v1_end_users__end_user_id__memory_post"];
+        /**
+         * Purge Memory
+         * @description SPEC §6.5's right to erasure: every fact, every vector, optionally the transcripts.
+         *
+         *     The end-user row itself stays. It is what makes an existing request log say who a
+         *     request belonged to, and removing it would rewrite the record of things that happened
+         *     rather than forget what was learned from them.
+         *
+         *     ``include_transcripts`` is a query parameter rather than a body: a DELETE with a body
+         *     is legal and unevenly supported — intermediaries drop it — and a flag silently lost in
+         *     transit on an erasure endpoint is the wrong thing to be clever about.
+         */
+        delete: operations["purge_memory_api_v1_end_users__end_user_id__memory_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/end-users/{end_user_id}/memory/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Search Memory
+         * @description Semantic search over one person's memory — the same search a request runs.
+         *
+         *     A POST rather than a GET because the query is free text that would otherwise sit in a
+         *     URL, and a URL is the one place a query about a named individual should not be: it
+         *     reaches the access log, the browser's history and any proxy in between.
+         */
+        post: operations["search_memory_api_v1_end_users__end_user_id__memory_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/gateways": {
         parameters: {
             query?: never;
@@ -647,6 +752,31 @@ export interface paths {
         head?: never;
         /** Update Member */
         patch: operations["update_member_api_v1_members__member_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/memory-facts/{fact_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Memory Fact
+         * @description The row and its vector. Synchronous: it is two small deletes and somebody is
+         *     looking at the fact they just removed.
+         */
+        delete: operations["delete_memory_fact_api_v1_memory_facts__fact_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Memory Fact
+         * @description Correct a fact, retract it, or bring it back.
+         */
+        patch: operations["update_memory_fact_api_v1_memory_facts__fact_id__patch"];
         trace?: never;
     };
     "/api/v1/metrics/summary": {
@@ -1191,6 +1321,37 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * EndUserResponse
+         * @description One identity, with the two numbers the list screen sorts by.
+         */
+        EndUserResponse: {
+            /** Anonymous */
+            anonymous: boolean;
+            /** External Id */
+            external_id: string;
+            /** Fact Count */
+            fact_count: number;
+            /**
+             * First Seen At
+             * Format: date-time
+             */
+            first_seen_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Label */
+            label: string | null;
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at: string;
+            /** Request Count */
+            request_count: number;
+        };
         /** ErrorGroupResponse */
         ErrorGroupResponse: {
             /** Error Code */
@@ -1620,6 +1781,11 @@ export interface components {
          *     editor says in words what the other one does.
          */
         MemoryConfig: {
+            /**
+             * Allow Anonymous Memory
+             * @default false
+             */
+            allow_anonymous_memory: boolean;
             /** Connector Ids */
             connector_ids?: string[];
             /**
@@ -1638,6 +1804,11 @@ export interface components {
              */
             doc_top_k: number;
             /**
+             * Max Facts Per User
+             * @default 500
+             */
+            max_facts_per_user: number;
+            /**
              * Memory Enabled
              * @default true
              */
@@ -1647,6 +1818,11 @@ export interface components {
              * @default 600
              */
             memory_max_tokens: number;
+            /**
+             * Memory Min Score
+             * @default 0.3
+             */
+            memory_min_score: number;
             /**
              * Memory Top K
              * @default 8
@@ -1680,6 +1856,74 @@ export interface components {
              */
             version: number;
         };
+        /** MemoryFactCreateRequest */
+        MemoryFactCreateRequest: {
+            /**
+             * Confidence
+             * @default 1
+             */
+            confidence: number;
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Kind
+             * @default fact
+             */
+            kind: string;
+            /** Text */
+            text: string;
+        };
+        /** MemoryFactResponse */
+        MemoryFactResponse: {
+            /** Confidence */
+            confidence: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * End User Id
+             * Format: uuid
+             */
+            end_user_id: string;
+            /** Expires At */
+            expires_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at: string;
+            /** Source Log Id */
+            source_log_id: string | null;
+            /** Superseded At */
+            superseded_at: string | null;
+            /** Text */
+            text: string;
+        };
+        /**
+         * MemoryFactUpdateRequest
+         * @description Partial. See the module docstring on ``expires_at`` and ``null``.
+         */
+        MemoryFactUpdateRequest: {
+            /** Confidence */
+            confidence?: number | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Kind */
+            kind?: string | null;
+            /** Superseded */
+            superseded?: boolean | null;
+            /** Text */
+            text?: string | null;
+        };
         /**
          * MemoryPreviewRequest
          * @description A question to try, optionally against settings that have not been saved.
@@ -1695,6 +1939,36 @@ export interface components {
             } | null;
             /** Query */
             query: string;
+        };
+        /** MemoryPurgeResponse */
+        MemoryPurgeResponse: {
+            /** Facts */
+            facts: number;
+            /** Transcripts */
+            transcripts: number;
+        };
+        /** MemorySearchHit */
+        MemorySearchHit: {
+            fact: components["schemas"]["MemoryFactResponse"];
+            /** Score */
+            score: number;
+        };
+        /** MemorySearchRequest */
+        MemorySearchRequest: {
+            /**
+             * Limit
+             * @default 10
+             */
+            limit: number;
+            /** Query */
+            query: string;
+        };
+        /** MemorySearchResponse */
+        MemorySearchResponse: {
+            /** Embedding Model */
+            embedding_model: string;
+            /** Hits */
+            hits: components["schemas"]["MemorySearchHit"][];
         };
         /** ModelCard */
         ModelCard: {
@@ -2009,6 +2283,13 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /** Page[EndUserResponse] */
+        Page_EndUserResponse_: {
+            /** Items */
+            items: components["schemas"]["EndUserResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** Page[GatewayResponse] */
         Page_GatewayResponse_: {
             /** Items */
@@ -2027,6 +2308,13 @@ export interface components {
         Page_MemberResponse_: {
             /** Items */
             items: components["schemas"]["MemberResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** Page[MemoryFactResponse] */
+        Page_MemoryFactResponse_: {
+            /** Items */
+            items: components["schemas"]["MemoryFactResponse"][];
             /** Next Cursor */
             next_cursor?: string | null;
         };
@@ -3047,6 +3335,208 @@ export interface operations {
             };
         };
     };
+    list_end_users_api_v1_end_users_get: {
+        parameters: {
+            query?: {
+                search?: string | null;
+                cursor?: string | null;
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_EndUserResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_end_user_api_v1_end_users__end_user_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndUserResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_memory_api_v1_end_users__end_user_id__memory_get: {
+        parameters: {
+            query?: {
+                live_only?: boolean;
+                cursor?: string | null;
+                limit?: number | null;
+            };
+            header?: never;
+            path: {
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_MemoryFactResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_memory_fact_api_v1_end_users__end_user_id__memory_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryFactCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryFactResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    purge_memory_api_v1_end_users__end_user_id__memory_delete: {
+        parameters: {
+            query?: {
+                include_transcripts?: boolean;
+            };
+            header?: never;
+            path: {
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryPurgeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_memory_api_v1_end_users__end_user_id__memory_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemorySearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_gateways_api_v1_gateways_get: {
         parameters: {
             query?: {
@@ -3691,6 +4181,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemberResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_memory_fact_api_v1_memory_facts__fact_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                fact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_memory_fact_api_v1_memory_facts__fact_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                fact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryFactUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryFactResponse"];
                 };
             };
             /** @description Validation Error */

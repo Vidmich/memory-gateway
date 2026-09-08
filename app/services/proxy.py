@@ -69,6 +69,10 @@ class Prepared:
     def injected_chunks(self) -> int:
         return len(self.assembly.injected) if self.assembly is not None else 0
 
+    @property
+    def injected_facts(self) -> int:
+        return len(self.assembly.injected_facts) if self.assembly is not None else 0
+
 
 class StreamObserver(Protocol):
     """Someone watching a stream go past, without being able to change it.

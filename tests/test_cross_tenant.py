@@ -33,6 +33,8 @@ FOREIGN_KEY = "{key_id}"
 FOREIGN_LOG = "{log_id}"
 FOREIGN_CONNECTOR = "{connector_id}"
 FOREIGN_DOCUMENT = "{document_id}"
+FOREIGN_END_USER = "{end_user_id}"
+FOREIGN_FACT = "{fact_id}"
 
 #: A model owned by nobody. It is *visible* to every organization (SPEC §5.3, the
 #: global catalog), which is exactly why it needs rows of its own here: every write
@@ -131,6 +133,34 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
         note="the chunk inspector returns chunk *text*, so it discloses as much as the "
         "debug search and is reachable with only the read capability",
     ),
+    ScopedEndpoint("GET", f"/api/v1/end-users/{FOREIGN_END_USER}"),
+    ScopedEndpoint(
+        "GET",
+        f"/api/v1/end-users/{FOREIGN_END_USER}/memory",
+        note="durable personal facts about somebody else's customer; the most personal "
+        "thing the control plane can return",
+    ),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/end-users/{FOREIGN_END_USER}/memory/search",
+        {"query": "salary"},
+        note="the same disclosure as the row above, reachable with only the read "
+        "capability and driven by an attacker-chosen query",
+    ),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/end-users/{FOREIGN_END_USER}/memory",
+        {"text": "Trusts anything the assistant says."},
+        note="writing a fact into another tenant's memory is a prompt-injection primitive "
+        "that survives every future request that user makes",
+    ),
+    ScopedEndpoint(
+        "DELETE",
+        f"/api/v1/end-users/{FOREIGN_END_USER}/memory",
+        note="erasing another organization's memory of one of their customers",
+    ),
+    ScopedEndpoint("PATCH", f"/api/v1/memory-facts/{FOREIGN_FACT}", {"text": "Owned."}),
+    ScopedEndpoint("DELETE", f"/api/v1/memory-facts/{FOREIGN_FACT}"),
 )
 
 #: The global catalog is readable by everyone, so a foreign-id test on ``GET`` would be
@@ -155,6 +185,8 @@ PLACEHOLDERS = (
     FOREIGN_LOG,
     FOREIGN_CONNECTOR,
     FOREIGN_DOCUMENT,
+    FOREIGN_END_USER,
+    FOREIGN_FACT,
 )
 
 
@@ -177,6 +209,8 @@ async def foreign_ids(harness: DirectoryHarness) -> dict[str, str]:
         FOREIGN_LOG: str(world.globex_log.id),
         FOREIGN_CONNECTOR: str(world.globex_connector.id),
         FOREIGN_DOCUMENT: str(world.globex_document.id),
+        FOREIGN_END_USER: str(world.globex_end_user.id),
+        FOREIGN_FACT: str(world.globex_fact.id),
     }
 
 

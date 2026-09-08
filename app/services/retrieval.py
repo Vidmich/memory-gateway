@@ -43,6 +43,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 from app.api.proxy.errors import GatewayUnavailable
@@ -50,6 +51,7 @@ from app.core.metrics import RetrievalMetrics
 from app.schemas.gateway_config import MemoryConfig
 from app.schemas.openai import ChatMessage
 from app.services.embeddings import Embedder
+from app.services.facts import NO_FACTS, NO_IDENTITY, Fact, FactRecall, FactRecaller
 from app.services.prompt import as_text
 from app.services.vector_store import Match, VectorStore
 
@@ -258,6 +260,10 @@ class QueryCache:
     ttl_seconds: float = QUERY_CACHE_TTL_SECONDS
     max_entries: int = QUERY_CACHE_MAX_ENTRIES
     _entries: dict[tuple[str, str], tuple[float, list[float]]] = field(default_factory=dict)
+    #: Embeddings currently being computed, so two concurrent askers share one call.
+    #: Not a cache — entries live only as long as the call — and deliberately separate
+    #: from ``_entries``, which is keyed the same way but holds finished results.
+    _inflight: dict[tuple[str, str], asyncio.Task[list[float]]] = field(default_factory=dict)
 
     def get(self, model: str, text: str) -> list[float] | None:
         key = (model, text)
@@ -278,6 +284,39 @@ class QueryCache:
             # `next(iter(...))` is the oldest key: dicts preserve insertion order.
             del self._entries[next(iter(self._entries))]
         self._entries[(model, text)] = (time.monotonic(), list(vector))
+
+    async def embed(self, embedder: Embedder, text: str) -> list[float]:
+        """The query's vector, computing it at most once across concurrent callers.
+
+        The two halves of memory search for the same question at the same time, so
+        without this a request with conversation memory enabled would pay for two
+        identical embeddings — two provider calls, two bills — for one question. The
+        in-flight map makes the second caller await the first caller's task.
+
+        ``asyncio.shield`` is what makes that safe under two *independent* timeouts.
+        Document retrieval and fact recall each run inside their own
+        ``asyncio.timeout``; without the shield, whichever one gave up first would cancel
+        the shared task and take the other one down with it — turning one branch's
+        timeout into both branches failing, which is exactly what running them
+        concurrently was supposed to prevent.
+        """
+        key = (embedder.model, text)
+        if (cached := self.get(*key)) is not None:
+            return cached
+
+        task = self._inflight.get(key)
+        if task is None:
+            task = asyncio.ensure_future(self._compute(embedder, text))
+            self._inflight[key] = task
+            # Cleared on completion however it completed, so a failed embedding is
+            # retried by the next request rather than being remembered as broken.
+            task.add_done_callback(lambda _: self._inflight.pop(key, None))
+        return list(await asyncio.shield(task))
+
+    async def _compute(self, embedder: Embedder, text: str) -> list[float]:
+        vector = list((await embedder.embed([text]))[0])
+        self.put(embedder.model, text, vector)
+        return vector
 
 
 # ---------------------------------------------------------------------------
@@ -425,12 +464,19 @@ class Retriever:
         return _dedupe(matches)
 
     async def _embed(self, query: str) -> list[float]:
-        model = self._embedder.model
-        if (cached := self._cache.get(model, query)) is not None:
-            return cached
-        vector = (await self._embedder.embed([query]))[0]
-        self._cache.put(model, query, vector)
-        return list(vector)
+        return await self._cache.embed(self._embedder, query)
+
+    async def embedding(self, query: str) -> list[float]:
+        """This query's vector, shared with whoever else asks for it.
+
+        Public so conversation-memory recall can search for the same question without
+        paying for a second embedding: both callers go through the same
+        :class:`QueryCache`, and whichever arrives first starts the work the other joins.
+        Recall receives it as a *callable* rather than as a coroutine, so a branch that
+        turns out not to need a vector — no collection yet, a dimension mismatch — never
+        creates one.
+        """
+        return await self._cache.embed(self._embedder, query)
 
     def _done(self, retrieval: Retrieval) -> Retrieval:
         if self._metrics is not None:
@@ -488,40 +534,80 @@ def _ms(started: float) -> int:
 
 @dataclass(frozen=True, slots=True)
 class Recall:
-    """Everything the memory subsystem found for one request.
+    """Everything the memory subsystem found for one request — both halves of it.
 
-    Two fields, one of which is always empty in this build. ``facts`` is SPEC §6.3's
-    conversation memory, which task 12 fills; it is here now so that the assembler, the
-    request log and the response headers already have somewhere to read it from, and so
-    the layer-4 hole in :mod:`app.services.prompt` is filled by passing a value rather
-    than by changing a signature.
+    Two independent results rather than one merged one, because they fail
+    independently: a knowledge base that is down and a user whose memory is unreadable
+    are different incidents with different fixes, and a single ``outcome`` covering both
+    would report whichever happened to be worse.
     """
 
     documents: Retrieval = NOTHING
-    facts: tuple[str, ...] = ()
+    memory: FactRecall = NO_FACTS
+
+    @property
+    def facts(self) -> tuple[Fact, ...]:
+        return self.memory.facts
+
+    @property
+    def end_user_id(self) -> uuid.UUID | None:
+        return self.memory.end_user_id
 
     @property
     def latency_ms(self) -> int:
         """Wall clock for the whole recall, not the sum of its branches.
 
-        They run concurrently, so adding them would report a number nobody waited.
+        The maximum, because the two run concurrently under :func:`asyncio.gather`.
+        Adding them would report a number nobody waited for — and would make the
+        latency waterfall in SPEC §10.3 stop subtracting.
         """
-        return self.documents.latency_ms
+        return max(self.documents.latency_ms, self.memory.latency_ms)
+
+    @property
+    def attempted(self) -> bool:
+        """Whether either half actually looked. What the response headers key off."""
+        return self.documents.attempted or self.memory.attempted
+
+    def enforce(self, policy: str) -> None:
+        """Apply ``on_retrieval_error`` to both halves.
+
+        Documents first, so a gateway whose knowledge base is down says so rather than
+        naming whichever half the ordering happened to reach — the document index is the
+        one an operator can act on, and the one a ``fail_closed`` gateway was almost
+        certainly configured for.
+        """
+        self.documents.enforce(policy)
+        self.memory.enforce(policy)
 
 
 class MemoryService:
     """The concurrent fan-out SPEC §6.3 asks for: documents and facts, at the same time.
 
-    Today one branch is real and the other returns immediately. That is the point of
-    writing it as a :func:`asyncio.gather` now rather than later: task 12's conversation
-    memory is a second independent network call under its own timeout, and the shape that
-    absorbs it without restructuring the request path is this one. The cost of the empty
-    branch is a coroutine that returns a constant — several hundred nanoseconds, against a
-    call that is allowed 800 milliseconds.
+    Both branches are real now. They are genuinely independent — different collections,
+    different filters, different failure modes — and each carries its own
+    ``asyncio.timeout``, so the request waits for the slower of the two rather than for
+    their sum. That is the acceptance criterion, and it is a property of this six-line
+    method rather than of anything downstream.
+
+    The one thing they *share* is the embedding. Both search for the same question, and
+    :meth:`QueryCache.embed` hands the second caller the first caller's in-flight task, so
+    a request costs one embedding call rather than two. See that method for why the shared
+    task is shielded from either branch's timeout.
+
+    ``recaller`` is optional and ``None`` means "this build has no conversation memory" —
+    which is what the editor's preview and most tests want, and what keeps a
+    :class:`MemoryService` constructible from a retriever alone.
     """
 
-    def __init__(self, retriever: Retriever, *, metrics: RetrievalMetrics | None = None) -> None:
+    def __init__(
+        self,
+        retriever: Retriever,
+        *,
+        recaller: FactRecaller | None = None,
+        metrics: RetrievalMetrics | None = None,
+    ) -> None:
         self._retriever = retriever
+        self._recaller = recaller
         self._metrics = metrics
 
     async def recall(
@@ -530,18 +616,43 @@ class MemoryService:
         organization_id: uuid.UUID,
         config: MemoryConfig,
         messages: Sequence[ChatMessage],
+        end_user_id: uuid.UUID | None = None,
+        identity_reason: str = NO_IDENTITY,
     ) -> Recall:
-        documents, facts = await asyncio.gather(
+        query = build_query(messages, config)
+        documents, memory = await asyncio.gather(
             self._retriever.documents(
                 organization_id=organization_id, config=config, messages=messages
             ),
-            self._facts(config),
+            self._facts(
+                organization_id=organization_id,
+                config=config,
+                query=query,
+                end_user_id=end_user_id,
+                identity_reason=identity_reason,
+            ),
         )
-        return Recall(documents=documents, facts=facts)
+        return Recall(documents=documents, memory=memory)
 
-    async def _facts(self, config: MemoryConfig) -> tuple[str, ...]:
-        """Layer 4. Task 12 replaces the body; the branch already exists."""
-        return ()
+    async def _facts(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        config: MemoryConfig,
+        query: str,
+        end_user_id: uuid.UUID | None,
+        identity_reason: str,
+    ) -> FactRecall:
+        if self._recaller is None:
+            return NO_FACTS
+        return await self._recaller.recall(
+            organization_id=organization_id,
+            end_user_id=end_user_id,
+            config=config,
+            query=query,
+            embed=partial(self._retriever.embedding, query),
+            identity_reason=identity_reason,
+        )
 
     def injected(self, tokens: int) -> None:
         """What memory actually cost this request, in tokens.
@@ -565,6 +676,9 @@ __all__ = [
     "SKIPPED",
     "TIMEOUT",
     "Chunk",
+    "Fact",
+    "FactRecall",
+    "FactRecaller",
     "MemoryService",
     "QueryCache",
     "Recall",

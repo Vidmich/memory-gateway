@@ -20,6 +20,12 @@ from pydantic import Field, model_validator
 from app.core.patterns import UnsafePattern, check_pattern
 from app.schemas.config import CONFIG_VERSION, ConfigBlob, merge_config
 
+#: SPEC §6.4's per-user bound on conversation memory. A module constant as well as a
+#: field default, because the manual-entry path in :mod:`app.services.end_users` has no
+#: gateway to read the field from — a fact typed into the memory browser belongs to a
+#: person, not to an endpoint.
+MAX_FACTS_PER_USER = 500
+
 MAX_REDACTION_PATTERNS = 20
 MAX_REDACTION_PATTERN_LENGTH = 200
 
@@ -54,6 +60,20 @@ class MemoryConfig(ConfigBlob):
     memory_enabled: bool = True
     memory_top_k: int = Field(default=8, ge=1, le=100)
     memory_max_tokens: int = Field(default=600, ge=0, le=100_000)
+    #: The floor for the similarity half of recall. Lower than ``doc_min_score`` on
+    #: purpose: a fact is one short sentence, so it shares far less vocabulary with a
+    #: question than a thousand-token chunk does, and a chunk's floor applied to a fact
+    #: would reject "works in the EU" for every question that is not about the EU.
+    memory_min_score: float = Field(default=0.3, ge=0.0, le=1.0)
+    #: SPEC §6.2's third identity source, off by default. An IP-derived id merges everyone
+    #: behind one office NAT into a single person and splits one person across two
+    #: networks — a coarse, surprising basis for something that stores durable personal
+    #: facts, and not a thing to switch on for somebody without their asking.
+    allow_anonymous_memory: bool = False
+    #: SPEC §6.4's bound. Enforced by manual entry here and by distillation's eviction in
+    #: task 13; a person's durable memory that has grown past five hundred sentences has
+    #: stopped being memory and become a transcript.
+    max_facts_per_user: int = Field(default=MAX_FACTS_PER_USER, ge=1, le=10_000)
     query_strategy: Literal["last_user_message", "last_n_turns"] = "last_user_message"
     #: Read only by ``last_n_turns``. Stored whatever the strategy, so switching to
     #: ``last_user_message`` to compare and back does not lose the number somebody tuned.
@@ -144,6 +164,7 @@ def organization_logging_defaults(settings: Mapping[str, Any] | None) -> dict[st
 
 __all__ = [
     "CONFIG_VERSION",
+    "MAX_FACTS_PER_USER",
     "ORG_LOGGING_DEFAULTS",
     "ConfigBlob",
     "LimitsConfig",

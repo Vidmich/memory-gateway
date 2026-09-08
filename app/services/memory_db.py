@@ -22,9 +22,11 @@ from app.db.models import (
     ApiKey,
     Connector,
     Document,
+    EndUser,
     Gateway,
     GatewayTarget,
     Invitation,
+    MemoryFact,
     Organization,
     RequestLog,
     Transcript,
@@ -46,6 +48,8 @@ class MemoryDatabase:
     api_keys: dict[uuid.UUID, ApiKey] = field(default_factory=dict)
     connectors: dict[uuid.UUID, Connector] = field(default_factory=dict)
     documents: dict[uuid.UUID, Document] = field(default_factory=dict)
+    end_users: dict[uuid.UUID, EndUser] = field(default_factory=dict)
+    memory_facts: dict[uuid.UUID, MemoryFact] = field(default_factory=dict)
     #: Keyed by request-log id, which is also the transcript's key — the two tables
     #: are one row split in half, and keeping them in step here is what makes the
     #: memory store a fair test of the read side.
@@ -88,17 +92,29 @@ class MemoryDatabase:
         self.documents[document.id] = _stamped(document)
         return document
 
+    def add_end_user(self, end_user: EndUser) -> EndUser:
+        self.end_users[end_user.id] = _stamped(end_user, "first_seen_at", "last_seen_at")
+        return end_user
 
-def _stamped[T: Any](row: T) -> T:
+    def add_fact(self, fact: MemoryFact) -> MemoryFact:
+        # No `updated_at` on this one — see the note on its two timestamps in
+        # `app.db.models.end_user` — so the pair that is stamped is named explicitly.
+        self.memory_facts[fact.id] = _stamped(fact, "created_at", "last_seen_at")
+        return fact
+
+
+def _stamped[T: Any](row: T, *columns: str) -> T:
     """Fill in what ``server_default now()`` would have.
 
     Without this the timestamps are ``None`` here and a datetime in PostgreSQL, and a
     response model that requires ``created_at`` fails in exactly one of the two — which
     is the kind of divergence the store contract exists to prevent.
+
+    ``columns`` names the fields to stamp for a table whose timestamps are not the usual
+    pair; the default is that pair, which is what every table before task 12 has.
     """
     now = datetime.now(UTC)
-    if getattr(row, "created_at", None) is None:
-        row.created_at = now
-    if getattr(row, "updated_at", None) is None:
-        row.updated_at = now
+    for name in columns or ("created_at", "updated_at"):
+        if getattr(row, name, None) is None:
+            setattr(row, name, now)
     return row

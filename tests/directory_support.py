@@ -21,7 +21,9 @@ from app.db.models import (
     ApiKey,
     Connector,
     Document,
+    EndUser,
     Gateway,
+    MemoryFact,
     Organization,
     RequestLog,
     UpstreamModel,
@@ -40,6 +42,7 @@ from tests.catalog_support import (
     make_target_row,
 )
 from tests.connector_support import make_connector, make_document
+from tests.end_user_support import make_end_user, make_fact
 from tests.gateway_support import (
     FakeGatewayProbe,
     RecordingCache,
@@ -94,6 +97,13 @@ class World:
     #: One request each, so the cross-tenant net can aim at a log row that exists.
     acme_log: RequestLog
     globex_log: RequestLog
+    #: One end user and one fact each. Conversation memory is the most personal thing in
+    #: the system, so the net needs a foreign end user and a foreign fact that genuinely
+    #: exist rather than invented ids that would 404 for the wrong reason.
+    acme_end_user: EndUser
+    globex_end_user: EndUser
+    acme_fact: MemoryFact
+    globex_fact: MemoryFact
 
     #: Every user, keyed by the short name the tests use.
     people: dict[str, User] = field(default_factory=dict)
@@ -190,6 +200,17 @@ def build_world(*, settings: Settings | None = None) -> World:
     for document in (acme_document, globex_document):
         database.add_document(document)
 
+    # Both called "alice" on purpose: the same external id in two organizations is the
+    # ordinary case, and a lookup that matched on it alone would find the wrong person.
+    acme_end_user = make_end_user(acme, external_id="alice")
+    globex_end_user = make_end_user(globex, external_id="alice")
+    for end_user in (acme_end_user, globex_end_user):
+        database.add_end_user(end_user)
+    acme_fact = make_fact(acme_end_user, text="Works on the Acme billing team.")
+    globex_fact = make_fact(globex_end_user, text="Works on the Globex billing team.")
+    for fact in (acme_fact, globex_fact):
+        database.add_fact(fact)
+
     acme_log = make_log_row(acme, gateway_id=acme_gateway.id, api_key_id=acme_key.id)
     globex_log = make_log_row(globex, gateway_id=globex_gateway.id, api_key_id=globex_key.id)
     for row in (acme_log, globex_log):
@@ -228,6 +249,10 @@ def build_world(*, settings: Settings | None = None) -> World:
         globex_document=globex_document,
         acme_log=acme_log,
         globex_log=globex_log,
+        acme_end_user=acme_end_user,
+        globex_end_user=globex_end_user,
+        acme_fact=acme_fact,
+        globex_fact=globex_fact,
         people=people,
     )
 

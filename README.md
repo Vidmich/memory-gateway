@@ -8,18 +8,21 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 11 complete**. An organization goes from empty to a working
+Current state: **task 12 complete**. An organization goes from empty to a working
 OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream model,
 create a gateway, copy its URL, mint a key, call it — and every request through it is
 recorded and inspectable. **Connectors** ingest the documents customers actually have —
 PDF, Word, PowerPoint and Excel alongside Markdown, HTML, CSV and code — and each file
 moves from `pending` to `indexed` while you watch, citing the page or slide it came from.
-**Memory** then attaches those connectors to a gateway, and the endpoint starts answering
-from them: the same question with `X-Gateway-Memory: off` cannot answer it, which is the
-whole feature in one A/B. **Monitoring** charts the traffic, including how often retrieval
-comes back with nothing; clicking a row shows the client's original messages, the exact
-prompt that went upstream with the injected regions marked, which chunks were retrieved at
-what score, and a timing waterfall. A gateway can also route over several models: a
+**Memory** has both halves now: those documents, and durable facts about the *person*
+asking. Send `X-Gateway-User: alice` and the answer reflects what the assistant knows about
+alice; send `bob` and it does not; send `X-Gateway-Memory: off` and neither reaches the
+model, which is the whole feature in one A/B. The **Memory browser** lists the people your
+gateways have answered and lets you read, correct, retract or erase what is remembered
+about each of them. **Monitoring** charts the traffic, including how often retrieval comes
+back with nothing; clicking a row shows the client's original messages, the exact prompt
+that went upstream with the injected regions marked, which chunks and facts were recalled
+at what score, and a timing waterfall. A gateway can also route over several models: a
 failover chain that survives an upstream outage, or a weighted A/B split whose result you
 read off the same charts.
 
@@ -426,7 +429,7 @@ switched on.
 
 ```
 [1] model.system_context      [2] gateway.system_context
-[3] retrieved documents       [4] end-user memory (task 12)
+[3] retrieved documents       [4] end-user memory
 [5] the client's own system message(s), verbatim and in order
 ```
 
@@ -475,6 +478,76 @@ The known limitation is stated in the editor rather than in a release note: retr
 dense search over the user's own words, so a conversational follow-up — "what about the
 second one?" — retrieves poorly. SPEC §17.4 leaves query rewriting open, and the
 empty-retrieval rate is there so that decision can be made from data.
+
+## Memory: the person asking
+
+The other half of SPEC §6. Document memory is the organization's knowledge, shared by
+everyone who calls a gateway; **conversation memory** is durable facts about one end user,
+private to `(organization, end_user)` and never visible across either boundary.
+
+**Who is asking comes from the caller, and the order is deliberate.**
+`X-Gateway-User` wins, because it is set by the customer's own backend — the one component
+that knows which of *its* users a request belongs to. The OpenAI `user` body field is
+second, so an unmodified SDK call still identifies. Third is an anonymous fallback derived
+from the API key and the client address, and it is **off by default**: that identity merges
+everyone behind one office network into a single person and splits one person across two,
+which is a coarse and surprising basis for something that stores personal facts. With it
+off, an unidentified caller simply gets no conversation memory — the correct amount to keep
+about somebody you cannot name.
+
+**Recall is two reads, not one, and the second one is the point.** A dense search for "how
+should I store customer emails?" finds "prefers Python" long before it finds "works in the
+EU and needs GDPR-compliant answers" — and the second is the fact that changes the answer.
+So alongside the similarity search there is an **always-include** set: the most recently
+seen high-confidence facts, whatever they are about. Standing constraints — a language, a
+unit system, a legal jurisdiction — reach every turn, because no query will ever be similar
+to them.
+
+**Ranking is `similarity × confidence × recency`**, a product rather than a weighted sum, so
+a very recent and very confident fact about something else cannot outrank the one that
+answers the question. Recency decays on `last_seen_at` with a ninety-day half-life: a
+preference stated two years ago and restated last week is current, and reading the creation
+date would bury it under something newer and less true.
+
+**PostgreSQL is the record; Qdrant is an index.** The vector search returns ids and the
+rows come from `memory_facts` with the liveness predicate applied in SQL — so "a retracted
+fact is never injected" is a property of one `WHERE` clause rather than of a payload
+staying in step with a row it cannot see. Retracting also deletes the vector, which is the
+same rule enforced a second, independent way.
+
+**Both halves run concurrently**, each under its own timeout, so a request waits for the
+slower of the two rather than for their sum — and they share one embedding of the question,
+so it costs one provider call rather than two. `on_retrieval_error` governs both.
+
+**Injected memory is untrusted content.** It originated in an end user's own conversation,
+so it is rendered as data inside a delimited block, one bullet per fact, flattened to a
+single line each — a newline in a fact would otherwise close the list visually and start
+what reads as a new section of the system message. Only the fact's *text* is rendered:
+never its confidence, never the id that selected it, and never the `external_id`, which is
+caller-supplied and stays out of every prompt. This matters more once task 13 writes these
+facts automatically from whatever somebody typed.
+
+**The Memory browser** (`/memory`) lists the people your gateways have answered, with their
+request counts and how much is remembered. Open one to read every fact with its kind,
+confidence and dates; add one by hand; correct one; **retract** one — which keeps the row
+and stops it being used, because "why did it say that last month" is answered by the fact
+that has since been replaced; or search this person's memory with the *same* search a
+request runs, which is the fastest way to see why a fact that obviously answers a question
+is not being recalled.
+
+**Erasure is a first-class operation** (SPEC §6.5). `DELETE /api/v1/end-users/{id}/memory`
+removes every fact and every vector, optionally every stored request and response body from
+their conversations, and returns what it removed rather than a bare 204 — this is the
+request somebody will be asked about later. It deliberately does **not** delete the end
+user: that row is what makes yesterday's request log say who a request belonged to, and
+removing it would rewrite the record of things that happened rather than forget what was
+learned from them. The confirmation dialog says exactly that before you press it.
+
+**Reading it back.** Responses carry `X-Gateway-Memory-Facts` whenever conversation memory
+ran; its absence means nobody identified the caller, or the gateway has memory switched
+off. The request drawer shows every recalled fact with its score, marks the ones that were
+included regardless of the question, says why any were dropped, and links straight to that
+person's memory.
 
 ## Request logging and monitoring
 
@@ -659,8 +732,8 @@ and fails if the committed copy has drifted; `make openapi` updates it.
 ```
 app/
   api/        routers — health, proxy/ (data plane), control/ (the UI's API:
-              auth, directory, models, gateways), spa.py (serves the built SPA
-              in production)
+              auth, directory, models, gateways, connectors, monitoring,
+              end_users), spa.py (serves the built SPA in production)
   adapters/   upstream dialects — openai now, anthropic in task 16
   core/       config, logging, errors, ids, metrics, middleware, clients,
               crypto (envelope encryption), keys (API key format), passwords
@@ -675,7 +748,9 @@ app/
               (permissions, directory, directory_store, pagination), the model
               catalog (catalog, catalog_store, model_probe, params, rate_limit),
               gateways and keys (gateways, gateway_store, gateway_probe), upstream
-              routing (routing, end_user), request logging (request_log, log_store,
+              routing (routing), end-user identity and conversation memory
+              (end_user, end_user_resolver, end_user_store, end_users,
+              fact_vectors, facts), request logging (request_log, log_store,
               redaction), the monitoring reads (monitoring, metrics_store), and
               ingestion — its ports (object_store, vector_store, embeddings,
               tokenizer, locks, jobs, job_queue), its pipeline (extraction and
@@ -703,8 +778,10 @@ web/          the React SPA
                 keys), connectors (list, and a detail screen with the upload
                 zone, document table, chunk inspector, chunking panel and debug
                 search),
+                the memory browser (end-user list, and a detail screen with the
+                fact list, semantic search and the erasure panel),
                 monitoring (charts, request table, detail drawer with the
-                attempts timeline and the retrieved chunks)
+                attempts timeline, the retrieved chunks and the recalled facts)
   e2e/          Playwright
 ```
 
@@ -757,6 +834,12 @@ first request. See [.env.example](.env.example) for the full list.
 | `POST /api/v1/connectors/{id}/search` | Debug-only semantic search over one connector's chunks, with scores. |
 | `POST /api/v1/documents/{id}/reindex` | The retry button. Resets the row to `pending` and enqueues it. |
 | `GET /api/v1/documents/{id}/chunks` | The chunk inspector: what one document became, with each chunk's page or section. |
+| `GET /api/v1/end-users` | Who your gateways have answered, searchable by the id your application sends. |
+| `GET /api/v1/end-users/{id}` · `GET /api/v1/end-users/{id}/memory` | One person, and what is remembered about them. |
+| `POST /api/v1/end-users/{id}/memory` | Write a fact by hand. |
+| `POST /api/v1/end-users/{id}/memory/search` | Semantic search over one person's memory — the same search a request runs. |
+| `PATCH /api/v1/memory-facts/{id}` · `DELETE /api/v1/memory-facts/{id}` | Correct, retract, or delete one fact. |
+| `DELETE /api/v1/end-users/{id}/memory` | Right to erasure: every fact, every vector, optionally the transcripts. |
 | `DELETE /api/v1/documents/{id}` | The document, its object and its vectors. |
 | `GET /healthz` | Liveness. Checks nothing else — a dependency outage must not get the pod restarted into the same outage. |
 | `GET /readyz` | Readiness. Probes Postgres, Redis, Qdrant, and object storage concurrently; 503 names what is broken. |

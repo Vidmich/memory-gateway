@@ -41,15 +41,50 @@ export function retrievedChunks(entries: readonly unknown[]): RetrievedChunk[] {
 }
 
 /**
- * Why a chunk did not make it, in words.
+ * Why a chunk or a fact did not make it, in words.
  *
- * The two reasons need different actions — one is a number on this gateway, the other is
- * a conversation that is too long for the model — so they are not merged into "dropped".
+ * The reasons need different actions — a number on this gateway, or a conversation too
+ * long for the model — so they are not merged into "dropped".
  */
 export function droppedReason(reason: string | null): string | null {
   if (reason === 'doc_max_tokens') return 'over this gateway’s token budget'
+  if (reason === 'memory_max_tokens') return 'over this gateway’s memory budget'
   if (reason === 'context_window') return 'no room left in the model’s context window'
   return reason
+}
+
+/**
+ * One recalled fact, as the request log stored it.
+ *
+ * The row stores the fact's *text*, not only its id, for the same reason it stores a
+ * chunk's source name: the fact may have been edited or erased since, and what the
+ * assistant knew at the time is the thing somebody is asking about. Parsed defensively,
+ * so a row written by an older build renders as much as it can rather than blanking the
+ * panel.
+ */
+export type RecalledFact = {
+  id: string
+  text: string
+  kind: string | null
+  score: number | null
+  confidence: number | null
+  /** True when it was included because it is recent and confident rather than similar. */
+  always: boolean
+  injected: boolean
+  dropped: string | null
+}
+
+export function recalledFacts(entries: readonly unknown[]): RecalledFact[] {
+  return entries.filter(isRecord).map((entry) => ({
+    id: text(entry.id) ?? '',
+    text: text(entry.text) ?? '(no longer recorded)',
+    kind: text(entry.kind),
+    score: typeof entry.score === 'number' ? entry.score : null,
+    confidence: typeof entry.confidence === 'number' ? entry.confidence : null,
+    always: entry.always === true,
+    injected: entry.injected !== false,
+    dropped: text(entry.dropped),
+  }))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

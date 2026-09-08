@@ -8,6 +8,8 @@ then retrieves it is exercising one index rather than two fixtures that agree.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 import uuid
 from collections.abc import Sequence
 from typing import Any
@@ -16,9 +18,11 @@ import pytest
 from prometheus_client import CollectorRegistry
 
 from app.core.metrics import build_retrieval_metrics
+from app.db.models import Organization
 from app.schemas.gateway_config import MemoryConfig
 from app.schemas.openai import ChatMessage
 from app.services.embeddings import EmbeddingError, HashEmbedder
+from app.services.facts import FactRecall, FactRecaller, MemoryUnavailable
 from app.services.retrieval import (
     EMPTY,
     ERROR,
@@ -28,12 +32,15 @@ from app.services.retrieval import (
     TIMEOUT,
     MemoryService,
     QueryCache,
+    Recall,
     Retrieval,
     RetrievalUnavailable,
     Retriever,
     build_query,
 )
 from app.services.vector_store import ChunkPoint, Match, MemoryVectorStore
+from tests.auth_support import make_organization
+from tests.end_user_support import build_end_users
 
 ORG = uuid.UUID(int=1)
 CONNECTOR = uuid.UUID(int=2)
@@ -573,12 +580,35 @@ async def test_a_skipped_request_is_not_timed(embedder: HashEmbedder) -> None:
 async def test_recall_runs_both_branches_and_returns_both(
     retriever: Retriever, vectors: MemoryVectorStore, embedder: HashEmbedder
 ) -> None:
-    """The fan-out task 12 adds its second branch to. Today one half is empty, and the
-    shape is what matters."""
+    """The fan-out SPEC §6.3 asks for. Documents from the index, facts from the store,
+    and one ``Recall`` carrying both outcomes separately."""
     await indexed(vectors, embedder, "Refunds within fourteen days.")
-    service = MemoryService(retriever)
+    memory = build_end_users(organization_in(ORG), embedder=embedder)
+    alice = await memory.end_user("alice")
+    await memory.remember(alice, "Works in the EU and needs GDPR-compliant answers.")
+    service = MemoryService(retriever, recaller=memory.recaller)
 
     recall = await service.recall(
+        organization_id=ORG,
+        config=config(doc_min_score=0.0),
+        messages=turns(("user", "refunds")),
+        end_user_id=alice.id,
+    )
+
+    assert recall.documents.outcome == HIT
+    assert [fact.text for fact in recall.facts] == [
+        "Works in the EU and needs GDPR-compliant answers."
+    ]
+    assert recall.end_user_id == alice.id
+
+
+async def test_a_gateway_with_no_conversation_memory_still_retrieves_documents(
+    retriever: Retriever, vectors: MemoryVectorStore, embedder: HashEmbedder
+) -> None:
+    """``recaller=None`` is what the editor's preview and most of this suite build."""
+    await indexed(vectors, embedder, "Refunds within fourteen days.")
+
+    recall = await MemoryService(retriever).recall(
         organization_id=ORG,
         config=config(doc_min_score=0.0),
         messages=turns(("user", "refunds")),
@@ -586,7 +616,121 @@ async def test_recall_runs_both_branches_and_returns_both(
 
     assert recall.documents.outcome == HIT
     assert recall.facts == ()
-    assert recall.latency_ms == recall.documents.latency_ms
+
+
+async def test_the_two_halves_run_concurrently_rather_than_one_after_the_other(
+    embedder: HashEmbedder,
+) -> None:
+    """The acceptance criterion, measured. Both stores sleep for the same interval; if
+    the branches were sequential the wall clock would be two of them.
+
+    The assertion is on the *measured* elapsed time rather than on call ordering, because
+    ordering can be right while an ``await`` in the wrong place still serialises them.
+    """
+    delay = 0.15
+    memory = build_end_users(make_organization(), embedder=embedder)
+    alice = await memory.end_user("alice")
+    await memory.remember(alice, "Prefers Python.")
+
+    slow_documents = SlowStore(delay)
+    service = MemoryService(
+        Retriever(embedder, slow_documents),  # type: ignore[arg-type]
+        recaller=FactRecaller(embedder, SlowFacts(memory.vectors, delay), memory.store),  # type: ignore[arg-type]
+    )
+
+    started = time.perf_counter()
+    recall = await service.recall(
+        organization_id=memory.organization_id,
+        config=config(doc_min_score=0.0, memory_min_score=0.0, retrieval_timeout_ms=5000),
+        messages=turns(("user", "python")),
+        end_user_id=alice.id,
+    )
+    elapsed = time.perf_counter() - started
+
+    assert recall.documents.attempted and recall.memory.attempted
+    # Comfortably under the sum, comfortably over one delay: a serial pair would be at
+    # least `2 * delay`, and the margins are wide enough not to measure this machine.
+    assert delay <= elapsed < delay * 1.8
+
+
+async def test_the_question_is_embedded_once_for_both_halves(
+    embedder: HashEmbedder,
+) -> None:
+    """Two provider calls for one question is a bill nobody agreed to. The two branches
+    share an in-flight task through the query cache."""
+    counting = WrappedEmbedder(embedder)
+    memory = build_end_users(make_organization(), embedder=embedder)
+    alice = await memory.end_user("alice")
+    await memory.remember(alice, "Prefers Python.")
+
+    service = MemoryService(
+        Retriever(counting, StubStore([]), cache=QueryCache()),  # type: ignore[arg-type]
+        recaller=FactRecaller(counting, memory.vectors, memory.store),
+    )
+    await service.recall(
+        organization_id=memory.organization_id,
+        config=config(doc_min_score=0.0, memory_min_score=0.0),
+        messages=turns(("user", "python")),
+        end_user_id=alice.id,
+    )
+
+    assert counting.calls == 1
+
+
+async def test_a_cancelled_awaiter_does_not_cancel_the_shared_embedding(
+    embedder: HashEmbedder,
+) -> None:
+    """The shield in :meth:`QueryCache.embed`.
+
+    Both halves of memory await the same in-flight embedding under *independent*
+    timeouts. Without the shield, whichever branch gave up first would cancel the shared
+    task and take the other one down with it — turning one branch's timeout into both
+    branches failing, which is exactly what running them concurrently was meant to
+    prevent.
+    """
+    cache = QueryCache()
+    slow = SlowEmbedder(embedder, 0.1)
+
+    first = asyncio.create_task(cache.embed(slow, "refunds"))
+    second = asyncio.create_task(cache.embed(slow, "refunds"))
+    await asyncio.sleep(0.01)
+    first.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await first
+
+    vector = await second
+    assert len(vector) == DIMENSION
+    assert slow.calls == 1
+
+
+async def test_enforce_names_the_document_half_when_both_failed() -> None:
+    """The index is the half an operator can act on, and the half a fail-closed gateway
+    was almost certainly configured for."""
+    recall = Recall(
+        documents=Retrieval(outcome=TIMEOUT, error="docs"),
+        memory=FactRecall(outcome=TIMEOUT, error="facts"),
+    )
+
+    with pytest.raises(RetrievalUnavailable):
+        recall.enforce("fail_closed")
+
+
+async def test_enforce_still_refuses_when_only_conversation_memory_failed() -> None:
+    recall = Recall(memory=FactRecall(outcome=ERROR, error="facts"))
+
+    with pytest.raises(MemoryUnavailable):
+        recall.enforce("fail_closed")
+
+
+async def test_latency_is_the_slower_branch_rather_than_the_sum() -> None:
+    """They run concurrently, so adding them would report a number nobody waited for —
+    and would make the SPEC §10.3 waterfall stop subtracting."""
+    recall = Recall(
+        documents=Retrieval(outcome=HIT, latency_ms=40),
+        memory=FactRecall(outcome=HIT, latency_ms=70),
+    )
+
+    assert recall.latency_ms == 70
 
 
 async def test_injected_tokens_are_observed_once_per_request(embedder: HashEmbedder) -> None:
@@ -598,3 +742,67 @@ async def test_injected_tokens_are_observed_once_per_request(embedder: HashEmbed
 
     assert registry.get_sample_value("retrieval_injected_tokens_count") == 1.0
     assert registry.get_sample_value("retrieval_injected_tokens_sum") == 412.0
+
+
+# ---------------------------------------------------------------------------
+# doubles for the concurrency assertions
+# ---------------------------------------------------------------------------
+
+
+class SlowFacts:
+    """The real fact index behind a fixed delay, so the result is still real."""
+
+    def __init__(self, inner: Any, delay: float) -> None:
+        self.inner = inner
+        self.delay = delay
+
+    async def dimension(self, organization_id: uuid.UUID) -> int | None:
+        size: int | None = await self.inner.dimension(organization_id)
+        return size
+
+    async def search(self, *args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(self.delay)
+        return await self.inner.search(*args, **kwargs)
+
+
+class WrappedEmbedder:
+    """The real embedder, counted. Distinct from :class:`CountingEmbedder` above, which
+    returns zero vectors — these tests need results that actually rank."""
+
+    def __init__(self, inner: HashEmbedder) -> None:
+        self.inner = inner
+        self.calls = 0
+
+    @property
+    def model(self) -> str:
+        return self.inner.model
+
+    @property
+    def dimension(self) -> int:
+        return self.inner.dimension
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        self.calls += 1
+        return await self.inner.embed(list(texts))
+
+
+class SlowEmbedder(WrappedEmbedder):
+    def __init__(self, inner: HashEmbedder, delay: float) -> None:
+        super().__init__(inner)
+        self.delay = delay
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        await asyncio.sleep(self.delay)
+        return await super().embed(texts)
+
+
+def organization_in(organization_id: uuid.UUID) -> Organization:
+    """An organization with a chosen id, so one ``Recall`` covers one tenant.
+
+    The two halves of memory are two collections keyed by the same organization; a
+    fixture that invented its own id would produce a test where the document half and the
+    fact half are about different customers, and pass anyway.
+    """
+    organization = make_organization()
+    organization.id = organization_id
+    return organization

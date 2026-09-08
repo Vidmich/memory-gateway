@@ -470,6 +470,77 @@ describe('the routing timeline', () => {
       expect(within(dialog).getByText('(unknown document)')).toBeInTheDocument()
     })
   })
+
+  describe('the recalled facts', () => {
+    const fact = {
+      id: 'f1',
+      text: 'Works in the EU and needs GDPR-compliant answers.',
+      kind: 'constraint',
+      score: 0.62,
+      confidence: 1,
+      always: false,
+      injected: true,
+    }
+
+    it('shows what the gateway knew about the person asking', async () => {
+      const dialog = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 18, end_user_id: 'eu1' }),
+          retrieved_fact_ids: [fact],
+        }),
+      )
+
+      expect(within(dialog).getByText(/GDPR-compliant answers/)).toBeInTheDocument()
+      expect(within(dialog).getByText('0.62')).toBeInTheDocument()
+      expect(within(dialog).getByText(/1 of 1 fact about this end user injected/)).toBeInTheDocument()
+    })
+
+    it('marks a fact that was included regardless of the question', async () => {
+      // "Why is this in my prompt" has two answers, and they are not the same answer.
+      const dialog = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 18, end_user_id: 'eu1' }),
+          retrieved_fact_ids: [{ ...fact, always: true, score: 0 }],
+        }),
+      )
+
+      expect(within(dialog).getByText('always included')).toBeInTheDocument()
+    })
+
+    it('says why a fact was dropped, and names the budget that dropped it', async () => {
+      const dialog = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 18, end_user_id: 'eu1' }),
+          retrieved_fact_ids: [{ ...fact, injected: false, dropped: 'memory_max_tokens' }],
+        }),
+      )
+
+      expect(within(dialog).getByText(/memory budget/)).toBeInTheDocument()
+    })
+
+    it('links to the memory when there is nothing stored yet', async () => {
+      const dialog = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 18, end_user_id: 'eu1' }),
+          retrieved_fact_ids: [],
+        }),
+      )
+
+      expect(within(dialog).getByText(/Nothing is stored about this end user/)).toBeInTheDocument()
+      expect(within(dialog).getByRole('link', { name: 'Open their memory' })).toBeInTheDocument()
+    })
+
+    it('names the header when the request identified nobody', async () => {
+      const dialog = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 18, end_user_id: null }),
+          retrieved_fact_ids: [],
+        }),
+      )
+
+      expect(within(dialog).getByText(/identified no end user/)).toBeInTheDocument()
+    })
+  })
 })
 
 describe('the A/B overlay', () => {

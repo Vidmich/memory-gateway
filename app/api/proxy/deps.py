@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from app.services.api_keys import KeyAuthenticator
+from app.services.end_user_resolver import EndUserResolver
 from app.services.gateway_resolver import GatewayResolver
 from app.services.proxy import ProxyService
 from app.services.request_log import RequestLogService
@@ -53,6 +54,18 @@ def get_request_logs(request: Request) -> RequestLogService:
     """
     service: RequestLogService = request.app.state.request_logs
     return service
+
+
+def get_end_users(request: Request) -> EndUserResolver:
+    """Who is asking, turned into a row (SPEC §6.2).
+
+    Its own dependency rather than a field on the memory service, because identity is not
+    memory: a request through a gateway with conversation memory switched off is still
+    attributed on its log row and still counted on the end-users screen, and folding the
+    two together would make turning memory off quietly stop the reporting as well.
+    """
+    resolver: EndUserResolver = request.app.state.end_user_resolver
+    return resolver
 
 
 def get_memory(request: Request) -> MemoryService:

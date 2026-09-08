@@ -30,7 +30,19 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import ColumnElement, DateTime, Select, and_, cast, func, literal, or_, select
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    Select,
+    and_,
+    cast,
+    delete,
+    func,
+    literal,
+    or_,
+    select,
+    tuple_,
+)
 from sqlalchemy.dialects.postgresql import INTERVAL, array
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -206,6 +218,21 @@ class MetricsTransaction(Protocol):
 
     async def log(self, log_id: uuid.UUID, filters: LogFilters) -> LogDetail | None:
         """One request, or ``None`` — including when it belongs to another organization."""
+
+    async def erase_transcripts(self, end_user_id: uuid.UUID) -> int:
+        """Delete every stored body belonging to one end user. Returns the row count.
+
+        The one method here with **no time window**, and deliberately so: this is SPEC
+        §6.5's right-to-erasure path, and an erasure bounded by a window would leave
+        exactly the oldest material a person is most likely to be asking about. The cost
+        is a scan across the retained partitions, which is the correct price for an
+        operation somebody performs by hand a handful of times a year.
+
+        The metadata rows in ``request_logs`` are left alone. They carry no bodies — a
+        status code, a latency, a token count — and deleting them would silently rewrite
+        the traffic charts for a period that did happen. Purging a person's memory is not
+        the same act as denying that their requests occurred.
+        """
 
 
 class MetricsRepository(Protocol):
@@ -383,6 +410,35 @@ class PostgresMetricsTransaction:
         )
         return LogDetail(log=row, transcript=transcript)
 
+    async def erase_transcripts(self, end_user_id: uuid.UUID) -> int:
+        # Two statements rather than a correlated delete: `request_logs` and
+        # `transcripts` are both partitioned, and PostgreSQL plans a `DELETE ... USING`
+        # across two partitioned tables far worse than it plans a scoped read followed by
+        # a delete on a primary-key list. The read is already narrow — one end user's
+        # traffic — so the list is small enough to hold.
+        owned = (
+            select(RequestLog.id, RequestLog.created_at)
+            .where(self._scope.clause(RequestLog), RequestLog.end_user_id == end_user_id)
+            .execution_options(**scoped())
+        )
+        rows = (await self._session.execute(owned)).all()
+        if not rows:
+            return 0
+
+        statement = (
+            delete(Transcript)
+            .where(
+                self._scope.clause(Transcript),
+                tuple_(Transcript.request_log_id, Transcript.created_at).in_(
+                    [(row[0], row[1]) for row in rows]
+                ),
+            )
+            .execution_options(**scoped())
+        )
+        result = await self._session.execute(statement)
+        await self._session.commit()
+        return int(getattr(result, "rowcount", 0) or 0)
+
 
 class PostgresMetricsRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -517,6 +573,14 @@ class MemoryMetricsTransaction:
         if row is None or not self._matches(row, filters):
             return None
         return LogDetail(log=row, transcript=self._db.transcripts.get(log_id))
+
+    async def erase_transcripts(self, end_user_id: uuid.UUID) -> int:
+        wanted = [
+            row.id
+            for row in self._db.request_logs.values()
+            if row.end_user_id == end_user_id and self._scope.permits(row.organization_id)
+        ]
+        return sum(1 for log_id in wanted if self._db.transcripts.pop(log_id, None) is not None)
 
 
 class MemoryMetricsRepository:

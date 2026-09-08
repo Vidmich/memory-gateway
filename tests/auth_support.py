@@ -33,6 +33,7 @@ from app.services.model_probe import Probe
 from app.services.monitoring import MonitoringService
 from tests.catalog_support import FakeProbe
 from tests.connector_support import TOKENIZER, ConnectorFixture, build_connectors
+from tests.end_user_support import EndUserFixture, build_end_users
 from tests.gateway_support import FakeGatewayProbe, RecordingCache
 from tests.monitoring_support import LogFixture, build_logs, build_monitoring
 
@@ -87,6 +88,9 @@ class AuthFixture:
     #: the connector fixture writes to. ``None`` when there is no organization, for the
     #: same reason ``connectors`` is: neither has anything to be scoped to.
     preview: MemoryPreview | None
+    #: Task 12's conversation memory over the same rows: end users, their facts, and the
+    #: recaller a request would run. ``None`` without an organization, as above.
+    end_users: EndUserFixture | None
     #: The read half of task 07, over the same rows the write half fills in.
     monitoring: MonitoringService
     logs: LogFixture
@@ -194,6 +198,9 @@ def build_auth(
         if connectors is not None
         else None
     )
+    end_users = (
+        build_end_users(organization, database=database) if organization is not None else None
+    )
     return AuthFixture(
         service=service,
         directory=directory,
@@ -201,6 +208,7 @@ def build_auth(
         gateways=gateways,
         connectors=connectors,
         preview=preview,
+        end_users=end_users,
         monitoring=monitoring,
         logs=logs,
         secret_box=secret_box,

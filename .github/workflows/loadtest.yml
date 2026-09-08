@@ -29,9 +29,9 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
@@ -103,7 +103,7 @@ jobs:
         if: failure()
         run: docker compose -f deploy/compose/docker-compose.yml logs --tail=200 api worker
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: loadtest-results

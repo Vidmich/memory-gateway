@@ -144,7 +144,7 @@ asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
 markers = [
     "db: requires a reachable PostgreSQL instance",
-    "live: calls a real provider; skipped without OPENAI_API_KEY",
+    "live: calls a real provider; skipped without that provider's API key",
     "s3: requires a reachable object store (MinIO)",
     "qdrant: requires a reachable Qdrant instance",
 ]

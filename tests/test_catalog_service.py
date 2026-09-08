@@ -209,14 +209,29 @@ async def test_an_org_model_may_share_a_name_with_a_global_one(world: World) -> 
     assert view.model.name == "shared-gpt-4o"
 
 
-async def test_an_unsupported_dialect_is_refused_with_a_reason(world: World) -> None:
-    """``anthropic`` is a valid column value and the UI offers it. There is no adapter
-    until task 16, so choosing it now says so rather than failing at request time."""
+async def test_a_dialect_with_no_adapter_is_refused_with_a_reason(world: World) -> None:
+    """A dialect the column would accept but this build cannot serve is refused here,
+    naming the ones it can, rather than failing at request time on somebody's traffic.
+
+    ``bedrock`` stands in for whichever dialect is next: the schema layer checks membership
+    of the column's allowlist and this checks that something is registered to serve it, and
+    the two move at different times — ``anthropic`` spent a release in exactly this state.
+    """
     with pytest.raises(Validation) as failure:
-        await world.catalog.create_model(world.actor(world.acme_admin), draft(dialect="anthropic"))
+        await world.catalog.create_model(world.actor(world.acme_admin), draft(dialect="bedrock"))
 
     assert "not yet supported" in str(failure.value)
     assert failure.value.param == "dialect"
+
+
+async def test_the_anthropic_dialect_is_now_servable(world: World) -> None:
+    """Task 16's registration, from the write path's point of view. The check above did
+    not change; the registry it reads did."""
+    view = await world.catalog.create_model(
+        world.actor(world.acme_admin), draft(name="claude", dialect="anthropic")
+    )
+
+    assert view.model.dialect == "anthropic"
 
 
 async def test_no_auth_with_a_credential_is_refused(world: World) -> None:

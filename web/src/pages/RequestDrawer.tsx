@@ -220,6 +220,13 @@ function Detail({
           subtitle="Which upstream served this request, and what was tried first."
         >
           <Attempts attempts={detail.failover_attempts} served={log.model_name} />
+          {log.dropped_params.length > 0 ? (
+            <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+              The model that served this request speaks a dialect with no equivalent for{' '}
+              <span className="font-mono text-xs">{log.dropped_params.join(', ')}</span>, so
+              they were not sent. The request succeeded without them.
+            </p>
+          ) : null}
           {log.failed_after_stream_start ? (
             <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               The upstream failed after the first chunk had reached the client. The status

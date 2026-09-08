@@ -361,6 +361,7 @@ export function makeRequestLog(
     response_truncated: false,
     failed_after_stream_start: false,
     bodies_omitted: null,
+    dropped_params: [],
     ...overrides,
   }
 }

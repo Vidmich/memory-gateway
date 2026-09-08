@@ -18,10 +18,17 @@ from typing import Any, Protocol
 
 import httpx
 
-from app.adapters.base import UpstreamAdapter, UpstreamTarget, get_adapter
-from app.adapters.openai import MalformedUpstreamResponse
+from app.adapters.base import (
+    DialectRejected,
+    MalformedUpstreamResponse,
+    UpstreamAdapter,
+    UpstreamStreamFailed,
+    UpstreamTarget,
+    get_adapter,
+)
 from app.api.proxy.errors import (
     GatewayUnavailable,
+    InvalidRequest,
     UpstreamStatus,
     UpstreamTimeout,
     UpstreamUnavailable,
@@ -35,10 +42,6 @@ from app.services.sse import DONE, format_event
 from app.services.tokenizer import Tokenizer, WordTokenizer
 
 logger = logging.getLogger(__name__)
-
-# Longest upstream error text relayed to the client. A provider behind a misconfigured
-# proxy will happily return a full HTML page.
-MAX_UPSTREAM_MESSAGE = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +210,7 @@ class ProxyService:
     async def complete(self, prepared: Prepared) -> ChatResponse:
         target = prepared.target
         adapter = _adapter_for(target)
-        outbound = adapter.prepare(prepared.request, target)
+        outbound = _outbound(adapter, prepared)
 
         try:
             response = await self._http.send(outbound)
@@ -217,7 +220,7 @@ class ProxyService:
             raise _unreachable(target, exc) from exc
 
         # A non-streaming send has already read and closed the body.
-        _raise_for_upstream_status(response, target)
+        _raise_for_upstream_status(response, target, adapter)
         try:
             return adapter.parse(response)
         except MalformedUpstreamResponse as exc:
@@ -237,7 +240,7 @@ class ProxyService:
         """Start the upstream call and validate its status. Nothing is yielded yet."""
         target = prepared.target
         adapter = _adapter_for(target)
-        outbound = adapter.prepare(prepared.request, target)
+        outbound = _outbound(adapter, prepared)
 
         try:
             response = await self._http.send(outbound, stream=True)
@@ -249,11 +252,17 @@ class ProxyService:
         if response.status_code >= 400:
             try:
                 await response.aread()
-                _raise_for_upstream_status(response, target)
+                _raise_for_upstream_status(response, target, adapter)
             finally:
                 await response.aclose()
 
-        return UpstreamStream(response=response, adapter=adapter, target=target, observer=observer)
+        return UpstreamStream(
+            response=response,
+            adapter=adapter,
+            target=target,
+            request=prepared.request,
+            observer=observer,
+        )
 
 
 class UpstreamStream:
@@ -265,17 +274,19 @@ class UpstreamStream:
         response: httpx.Response,
         adapter: UpstreamAdapter,
         target: UpstreamTarget,
+        request: ChatRequest,
         observer: StreamObserver | None = None,
     ) -> None:
         self._response = response
         self._adapter = adapter
+        self._request = request
         self._observer = observer
         self.target = target
 
     async def frames(self) -> AsyncIterator[str]:
         outcome: BaseException | None = None
         try:
-            async for frame in self._adapter.parse_stream(self._response):
+            async for frame in self._adapter.parse_stream(self._response, self._request):
                 # Observed before it is yielded, so a tee sees every frame the client
                 # sees and no frame the client does not.
                 self._notify(frame)
@@ -291,9 +302,12 @@ class UpstreamStream:
                 extra={"model": self.target.name},
             )
             raise
-        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+        except (httpx.TimeoutException, httpx.HTTPError, UpstreamStreamFailed) as exc:
             # The status line went out with the first frame, so this cannot become a 504.
-            # SPEC §8.2: terminate the stream with an error event instead.
+            # SPEC §8.2: terminate the stream with an error event instead. A provider that
+            # reports a failure *inside* its own stream — Anthropic's `error` event — lands
+            # here too: nothing is wrong with the connection, but the remedy is identical
+            # and the client has already had a 200.
             outcome = exc
             logger.warning(
                 "upstream stream failed after it had started",
@@ -354,64 +368,47 @@ def _unreachable(target: UpstreamTarget, exc: Exception) -> UpstreamUnavailable:
     return UpstreamUnavailable(f"[upstream:{target.name}] could not be reached.")
 
 
-def _raise_for_upstream_status(response: httpx.Response, target: UpstreamTarget) -> None:
+def _outbound(adapter: UpstreamAdapter, prepared: Prepared) -> httpx.Request:
+    """Build the provider's request, or turn a refusal into a 400.
+
+    A dialect that cannot express what was asked — ``n: 3`` against a provider that
+    returns one completion — says so here, before anything is sent. Translated into the
+    client-facing error at this layer rather than raised as one from the adapter, because
+    an adapter that imported the data plane's exception hierarchy would be a seam pointing
+    the wrong way.
+    """
+    try:
+        return adapter.prepare(prepared.request, prepared.target)
+    except DialectRejected as exc:
+        raise InvalidRequest(exc.message, param=exc.param) from exc
+
+
+def _raise_for_upstream_status(
+    response: httpx.Response, target: UpstreamTarget, adapter: UpstreamAdapter
+) -> None:
     """Relay a provider error with its own status, type and code.
 
     Preserving them is what lets a client SDK raise ``RateLimitError`` for an upstream 429
     instead of a generic server error — which is the difference between a caller that
     backs off and one that retries immediately.
+
+    The *adapter* decides what those four fields are, because a provider's own status is
+    not always the one the client should act on: Anthropic answers "come back in a moment"
+    with a 529, which SPEC §8.2's retry table has never heard of and would therefore treat
+    as final.
     """
     if response.status_code < 400:
         return
 
-    message, error_type, error_code, param = upstream_error_fields(response)
+    failure = adapter.error(response)
     raise UpstreamStatus(
-        status_code=response.status_code,
+        status_code=failure.status_code,
         model_name=target.name,
-        message=message,
-        upstream_type=error_type,
-        upstream_code=error_code,
-        param=param,
+        message=failure.message,
+        upstream_type=failure.type,
+        upstream_code=failure.code,
+        param=failure.param,
     )
-
-
-def upstream_error_fields(
-    response: httpx.Response,
-) -> tuple[str, str | None, str | None, str | None]:
-    """``(message, type, code, param)`` dug out of whatever the provider returned.
-
-    Public because the connectivity probe (:mod:`app.services.model_probe`) has to report
-    the same text the proxy would have relayed. If the two ever disagreed, "Test
-    connection" would say something the live request does not.
-    """
-    payload: Any = None
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-
-    message = error_type = error_code = param = None
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict):
-            message = _as_text(error.get("message"))
-            error_type = _as_text(error.get("type"))
-            error_code = _as_text(error.get("code"))
-            param = _as_text(error.get("param"))
-        elif isinstance(error, str):
-            message = error
-        else:
-            message = _as_text(payload.get("detail")) or _as_text(payload.get("message"))
-
-    if not message:
-        message = response.text.strip() or f"returned HTTP {response.status_code}"
-    return message[:MAX_UPSTREAM_MESSAGE], error_type, error_code, param
-
-
-def _as_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    return value if isinstance(value, str) else str(value)
 
 
 def _stream_error(target: UpstreamTarget, exc: Exception) -> str:

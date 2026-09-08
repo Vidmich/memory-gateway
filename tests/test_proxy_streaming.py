@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 from app.adapters.base import UpstreamTarget
-from app.schemas.openai import StreamFrame
+from app.schemas.openai import ChatMessage, ChatRequest, StreamFrame
 from app.services.proxy import UpstreamStream
 from tests.conftest import ProxyHarness, eventually
 from tests.support import Behaviour, chunk
@@ -143,9 +143,15 @@ async def test_a_failure_after_the_first_frame_ends_the_stream_with_an_error_eve
         def parse(self, *_: Any) -> Any:  # pragma: no cover - unused
             raise NotImplementedError
 
-        async def parse_stream(self, _: httpx.Response) -> AsyncIterator[StreamFrame]:
+        async def parse_stream(self, *_: Any) -> AsyncIterator[StreamFrame]:
             yield StreamFrame(data='{"choices":[]}')
             raise httpx.ReadTimeout("upstream went away")
+
+        def error(self, *_: Any) -> Any:  # pragma: no cover - unused
+            raise NotImplementedError
+
+        def dropped(self, *_: Any) -> tuple[str, ...]:  # pragma: no cover - unused
+            return ()
 
     target = UpstreamTarget(
         id=__import__("uuid").uuid4(),
@@ -154,7 +160,12 @@ async def test_a_failure_after_the_first_frame_ends_the_stream_with_an_error_eve
         dialect="openai",
         upstream_model_id="m",
     )
-    stream = UpstreamStream(response=httpx.Response(200), adapter=Failing(), target=target)
+    stream = UpstreamStream(
+        response=httpx.Response(200),
+        adapter=Failing(),
+        target=target,
+        request=ChatRequest(model="demo", messages=[ChatMessage(role="user", content="hi")]),
+    )
 
     written = [text async for text in stream.frames()]
 

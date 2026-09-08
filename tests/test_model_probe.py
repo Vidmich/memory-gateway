@@ -184,9 +184,10 @@ async def test_a_two_hundred_that_is_not_a_completion_is_not_ok(
 async def test_an_unregistered_dialect_fails_without_a_request(
     upstream: MockUpstream, probe: ModelProbe
 ) -> None:
-    """``anthropic`` until task 16. The service refuses it at write time; this is the
-    belt to that pair of braces."""
-    result = await probe.run(target(f"{upstream.base_url}/v1", dialect="anthropic"))
+    """A dialect this build has no adapter for. The service refuses one at write time;
+    this is the belt to that pair of braces, for a model stored before its dialect lost —
+    or never had — an adapter."""
+    result = await probe.run(target(f"{upstream.base_url}/v1", dialect="bedrock"))
 
     assert result.ok is False
     assert "no adapter" in (result.error_message or "")

@@ -20,10 +20,19 @@ import { ObjectAudit } from '@/pages/ObjectAudit'
 
 const DIALECTS = [
   { value: 'openai', label: 'OpenAI-compatible' },
-  // Offered, and refused by the API until task 16 registers the adapter. Hiding it would
-  // make "does this gateway support Anthropic?" unanswerable from the screen.
-  { value: 'anthropic', label: 'Anthropic (not yet supported)' },
+  { value: 'anthropic', label: 'Anthropic (Messages API)' },
 ]
+
+/**
+ * OpenAI generation parameters Claude has no equivalent for.
+ *
+ * Named on the form rather than left to be discovered, because the failure is silent: the
+ * request succeeds, the parameter does nothing, and the only other place that says so is
+ * the request drawer of a call somebody has already made. Kept in step by hand with
+ * `DROPPED_PARAMS` in `app/adapters/anthropic.py` — the wire is the source of truth and
+ * this is the warning about it.
+ */
+const ANTHROPIC_DROPS = 'presence_penalty, frequency_penalty, n, seed, logit_bias, response_format'
 
 const AUTH_TYPES = [
   { value: 'bearer', label: 'Bearer token', hint: 'Authorization: Bearer <key>' },
@@ -135,6 +144,10 @@ export function ModelFormPage() {
       ...current,
       baseUrl: chosen.baseUrl,
       authType: chosen.authType,
+      // Set from the preset rather than left alone: a provider's dialect is not a
+      // preference, and a Claude base URL with the openai dialect is a 404 waiting to
+      // happen. Explicit `?? 'openai'` so switching *away* from Anthropic resets it.
+      dialect: chosen.dialect ?? 'openai',
       // Only fill a model id that has not been typed into yet, so choosing a preset
       // after entering one does not silently discard it.
       upstreamModelId: current.upstreamModelId || chosen.modelId,
@@ -310,7 +323,15 @@ export function ModelFormPage() {
               )}
             </Field>
 
-            <Field name="dialect" label="Dialect">
+            <Field
+              name="dialect"
+              label="Dialect"
+              hint={
+                state.dialect === 'anthropic'
+                  ? `Requests are translated to the Messages API. These parameters have no equivalent and are not sent: ${ANTHROPIC_DROPS}. Every request that drops one says so in its monitoring row.`
+                  : 'The wire format this provider speaks. Anything OpenAI-shaped is the first option.'
+              }
+            >
               {(props) => (
                 <Select
                   {...props}

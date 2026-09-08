@@ -69,6 +69,7 @@ def metadata_row(record: RequestRecord) -> dict[str, Any]:
         "retrieved_chunk_ids": list(record.retrieved_chunk_ids),
         "retrieved_fact_ids": list(record.retrieved_fact_ids),
         "failover_attempts": list(record.failover_attempts),
+        "dropped_params": list(record.dropped_params),
         "request_id": record.request_id,
         "response_truncated": record.response_truncated,
         "failed_after_stream_start": record.failed_after_stream_start,

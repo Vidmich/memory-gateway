@@ -27,10 +27,14 @@ from typing import Protocol
 
 import httpx
 
-from app.adapters.base import UpstreamTarget, get_adapter
-from app.adapters.openai import MalformedUpstreamResponse
+from app.adapters.base import (
+    MAX_UPSTREAM_MESSAGE,
+    DialectRejected,
+    MalformedUpstreamResponse,
+    UpstreamTarget,
+    get_adapter,
+)
 from app.schemas.openai import ChatMessage, ChatRequest
-from app.services.proxy import MAX_UPSTREAM_MESSAGE, upstream_error_fields
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +96,13 @@ class ModelProbe:
             )
 
         budget = min(target.timeout_seconds, MAX_PROBE_SECONDS)
-        request = adapter.prepare(PROBE_REQUEST, _with_timeout(target, budget))
+        try:
+            request = adapter.prepare(PROBE_REQUEST, _with_timeout(target, budget))
+        except DialectRejected as exc:
+            # Not reachable from the probe as written — `PROBE_REQUEST` asks for nothing
+            # exotic — but a dialect is free to refuse anything, and a red panel saying why
+            # is a better answer than a 500 on the button.
+            return ProbeResult(ok=False, latency_ms=0, error_message=exc.message)
 
         started = time.perf_counter()
         try:
@@ -115,14 +125,19 @@ class ModelProbe:
 
         latency_ms = _elapsed_ms(started)
         if response.status_code >= 400:
-            message, _, code, _ = upstream_error_fields(response)
+            # The adapter's translation, not the raw response: the button has to say what
+            # the live request would have said, and for a dialect that remaps a status —
+            # Anthropic's 529 — those are two different answers.
+            failure = adapter.error(response)
             return ProbeResult(
                 ok=False,
                 latency_ms=latency_ms,
-                upstream_status=response.status_code,
+                upstream_status=failure.status_code,
                 # `401 invalid_api_key` reads better than either half alone, and matches
                 # what the task's demo promises the button shows.
-                error_message=f"{code} {message}".strip() if code else message,
+                error_message=(
+                    f"{failure.code} {failure.message}".strip() if failure.code else failure.message
+                ),
             )
 
         try:

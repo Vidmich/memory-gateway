@@ -154,6 +154,14 @@ class RequestLog(Base):
     failover_attempts: Mapped[list[Any]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
+    #: SPEC §8.3. Generation parameters the target's dialect could not express, so they
+    #: never reached the provider — ``presence_penalty`` against an Anthropic upstream, for
+    #: instance. Empty for every OpenAI-shaped upstream, which is the overwhelming majority
+    #: of rows, and the reason it is recorded at all is that a dropped parameter is
+    #: otherwise invisible: the request succeeds and quietly ignores what was asked.
+    dropped_params: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
 
     #: The ``X-Gateway-Request-Id`` the client was given, so a support ticket quoting one
     #: leads to this row and to the matching structured log lines.

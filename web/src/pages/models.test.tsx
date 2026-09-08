@@ -371,13 +371,67 @@ describe('the model form', () => {
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
   })
 
-  it('still offers the anthropic dialect, and lets the server refuse it', async () => {
-    // Hiding it would make "does this support Anthropic?" unanswerable from the screen.
+  it('offers the anthropic dialect', async () => {
     const { client } = fakeServer()
     renderAt(client, '/models/new')
 
     const dialect = await screen.findByLabelText('Dialect')
     expect(within(dialect).getByText(/Anthropic/)).toBeInTheDocument()
+  })
+
+  it('names the parameters the anthropic dialect cannot carry', async () => {
+    // The failure this prevents is silent: the request succeeds and the parameter does
+    // nothing. Saying so on the form is cheaper than the support ticket.
+    const { client } = fakeServer()
+    renderAt(client, '/models/new')
+    const person = userEvent.setup()
+
+    await person.selectOptions(await screen.findByLabelText('Dialect'), 'anthropic')
+
+    expect(screen.getByText(/presence_penalty/)).toBeInTheDocument()
+    expect(screen.getByText(/are not sent/)).toBeInTheDocument()
+  })
+
+  it('says nothing about dropped parameters for an openai-shaped provider', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/models/new')
+
+    expect(await screen.findByLabelText('Dialect')).toBeInTheDocument()
+    expect(screen.queryByText(/presence_penalty/)).not.toBeInTheDocument()
+  })
+
+  it('the anthropic preset sets the dialect along with the url', async () => {
+    // A Claude base URL with the openai dialect is a 404 on /chat/completions, and the
+    // dropdown that would have prevented it is two fields further down the form.
+    const { client, requests } = fakeServer()
+    renderAt(client, '/models/new')
+    const person = userEvent.setup()
+
+    await person.selectOptions(await screen.findByLabelText('Preset'), 'anthropic')
+    await person.type(screen.getByLabelText('Name'), 'claude')
+    await person.type(screen.getByLabelText('Credential'), 'sk-ant-test')
+    await person.click(screen.getByRole('button', { name: 'Create model' }))
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'POST')).toBe(true))
+    const body = lastBody(requests, 'POST')
+    expect(body.dialect).toBe('anthropic')
+    expect(body.base_url).toBe('https://api.anthropic.com/v1')
+    expect(body.auth_type).toBe('api_key_header')
+  })
+
+  it('choosing an openai-shaped preset afterwards puts the dialect back', async () => {
+    const { client, requests } = fakeServer()
+    renderAt(client, '/models/new')
+    const person = userEvent.setup()
+
+    await person.selectOptions(await screen.findByLabelText('Preset'), 'anthropic')
+    await person.selectOptions(screen.getByLabelText('Preset'), 'groq')
+    await person.type(screen.getByLabelText('Name'), 'llama')
+    await person.type(screen.getByLabelText('Credential'), 'gsk-test')
+    await person.click(screen.getByRole('button', { name: 'Create model' }))
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'POST')).toBe(true))
+    expect(lastBody(requests, 'POST').dialect).toBe('openai')
   })
 })
 

@@ -6,9 +6,12 @@
  * fills the field in correctly removes the whole class, which is worth more than it looks
  * for a screen most people use once per provider and then never again.
  *
- * Everything here is OpenAI-shaped, so they all take the `openai` dialect — the
- * differences between them are exactly base URL and auth style, which is what
- * `UpstreamTarget` carries (`app/adapters/openai.py`).
+ * Most of them are OpenAI-shaped, so they take the `openai` dialect — the differences
+ * between them are exactly base URL and auth style, which is what `UpstreamTarget` carries
+ * (`app/adapters/openai.py`). Anthropic is the one that is not, and it carries its dialect
+ * with it: choosing the preset and then forgetting the dropdown two fields below would
+ * produce a model that 404s on `/chat/completions`, which is a confusing way to learn that
+ * Claude speaks a different protocol.
  *
  * A preset is a starting point, never a constraint: every field stays editable, and
  * `custom` fills in nothing.
@@ -21,6 +24,8 @@ export type Preset = {
   authType: 'bearer' | 'api_key_header' | 'azure' | 'none'
   /** A model id that exists on that provider, so the field is not left blank. */
   modelId: string
+  /** The wire format. Omitted means `openai`, which is nearly all of them. */
+  dialect?: string
   /** Shown under the base URL when this preset is chosen. */
   hint?: string
 }
@@ -40,6 +45,15 @@ export const PRESETS: readonly Preset[] = [
     authType: 'azure',
     modelId: 'gpt-4o-mini',
     hint: 'Keep the ?api-version=… query string on the URL — it is preserved and sent.',
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    baseUrl: 'https://api.anthropic.com/v1',
+    authType: 'api_key_header',
+    modelId: 'claude-sonnet-4-5',
+    dialect: 'anthropic',
+    hint: 'Claude speaks its own Messages API; the gateway translates. Keep /v1 on the URL.',
   },
   {
     id: 'groq',

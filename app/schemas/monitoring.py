@@ -194,6 +194,10 @@ class RequestLogResponse(BaseModel):
     #: not have helped. Distinct from ``error_code``, which says *what* went wrong.
     failed_after_stream_start: bool
     bodies_omitted: str | None
+    #: SPEC §8.3: parameters the target's dialect could not carry. Empty for an
+    #: OpenAI-shaped upstream, and the answer to "why did temperature do nothing" for one
+    #: that translates.
+    dropped_params: list[str]
 
     @classmethod
     def of(cls, row: RequestLog) -> Self:
@@ -221,6 +225,7 @@ class RequestLogResponse(BaseModel):
             response_truncated=row.response_truncated,
             failed_after_stream_start=bool(row.failed_after_stream_start),
             bodies_omitted=row.bodies_omitted,
+            dropped_params=[str(name) for name in (row.dropped_params or [])],
         )
 
 

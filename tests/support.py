@@ -208,6 +208,74 @@ def completion(content: str = "hello", *, model: str = "upstream-model") -> dict
     }
 
 
+def anthropic_message(
+    content: str = "hello",
+    *,
+    model: str = "claude-sonnet-4-5-20250929",
+    stop_reason: str = "end_turn",
+    input_tokens: int = 3,
+    output_tokens: int = 2,
+) -> dict[str, Any]:
+    """What the Messages API returns, so a test can point a gateway at Claude."""
+    return {
+        "id": "msg_01Test",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": content}] if content else [],
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+    }
+
+
+def anthropic_events(
+    *parts: str,
+    stop_reason: str = "end_turn",
+    model: str = "claude-sonnet-4-5-20250929",
+    output_tokens: int = 2,
+) -> list[str]:
+    """One Messages stream as ``data:`` payloads, for :attr:`Behaviour.chunks`.
+
+    No ``event:`` lines, and that is not a shortcut: the event name and the payload's own
+    ``type`` always agree, and keying on the payload is what makes the translation work
+    for a provider — or an intermediary — that sends only one of them.
+
+    Pair it with ``send_done=False``: ``[DONE]`` is OpenAI's terminator, and a mock that
+    sent one would be testing a stream Anthropic never produces.
+    """
+    events: list[dict[str, Any]] = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_01Test",
+                "type": "message",
+                "role": "assistant",
+                "model": model,
+                "content": [],
+                "stop_reason": None,
+                "usage": {"input_tokens": 3, "output_tokens": 1},
+            },
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "ping"},
+    ]
+    events += [
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": part}}
+        for part in parts
+    ]
+    events += [
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+            "usage": {"output_tokens": output_tokens},
+        },
+        {"type": "message_stop"},
+    ]
+    return [json.dumps(event) for event in events]
+
+
 def chunk(content: str, *, finish_reason: str | None = None) -> str:
     return json.dumps(
         {

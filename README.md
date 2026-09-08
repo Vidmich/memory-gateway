@@ -8,7 +8,7 @@ memory, routing, and observability behind that interface.
 - **[tasks/](tasks/README.md)** — the implementation plan, sliced so each task ends with
   something you can run.
 
-Current state: **task 15 complete**. An organization goes from empty to a working
+Current state: **task 16 complete**. An organization goes from empty to a working
 OpenAI-compatible endpoint entirely in the browser — sign in, configure an upstream model,
 create a gateway, copy its URL, mint a key, call it — and every request through it is
 recorded and inspectable. **Connectors** ingest the documents customers actually have —
@@ -34,7 +34,11 @@ atomically over sliding windows, answered with a 429 an OpenAI SDK retries on it
 shown as live bars on the editor beside the numbers that produced them. And every one
 of those changes is on the **audit log**: who changed what, when, from which address, with
 a field-level before and after — a rotated provider credential shows as
-`credential: "***" → "***"`, which is the whole point.
+`credential: "***" → "***"`, which is the whole point. And the upstream no longer has to be
+OpenAI-shaped: point a model at **Claude** and the same unmodified OpenAI SDK gets
+completions from it, streaming included, with the right `finish_reason` and token counts.
+Split a gateway 50/50 between an OpenAI model and an Anthropic one and nothing downstream
+can tell which answered.
 
 ## Quick start (Docker)
 
@@ -124,7 +128,15 @@ view and be missing from the other:
 uses* and reports `OK, 340 ms` or the provider's own words — `401 invalid_api_key`. It
 works on an unsaved draft too, so a base URL can be checked before it is stored. Almost
 every misconfiguration is a wrong base URL, which is what the provider presets (OpenAI,
-Azure, Groq, Together, OpenRouter, vLLM, Ollama) exist to prevent.
+Anthropic, Azure, Groq, Together, OpenRouter, vLLM, Ollama) exist to prevent.
+
+**Dialects.** `openai` covers everything OpenAI-shaped — Azure, Groq, Together, vLLM,
+Ollama, OpenRouter — where the only differences are base URL and auth style. `anthropic`
+speaks the Messages API, and the translation is described under
+[Speaking Anthropic](#speaking-anthropic) below. Choosing the Anthropic preset sets the
+dialect with the URL, because a Claude base URL with the `openai` dialect is a 404 on
+`/chat/completions` and the dropdown that would have prevented it is two fields further
+down the form.
 
 Credentials are **write-only** (SPEC §5.4). They are encrypted with envelope encryption
 before storage, and no endpoint returns one — not for any role, superadmin included.
@@ -213,7 +225,10 @@ identically and trying it turns one bad request into two. Anything unrecognised 
 as final — an unclassified failure is not evidence that retrying will help. Transport
 errors never reach the classifier as exceptions: the proxy has already turned a refused
 connection into a 502 and a read timeout into a 504, so the table is complete by
-construction.
+construction. A provider status the table has never heard of is normalised by the dialect
+before it gets here rather than by adding rows: Anthropic's 529 "overloaded" arrives as the
+retryable 503 it means, which is the difference between a failover chain that moves along
+and one that stops on the failure retrying was invented for.
 
 **Each attempt carries its model's own `timeout_seconds`, and the chain carries a
 deadline.** Three targets at sixty seconds each is three minutes and no client waits that
@@ -258,6 +273,77 @@ drawer draws it as a timeline. One clean attempt records nothing, because the ro
 model, status and latency columns already say it. `routing_attempts_total{mode, model,
 outcome}`, `routing_failovers_total{model, error_code}` and `routing_chain_attempts`
 carry the same picture to Prometheus.
+
+## Speaking Anthropic
+
+A model's **dialect** decides its wire format, and `anthropic` is the first one that is not
+a passthrough. A client keeps sending OpenAI chat completions; the gateway translates to the
+Messages API and back, streaming included. Nothing in `app/api/proxy/` knows this dialect
+exists — a test reads those files and fails if that stops being true, because a route that
+grows an `if dialect == …` makes the next dialect somebody's afternoon.
+
+Four differences do the damage, and all four are handled rather than documented as
+limitations.
+
+**System messages are a parameter, not a message.** Anthropic takes `system` at the top
+level and rejects a system entry in `messages`. The prompt assembler puts the model's
+context, the gateway's, and the client's own in that list, so *every* system message is
+lifted, in order, joined the way the assembler joins them. A dialect that dropped them would
+serve every request through the gateway without its configured behaviour and nothing on any
+screen would say so.
+
+**The message list has structural rules.** Roles must alternate, the first turn must be
+`user`, and a trailing assistant turn may not end in whitespace. None of that is wrong by
+OpenAI's rules, so each is repaired instead of refused: consecutive same-role turns are
+merged, empty turns dropped, a leading assistant turn gets a minimal user turn in front of
+it, and a trailing assistant prefill is right-stripped. Replaying a stored conversation is
+the most ordinary thing a client does, and a 400 for it would make the compatibility claim
+false in the common case.
+
+**`max_tokens` is required.** OpenAI treats it as optional; Anthropic 400s without it. The
+outbound request always carries one — the caller's, then the model's `default_params`, then
+a 4096 fallback. Never unbounded.
+
+**Some parameters have no equivalent, and the log says which.** `presence_penalty`,
+`frequency_penalty`, `n`, `seed`, `logit_bias` and `response_format` are not sent;
+`temperature` is clamped from OpenAI's 0–2 to Anthropic's 0–1; `stop` becomes
+`stop_sequences`. Each request records the set it dropped, and the monitoring drawer names
+them — because the failure is silent otherwise: the request succeeds, the parameter does
+nothing, and the caller concludes it has no effect on this model. The model form lists them
+too, so it is answerable before the first request rather than after it. `n > 1` is the one
+exception: it is a 400 naming the field, because a caller who asked for three completions
+and silently got one would not notice until it mattered.
+
+Coming back the other way: text blocks are concatenated into `choices[0].message.content`,
+`stop_reason` maps to `finish_reason` (`end_turn`/`stop_sequence` → `stop`, `max_tokens` →
+`length`, `tool_use` → `tool_calls`), and `input_tokens`/`output_tokens` become
+`prompt_tokens`/`completion_tokens` with a computed total — the same numbers rate limits
+charge against and the charts draw. The response id is `chatcmpl-msg_01ABC`: OpenAI-shaped
+for the client, and still naming Anthropic's own message for whoever has to correlate a
+support ticket with the provider's logs.
+
+**Streaming is translated frame by frame, never accumulated.** `message_start` becomes the
+role-announcing first chunk, each `text_delta` its own chunk, `message_stop` the chunk with
+the `finish_reason`; `ping` and `content_block_stop` are swallowed, and an extended-thinking
+block never reaches the client as content. Usage arrives in its own final chunk when
+`stream_options.include_usage` was asked for, exactly as OpenAI does it. An `error` event
+mid-stream ends the stream the same way a dropped connection does — a terminating SSE error
+frame and `failed_after_stream_start` on the row — because the 200 went out several frames
+ago and cannot be taken back.
+
+What keeps the two dialects from drifting apart is
+[`tests/test_adapter_contract.py`](tests/test_adapter_contract.py): one table of cases, each
+described in neither provider's terms, rendered as each provider's own response and run
+through each adapter, asserting the OpenAI view is identical. Adding a dialect means adding
+one entry there, and every case runs against it — including a guard that fails if a dialect
+is registered and not listed. Stream translation is driven from recorded event fixtures in
+[`tests/fixtures/anthropic/`](tests/fixtures/anthropic/README.md) rather than hand-built
+event lists, for the reason set out there.
+
+Out of scope, and noted where the code assumes them away: inbound `/v1/messages` (SPEC
+§16.6), tool use in either direction (§16.1), vision, extended thinking and prompt caching
+controls, and the Bedrock and Vertex hosting variants — which speak this same body but move
+the model id into the URL path, sign differently, and carry `anthropic_version` in the body.
 
 ## Connectors and ingestion
 
@@ -984,14 +1070,18 @@ app/
   api/        routers — health, proxy/ (data plane), control/ (the UI's API:
               auth, directory, models, gateways, connectors, monitoring,
               end_users, audit), spa.py (serves the built SPA in production)
-  adapters/   upstream dialects — openai now, anthropic in task 16
+  adapters/   upstream dialects — base (the protocol, the registry, the error
+              translation), http (auth styles, timeouts, endpoint URLs — shared
+              because they are not dialect questions), openai (passthrough),
+              anthropic (the Messages API translation, both directions)
   core/       config, logging, errors, ids, metrics, middleware, clients,
               crypto (envelope encryption), keys (API key format), passwords
               (Argon2id), patterns (regex safety), tokens (JWT + refresh),
               tenancy (TenantScope), background
   db/         engine, session, declarative base, models, scoping (ScopedRepository
               and the unscoped-query guard), repositories
-  schemas/    the OpenAI wire format, control-plane request/response bodies
+  schemas/    the OpenAI wire format, the slice of Anthropic's the gateway reads,
+              control-plane request/response bodies
   services/   gateway resolution and its Redis config cache (gateway_resolver),
               API-key auth, prompt assembly, forwarding, SSE, control-plane auth
               (auth, auth_provider, auth_store, login_throttle), tenancy

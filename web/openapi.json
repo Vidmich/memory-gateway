@@ -4341,6 +4341,13 @@
             "title": "Created At",
             "type": "string"
           },
+          "dropped_params": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dropped Params",
+            "type": "array"
+          },
           "end_user_id": {
             "anyOf": [
               {
@@ -4529,7 +4536,8 @@
           "request_id",
           "response_truncated",
           "failed_after_stream_start",
-          "bodies_omitted"
+          "bodies_omitted",
+          "dropped_params"
         ],
         "title": "RequestLogResponse",
         "type": "object"

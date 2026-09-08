@@ -3106,6 +3106,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Dropped Params */
+            dropped_params: string[];
             /** End User Id */
             end_user_id: string | null;
             /** Error Code */

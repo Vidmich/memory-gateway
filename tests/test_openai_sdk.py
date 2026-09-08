@@ -17,7 +17,7 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from tests.conftest import ProxyHarness
-from tests.support import Behaviour, chunk, completion
+from tests.support import Behaviour, anthropic_events, anthropic_message, chunk, completion
 
 MESSAGES: list[ChatCompletionMessageParam] = [{"role": "user", "content": "hi"}]
 
@@ -106,6 +106,73 @@ async def test_tools_raises_bad_request_naming_the_field(
 
 
 # ---------------------------------------------------------------------------
+# a dialect the SDK has never heard of
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def claude(live_proxy: ProxyHarness) -> AsyncIterator[tuple[ProxyHarness, AsyncOpenAI]]:
+    """The same gateway, its one upstream switched to the anthropic dialect.
+
+    Task 16's acceptance criterion is about *this* client rather than about the wire: the
+    SDK below is the official one, unmodified, and the only thing that changed is which
+    provider the gateway talks to on the other side.
+    """
+    live_proxy.retarget(dialect="anthropic", auth_type="api_key_header")
+    instance = sdk(live_proxy)
+    try:
+        yield live_proxy, instance
+    finally:
+        await instance.close()
+
+
+async def test_the_sdk_reads_a_completion_from_claude(
+    claude: tuple[ProxyHarness, AsyncOpenAI],
+) -> None:
+    proxy, client = claude
+    proxy.upstream.behaviour = Behaviour(
+        body=anthropic_message("hello from Claude", input_tokens=11, output_tokens=4)
+    )
+
+    result = await client.chat.completions.create(model="demo", messages=MESSAGES)
+
+    assert result.choices[0].message.content == "hello from Claude"
+    assert result.choices[0].finish_reason == "stop"
+    assert result.usage is not None
+    assert result.usage.total_tokens == 15
+
+
+async def test_the_sdk_iterates_a_translated_stream(
+    claude: tuple[ProxyHarness, AsyncOpenAI],
+) -> None:
+    proxy, client = claude
+    proxy.upstream.behaviour = Behaviour(
+        chunks=anthropic_events("one ", "two ", "three"), send_done=False
+    )
+
+    stream = await client.chat.completions.create(model="demo", messages=MESSAGES, stream=True)
+    parts = [part async for part in stream]
+
+    assert "".join(part.choices[0].delta.content or "" for part in parts) == "one two three"
+    assert parts[-1].choices[0].finish_reason == "stop"
+
+
+async def test_the_sdk_raises_its_own_exception_for_an_overloaded_claude(
+    claude: tuple[ProxyHarness, AsyncOpenAI],
+) -> None:
+    """Anthropic's 529 means nothing to this SDK. Translated to a 503 it raises
+    ``InternalServerError``, which is what a caller's retry logic is written against."""
+    proxy, client = claude
+    proxy.upstream.behaviour = Behaviour(
+        status=529,
+        body={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+    )
+
+    with pytest.raises(openai.InternalServerError):
+        await client.chat.completions.create(model="demo", messages=MESSAGES)
+
+
+# ---------------------------------------------------------------------------
 # against a real provider
 # ---------------------------------------------------------------------------
 
@@ -147,5 +214,61 @@ async def test_against_a_real_provider(live_proxy: ProxyHarness) -> None:
     )
     parts = [part async for part in stream]
     assert len(parts) > 1, "a real stream arrives in more than one chunk"
+
+    await client.close()
+
+
+@pytest.mark.live
+@pytest.mark.skipif(not os.getenv("ANTHROPIC_API_KEY"), reason="no live Anthropic key")
+async def test_against_a_real_anthropic_provider(live_proxy: ProxyHarness) -> None:
+    """The one thing no fixture can prove: that Anthropic accepts what this dialect sends.
+
+    Run with ``ANTHROPIC_API_KEY=... uv run pytest -m live``. Costs a few tokens.
+
+    Worth running whenever ``API_VERSION`` in ``app/adapters/anthropic.py`` moves, and
+    worth using to refresh ``tests/fixtures/anthropic/*.sse`` from a real stream while the
+    connection is open — see the README there.
+    """
+    import dataclasses
+
+    live_proxy.resolver.gateway = dataclasses.replace(
+        live_proxy.gateway,
+        targets=(
+            dataclasses.replace(
+                live_proxy.target,
+                dialect="anthropic",
+                auth_type="api_key_header",
+                base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"),
+                upstream_model_id=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
+                credential=os.environ["ANTHROPIC_API_KEY"],
+                timeout_seconds=60,
+            ),
+        ),
+    )
+    client = sdk(live_proxy)
+
+    result = await client.chat.completions.create(
+        model="demo",
+        # A system message as well as a user turn, because lifting it out of `messages`
+        # into the `system` parameter is the translation most likely to be rejected — and
+        # a request with only a user turn would never exercise it.
+        messages=[
+            {"role": "system", "content": "Answer with a single word and no punctuation."},
+            {"role": "user", "content": "Reply with the single word: pong"},
+        ],
+        max_tokens=5,
+    )
+    assert result.choices[0].message.content
+    assert result.usage is not None and result.usage.prompt_tokens > 0
+
+    stream = await client.chat.completions.create(
+        model="demo",
+        messages=[{"role": "user", "content": "Count from 1 to 5."}],
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    parts = [part async for part in stream]
+    assert len(parts) > 1, "a real stream arrives in more than one chunk"
+    assert parts[-1].usage is not None, "include_usage must produce a usage chunk"
 
     await client.close()

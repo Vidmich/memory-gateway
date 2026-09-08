@@ -177,7 +177,7 @@ def test_parse_reads_a_completion() -> None:
 
 
 def test_parse_rejects_a_body_that_is_not_a_completion() -> None:
-    from app.adapters.openai import MalformedUpstreamResponse
+    from app.adapters.base import MalformedUpstreamResponse
 
     with pytest.raises(MalformedUpstreamResponse):
         adapter.parse(httpx.Response(200, text="<html>gateway timeout</html>"))
@@ -188,7 +188,10 @@ async def _frames(payload: bytes) -> list[tuple[str, bool]]:
         yield payload
 
     response = httpx.Response(200, stream=_AsyncBytes(stream()))
-    return [(frame.data, frame.chunk is not None) async for frame in adapter.parse_stream(response)]
+    return [
+        (frame.data, frame.chunk is not None)
+        async for frame in adapter.parse_stream(response, request(stream=True))
+    ]
 
 
 class _AsyncBytes(httpx.AsyncByteStream):

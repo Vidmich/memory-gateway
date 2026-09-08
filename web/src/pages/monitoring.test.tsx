@@ -392,6 +392,25 @@ describe('the routing timeline', () => {
     ).toBeInTheDocument()
   })
 
+  it('names the parameters the dialect could not carry', async () => {
+    // The request succeeded, so this row is the only place that says a parameter the
+    // caller set was never sent (SPEC 8.3).
+    const dialog = await open(
+      makeRequestDetail({
+        log: makeRequestLog({ model_name: 'claude', dropped_params: ['presence_penalty', 'seed'] }),
+      }),
+    )
+
+    expect(within(dialog).getByText('presence_penalty, seed')).toBeInTheDocument()
+    expect(within(dialog).getByText(/were not sent/)).toBeInTheDocument()
+  })
+
+  it('says nothing when everything the caller asked for went out', async () => {
+    const dialog = await open(makeRequestDetail())
+
+    expect(within(dialog).queryByText(/were not sent/)).not.toBeInTheDocument()
+  })
+
   describe('the memory panel', () => {
     const injected = {
       id: 'ch1',

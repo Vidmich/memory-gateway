@@ -105,6 +105,59 @@ async def test_a_completed_request_records_what_happened() -> None:
     assert logs.transcript(row.id).response_body == "hi there"  # type: ignore[union-attr]
 
 
+# ---------------------------------------------------------------------------
+# what the dialect could not carry (SPEC 8.3)
+# ---------------------------------------------------------------------------
+
+
+def collect(target_overrides: dict[str, object], **asked_for: object) -> list[str]:
+    logs = build_logs()
+    recorder = logs.service.begin(organization_id=uuid7(), gateway_id=uuid7(), policy=LogPolicy())
+    recorder.client_request(
+        ChatRequest.model_validate(
+            {"model": "acme-chat", "messages": [{"role": "user", "content": "hi"}], **asked_for}
+        )
+    )
+    recorder.prepared(
+        request().messages, make_target("http://upstream.invalid/v1", **target_overrides)
+    )
+    return recorder.record.dropped_params
+
+
+def test_an_openai_upstream_drops_nothing() -> None:
+    """The dialect that forwards everything, so a non-empty list always means a
+    translation happened."""
+    assert collect({}, presence_penalty=0.5, seed=7) == []
+
+
+def test_a_translating_dialect_records_what_it_left_behind() -> None:
+    assert collect({"dialect": "anthropic"}, presence_penalty=0.5, seed=7) == [
+        "presence_penalty",
+        "seed",
+    ]
+
+
+def test_only_what_the_caller_actually_asked_for_is_recorded() -> None:
+    """A parameter nobody set was not dropped — it was never there, and a log row that
+    listed the whole vocabulary of the dialect would say nothing about this request."""
+    assert collect({"dialect": "anthropic"}, temperature=0.4) == []
+
+
+def test_the_models_own_defaults_count_as_asked_for() -> None:
+    """An operator who put `frequency_penalty` in a Claude model's defaults configured
+    something that never happens, and this is where they find out."""
+    assert collect({"dialect": "anthropic", "default_params": {"frequency_penalty": 0.3}}) == [
+        "frequency_penalty"
+    ]
+
+
+def test_a_dialect_with_no_adapter_records_nothing_rather_than_raising() -> None:
+    """Unreachable through the proxy, which refuses the request first. Reachable from a
+    stored model whose dialect this build no longer serves, and a log row is not the place
+    to discover that."""
+    assert collect({"dialect": "bedrock"}, presence_penalty=0.5) == []
+
+
 async def test_a_failure_records_the_code_and_the_status() -> None:
     from app.api.proxy.errors import UpstreamTimeout
 

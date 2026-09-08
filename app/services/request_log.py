@@ -47,12 +47,12 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from app.adapters.base import UpstreamTarget
+from app.adapters.base import UpstreamTarget, get_adapter
 from app.core.errors import AppError
 from app.core.ids import uuid7
 from app.core.metrics import LogMetrics
@@ -164,6 +164,10 @@ class RequestRecord:
     retrieved_chunk_ids: list[Any] = field(default_factory=list)
     retrieved_fact_ids: list[Any] = field(default_factory=list)
     failover_attempts: list[Any] = field(default_factory=list)
+    #: Generation parameters the target's dialect could not carry, so they never reached
+    #: the provider (SPEC §8.3). Empty for an OpenAI-shaped upstream, which is every
+    #: request that does not go to Claude — see :meth:`RequestRecorder.prepared`.
+    dropped_params: list[str] = field(default_factory=list)
 
     request_id: str | None = None
     response_truncated: bool = False
@@ -217,6 +221,11 @@ class RequestRecorder:
         self._started = time.perf_counter()
         self._upstream_started: float | None = None
         self._submitted = False
+        #: The generation parameters the caller explicitly asked for, kept from
+        #: :meth:`client_request` until :meth:`prepared` knows which dialect has to carry
+        #: them. Names only — the values are in the transcript, and this is a question
+        #: about which knobs exist rather than what they were set to.
+        self._asked_for: set[str] = set()
 
     @property
     def record(self) -> RequestRecord:
@@ -229,6 +238,7 @@ class RequestRecorder:
     def client_request(self, request: ChatRequest) -> None:
         """The caller's own messages, before any layer was prepended."""
         self._record.streamed = bool(request.stream)
+        self._asked_for = set(request.client_parameters())
         if self._record.policy.request_body:
             self._record.request_body = _messages(request.messages)
 
@@ -248,6 +258,7 @@ class RequestRecorder:
             self._record.assembled_prompt = _messages(messages)
         self._record.upstream_model_id = target.id
         self._record.model_name = target.name
+        self._record.dropped_params = _dropped(target, self._asked_for)
 
     def end_user(self, *, end_user_id: uuid.UUID | None, session_id: str | None) -> None:
         """Who this request belongs to, and which conversation (SPEC §6.2).
@@ -448,6 +459,26 @@ class StreamTee:
         the concatenation of the assistant's content and nothing else.
         """
         return "".join(self._parts) if self._capture else None
+
+
+def _dropped(target: UpstreamTarget, asked_for: Collection[str]) -> list[str]:
+    """Which of this request's generation parameters the target's dialect cannot carry.
+
+    Answered here rather than by the adapter mid-call, because the point is the *record*:
+    a silently dropped ``presence_penalty`` is otherwise discoverable only by experiment,
+    and six months later it is a support ticket nobody can close (SPEC §8.3).
+
+    Two of the three parameter layers are visible from here — what the caller sent, and
+    the model's own ``default_params``. The gateway's ``param_overrides`` are not, because
+    a gateway can point at several models in different dialects at once and the merge that
+    combines them belongs to the request, not to this record. That layer is operator
+    configuration rather than caller intent, which is the half this is for.
+    """
+    try:
+        adapter = get_adapter(target.dialect)
+    except ValueError:  # pragma: no cover - the proxy refuses this request first
+        return []
+    return list(adapter.dropped({*asked_for, *target.default_params}))
 
 
 def _messages(

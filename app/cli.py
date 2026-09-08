@@ -8,6 +8,14 @@ Everything the gateway half does is now doable from the UI. What is left that th
 cannot do is the first step: creating the superadmin there is nobody to log in as yet.
 The gateway seeding stays because a working ``/g/demo/v1`` on a fresh checkout is what
 makes the data plane testable before anyone has opened a browser.
+
+``distil-backfill`` reads transcripts that no distillation pass has covered and covers them
+(SPEC §6.4). It exists for two moments that are otherwise unrecoverable: switching the
+feature on for a gateway that has been serving traffic for months, and recovering from an
+outage in which the worker was down while the debounce windows quietly expired. It is
+idempotent because ``transcripts.distilled_at`` is — running it twice over the same range
+distils nothing the second time — and it is bounded by a date range because the alternative,
+"everything", is a bill nobody sized.
 """
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ import asyncio
 import json
 import os
 import secrets
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -41,6 +50,11 @@ DEFAULT_ADMIN_EMAIL = "admin@example.com"
 #: 24 URL-safe characters. Long enough that nobody is tempted to keep it, which is the
 #: point — it exists to get you to the password-change screen.
 ADMIN_PASSWORD_BYTES = 18
+
+#: How many conversations one backfill run covers by default. Small enough that a first
+#: run is a sample rather than an invoice; the command is idempotent, so the way to do more
+#: is to run it again.
+DEFAULT_BACKFILL_LIMIT = 200
 
 
 @dataclass
@@ -102,9 +116,50 @@ def main(argv: list[str] | None = None) -> int:
         "generated from it)",
     )
 
+    backfill = commands.add_parser(
+        "distil-backfill",
+        help="Distil conversation memory from transcripts a pass has not covered yet",
+    )
+    backfill.add_argument(
+        "--since",
+        required=True,
+        help="Start of the range, as a date (2026-09-01) or an ISO timestamp",
+    )
+    backfill.add_argument(
+        "--until",
+        default=None,
+        help="End of the range, exclusive (default: now)",
+    )
+    backfill.add_argument(
+        "--organization",
+        default=None,
+        help="Only this organization, by id (default: every organization)",
+    )
+    backfill.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_BACKFILL_LIMIT,
+        help=f"Most conversations to distil in this run (default: {DEFAULT_BACKFILL_LIMIT})",
+    )
+    backfill.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List what would be distilled and call no models",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "openapi":
         return dump_openapi()
+    if args.command == "distil-backfill":
+        return asyncio.run(
+            run_backfill(
+                since=_moment(args.since),
+                until=_moment(args.until) if args.until else datetime.now(UTC),
+                organization_id=uuid.UUID(args.organization) if args.organization else None,
+                limit=args.limit,
+                dry_run=args.dry_run,
+            )
+        )
 
     # `required=True` on the subparsers means argparse has already rejected anything else.
     return asyncio.run(
@@ -126,6 +181,87 @@ def dump_openapi() -> int:
     from app.main import create_app
 
     print(json.dumps(create_app().openapi(), indent=2, sort_keys=True))
+    return 0
+
+
+def _moment(value: str) -> datetime:
+    """A date or a timestamp, always in UTC.
+
+    A bare date is accepted because that is what an operator types, and it is read as
+    midnight UTC rather than local midnight: a backfill whose range shifts with the machine
+    it is run from is a backfill that covers a different set of conversations each time.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise SystemExit(f"could not read {value!r} as a date or timestamp") from None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+async def run_backfill(
+    *,
+    since: datetime,
+    until: datetime,
+    organization_id: uuid.UUID | None,
+    limit: int,
+    dry_run: bool,
+) -> int:
+    """Distil every conversation in a window that no pass has covered.
+
+    Runs the *real* pass, through the same objects the worker builds — so a backfill and a
+    live distillation produce the same facts, deduplicate against the same index, and honour
+    the same per-organization settings including the daily cap. A backfill that bypassed the
+    cap would be the one way to spend a month's budget in an afternoon.
+
+    Sequential, not concurrent. The work is provider calls against a model the customer is
+    paying for, and the operator running this wants to be able to stop it.
+    """
+    from app.core.clients import Clients
+    from app.core.tenancy import TenantScope
+    from app.services.distillation_store import SUCCEEDED
+    from app.workers.runtime import build_distillation, build_ingestion, build_queue
+
+    settings = get_settings()
+    clients = Clients.create(settings)
+    try:
+        ingestion = build_ingestion(clients, settings, queue=build_queue(clients.jobs))
+        distillation = build_distillation(clients, settings, ingestion=ingestion)
+        scope = (
+            TenantScope.of_organization(organization_id)
+            if organization_id is not None
+            # Unrestricted, deliberately: a backfill with no ``--organization`` spans every
+            # tenant, which is a thing only an operator with shell access can ask for. Each
+            # pass it launches then runs under that conversation's own organization scope.
+            else TenantScope(role="service", organization_id=None)
+        )
+        async with distillation.store.begin(scope) as transaction:
+            sessions = list(await transaction.pending_sessions(start=since, end=until, limit=limit))
+
+        print(f"{len(sessions)} conversation(s) with undistilled transcripts")
+        if dry_run:
+            for session in sessions:
+                print(f"  {session.organization_id} {session.end_user_id} {session.session_id}")
+            return 0
+
+        written = 0
+        for session in sessions:
+            # No debounce token: a backfill is somebody asking for these passes now, and a
+            # pending token it never armed is not its to lose to.
+            outcome = await distillation.distiller.run(
+                organization_id=session.organization_id,
+                end_user_id=session.end_user_id,
+                session_id=session.session_id,
+            )
+            written += outcome.inserted
+            print(
+                f"  {session.end_user_id} {outcome.outcome}"
+                + (f" ({outcome.reason})" if outcome.outcome != SUCCEEDED else "")
+                + f" +{outcome.inserted} ~{outcome.deduped} ^{outcome.superseded}"
+            )
+        print(f"{written} new fact(s) written")
+    finally:
+        await ingestion.aclose()
+        await clients.aclose()
     return 0
 
 

@@ -72,8 +72,16 @@ class MemoryFactResponse(BaseModel):
     text: str
     kind: str
     confidence: float
+    #: The request this fact was learned from (task 13). Null for a fact typed by hand,
+    #: and a dangling id once retention has dropped the log — the drawer says so rather
+    #: than hiding the breadcrumb, because "learned from a conversation we no longer keep"
+    #: is a true and useful answer.
     source_log_id: uuid.UUID | None
     superseded_at: datetime | None
+    #: What replaced this one, when distillation retired it in favour of something newer.
+    #: Null on a fact retracted by hand: nothing replaced it, and saying otherwise would
+    #: invent a history.
+    superseded_by_id: uuid.UUID | None = None
     expires_at: datetime | None
     created_at: datetime
     last_seen_at: datetime
@@ -88,6 +96,7 @@ class MemoryFactResponse(BaseModel):
             confidence=fact.confidence,
             source_log_id=fact.source_log_id,
             superseded_at=fact.superseded_at,
+            superseded_by_id=fact.superseded_by_id,
             expires_at=fact.expires_at,
             created_at=fact.created_at,
             last_seen_at=fact.last_seen_at,

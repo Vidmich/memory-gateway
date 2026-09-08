@@ -450,6 +450,226 @@
         "title": "CredentialStatus",
         "type": "object"
       },
+      "DistillationConfig": {
+        "description": "SPEC \u00a76.4's knobs, per organization.",
+        "properties": {
+          "daily_call_cap": {
+            "default": 5000,
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Daily Call Cap",
+            "type": "integer"
+          },
+          "debounce_seconds": {
+            "default": 30,
+            "maximum": 3600.0,
+            "minimum": 5.0,
+            "title": "Debounce Seconds",
+            "type": "integer"
+          },
+          "dedupe_threshold": {
+            "default": 0.92,
+            "maximum": 1.0,
+            "minimum": 0.5,
+            "title": "Dedupe Threshold",
+            "type": "number"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_facts_per_user": {
+            "default": 500,
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Max Facts Per User",
+            "type": "integer"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "per_user_daily_cap": {
+            "default": 24,
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Per User Daily Cap",
+            "type": "integer"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "title": "DistillationConfig",
+        "type": "object"
+      },
+      "DistillationSettingsRequest": {
+        "additionalProperties": false,
+        "description": "A partial update, merged into whatever is stored.\n\nEvery field optional and applied only when present, so a form that renders six knobs\nand a later build that renders seven do not overwrite each other's.",
+        "properties": {
+          "daily_call_cap": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Call Cap"
+          },
+          "debounce_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Debounce Seconds"
+          },
+          "dedupe_threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedupe Threshold"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "max_facts_per_user": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Facts Per User"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "per_user_daily_cap": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per User Daily Cap"
+          }
+        },
+        "title": "DistillationSettingsRequest",
+        "type": "object"
+      },
+      "DistillationSettingsResponse": {
+        "description": "The blob, plus the two things the screen needs that are not settings.",
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/DistillationConfig"
+          },
+          "effective_model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Model Id"
+          },
+          "effective_model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Model Name"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/DistillationUsage"
+          },
+          "using_platform_default": {
+            "default": false,
+            "title": "Using Platform Default",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "config",
+          "usage"
+        ],
+        "title": "DistillationSettingsResponse",
+        "type": "object"
+      },
+      "DistillationUsage": {
+        "description": "What has been spent against the caps today, so the form can show the guard biting.\n\n``day_started_at`` is returned rather than implied: the cap resets at UTC midnight and\nan operator in Auckland reading \"4,998 of 5,000 used\" needs to know how long that has\nleft to run.",
+        "properties": {
+          "calls_today": {
+            "default": 0,
+            "title": "Calls Today",
+            "type": "integer"
+          },
+          "daily_call_cap": {
+            "default": 5000,
+            "title": "Daily Call Cap",
+            "type": "integer"
+          },
+          "day_started_at": {
+            "format": "date-time",
+            "title": "Day Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day_started_at"
+        ],
+        "title": "DistillationUsage",
+        "type": "object"
+      },
       "DocumentChunk": {
         "description": "One indexed chunk, as the inspector shows it. No score: nothing was searched for.",
         "properties": {
@@ -1583,6 +1803,55 @@
         "title": "LoginRequest",
         "type": "object"
       },
+      "ManualPassResponse": {
+        "additionalProperties": false,
+        "description": "What \"Distil now\" did.\n\n``reason`` is the field that makes the button useful. Zero facts written has several\ncauses \u2014 nothing new was said, the daily cap is spent, no model is configured, the\nextractor found nothing durable \u2014 and they need four different actions.",
+        "properties": {
+          "deduped": {
+            "default": 0,
+            "title": "Deduped",
+            "type": "integer"
+          },
+          "evicted": {
+            "default": 0,
+            "title": "Evicted",
+            "type": "integer"
+          },
+          "inserted": {
+            "default": 0,
+            "title": "Inserted",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "rejected": {
+            "default": 0,
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "sessions": {
+            "default": 0,
+            "title": "Sessions",
+            "type": "integer"
+          },
+          "superseded": {
+            "default": 0,
+            "title": "Superseded",
+            "type": "integer"
+          }
+        },
+        "title": "ManualPassResponse",
+        "type": "object"
+      },
       "MemberResponse": {
         "properties": {
           "created_at": {
@@ -1699,13 +1968,6 @@
             "maximum": 100.0,
             "minimum": 1.0,
             "title": "Doc Top K",
-            "type": "integer"
-          },
-          "max_facts_per_user": {
-            "default": 500,
-            "maximum": 10000.0,
-            "minimum": 1.0,
-            "title": "Max Facts Per User",
             "type": "integer"
           },
           "memory_enabled": {
@@ -1881,6 +2143,18 @@
             ],
             "title": "Superseded At"
           },
+          "superseded_by_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Id"
+          },
           "text": {
             "title": "Text",
             "type": "string"
@@ -1967,6 +2241,135 @@
           }
         },
         "title": "MemoryFactUpdateRequest",
+        "type": "object"
+      },
+      "MemoryHealthDayResponse": {
+        "additionalProperties": false,
+        "description": "One day of the memory-health chart.",
+        "properties": {
+          "day": {
+            "format": "date-time",
+            "title": "Day",
+            "type": "string"
+          },
+          "deduped": {
+            "default": 0,
+            "title": "Deduped",
+            "type": "integer"
+          },
+          "failures": {
+            "default": 0,
+            "title": "Failures",
+            "type": "integer"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "superseded": {
+            "default": 0,
+            "title": "Superseded",
+            "type": "integer"
+          },
+          "written": {
+            "default": 0,
+            "title": "Written",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "MemoryHealthDayResponse",
+        "type": "object"
+      },
+      "MemoryHealthResponse": {
+        "additionalProperties": false,
+        "description": "SPEC \u00a710.1's memory health, with the rates computed here rather than in the browser.\n\nThe three ratios are sent rather than left to the client, because each has a\ndenominator that is easy to get subtly wrong \u2014 a failure rate over *successful* passes,\na dedupe rate over inserted facts instead of proposed ones \u2014 and a chart that quietly\ndisagrees with the alert is worse than no chart.",
+        "properties": {
+          "average_facts_per_end_user": {
+            "default": 0.0,
+            "title": "Average Facts Per End User",
+            "type": "number"
+          },
+          "candidates": {
+            "default": 0,
+            "title": "Candidates",
+            "type": "integer"
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryHealthDayResponse"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "dedupe_rate": {
+            "default": 0.0,
+            "title": "Dedupe Rate",
+            "type": "number"
+          },
+          "deduped": {
+            "default": 0,
+            "title": "Deduped",
+            "type": "integer"
+          },
+          "end_users_with_facts": {
+            "default": 0,
+            "title": "End Users With Facts",
+            "type": "integer"
+          },
+          "evicted": {
+            "default": 0,
+            "title": "Evicted",
+            "type": "integer"
+          },
+          "facts": {
+            "default": 0,
+            "title": "Facts",
+            "type": "integer"
+          },
+          "failure_rate": {
+            "default": 0.0,
+            "title": "Failure Rate",
+            "type": "number"
+          },
+          "failures": {
+            "default": 0,
+            "title": "Failures",
+            "type": "integer"
+          },
+          "rejected": {
+            "default": 0,
+            "title": "Rejected",
+            "type": "integer"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "superseded": {
+            "default": 0,
+            "title": "Superseded",
+            "type": "integer"
+          },
+          "supersession_rate": {
+            "default": 0.0,
+            "title": "Supersession Rate",
+            "type": "number"
+          },
+          "written": {
+            "default": 0,
+            "title": "Written",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "days"
+        ],
+        "title": "MemoryHealthResponse",
         "type": "object"
       },
       "MemoryPreviewRequest": {
@@ -5087,6 +5490,114 @@
         ]
       }
     },
+    "/api/v1/distillation": {
+      "get": {
+        "description": "What this organization has decided about writing its own memory, plus today's spend.\n\nThe usage figure comes from the same table the cap is enforced against, so the number\non the screen is the number that will refuse the next pass.",
+        "operationId": "get_distillation_settings_api_v1_distillation_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DistillationSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Distillation Settings",
+        "tags": [
+          "distillation"
+        ]
+      },
+      "patch": {
+        "description": "A partial update. Only the fields present in the body are changed.\n\n``model_id: null`` is a value, not an omission: it means \"go back to the platform\ndefault\", and a body that could not express it would make clearing the selector\nimpossible.",
+        "operationId": "update_distillation_settings_api_v1_distillation_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DistillationSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DistillationSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Distillation Settings",
+        "tags": [
+          "distillation"
+        ]
+      }
+    },
+    "/api/v1/distillation/health": {
+      "get": {
+        "description": "SPEC \u00a710.1's memory health, plus the two rates that catch a silent failure.\n\nA dedupe rate near 100% means passes are succeeding and producing nothing; a\nsupersession rate near zero on an established user means contradictions are not being\ncaught. Both look like health from every other angle, which is why they are here rather\nthan left to be inferred from the fact count.",
+        "operationId": "get_memory_health_api_v1_distillation_health_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 90,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryHealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Memory Health",
+        "tags": [
+          "distillation"
+        ]
+      }
+    },
     "/api/v1/documents/{document_id}": {
       "delete": {
         "description": "The document, its object and its vectors. Synchronous: it is bounded work, and the\nrow is on screen in front of whoever pressed it.",
@@ -5353,6 +5864,50 @@
         ]
       }
     },
+    "/api/v1/end-users/{end_user_id}/distil": {
+      "post": {
+        "description": "Run a distillation pass over this person's pending conversations, now.\n\nThe real pass \u2014 same extractor, same threshold, same reconciliation as the background\njob \u2014 so what it reports is what the scheduled one would have done. It answers the\nquestion the debounce makes hard to ask: is this working, and if not, why not.",
+        "operationId": "distil_now_api_v1_end_users__end_user_id__distil_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "end_user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "End User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualPassResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Distil Now",
+        "tags": [
+          "distillation"
+        ]
+      }
+    },
     "/api/v1/end-users/{end_user_id}/memory": {
       "delete": {
         "description": "SPEC \u00a76.5's right to erasure: every fact, every vector, optionally the transcripts.\n\nThe end-user row itself stays. It is what makes an existing request log say who a\nrequest belonged to, and removing it would rewrite the record of things that happened\nrather than forget what was learned from them.\n\n``include_transcripts`` is a query parameter rather than a body: a DELETE with a body\nis legal and unevenly supported \u2014 intermediaries drop it \u2014 and a flag silently lost in\ntransit on an erasure endpoint is the wrong thing to be clever about.",
@@ -5407,7 +5962,7 @@
         ]
       },
       "get": {
-        "description": "What the assistant believes about this person.\n\nSuperseded and expired facts are included unless ``live_only`` is set: the browser's\njob includes explaining an answer the assistant gave last month, and the fact that\nexplains it is usually the one that has since been replaced.",
+        "description": "What the assistant believes about this person.\n\nSuperseded and expired facts are included unless ``live_only`` is set: the browser's\njob includes explaining an answer the assistant gave last month, and the fact that\nexplains it is usually the one that has since been replaced.\n\n``kind`` and ``min_confidence`` are what make a distilled memory readable. A person\nwith two hundred facts is ordinary once distillation is running, and the two questions\nsomebody actually arrives with are \"what must the answers respect\" \u2014 the constraints \u2014\nand \"what is the model merely guessing\" \u2014 everything below a confidence they choose.",
         "operationId": "list_memory_api_v1_end_users__end_user_id__memory_get",
         "parameters": [
           {
@@ -5428,6 +5983,41 @@
               "default": false,
               "title": "Live Only",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_confidence",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Confidence"
             }
           },
           {

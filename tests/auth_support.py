@@ -33,6 +33,8 @@ from app.services.model_probe import Probe
 from app.services.monitoring import MonitoringService
 from tests.catalog_support import FakeProbe
 from tests.connector_support import TOKENIZER, ConnectorFixture, build_connectors
+from tests.distillation_support import DistillationFixture
+from tests.distillation_support import build_distillation as build_distillation_fixture
 from tests.end_user_support import EndUserFixture, build_end_users
 from tests.gateway_support import FakeGatewayProbe, RecordingCache
 from tests.monitoring_support import LogFixture, build_logs, build_monitoring
@@ -91,6 +93,9 @@ class AuthFixture:
     #: Task 12's conversation memory over the same rows: end users, their facts, and the
     #: recaller a request would run. ``None`` without an organization, as above.
     end_users: EndUserFixture | None
+    #: Task 13's write half, over the same rows. ``None`` for a platform-only fixture,
+    #: which has no organization for a conversation to belong to.
+    distillation: DistillationFixture | None
     #: The read half of task 07, over the same rows the write half fills in.
     monitoring: MonitoringService
     logs: LogFixture
@@ -201,6 +206,21 @@ def build_auth(
     end_users = (
         build_end_users(organization, database=database) if organization is not None else None
     )
+    distillation = (
+        build_distillation_fixture(
+            organization,
+            database=database,
+            # The same store, index and embedder the memory browser uses. A distillation
+            # that wrote through a second set would deduplicate against an index the
+            # screens cannot see.
+            end_users=end_users.store,
+            vectors=end_users.vectors,
+            embedder=end_users.embedder,
+            with_model=False,
+        )
+        if organization is not None and end_users is not None
+        else None
+    )
     return AuthFixture(
         service=service,
         directory=directory,
@@ -209,6 +229,7 @@ def build_auth(
         connectors=connectors,
         preview=preview,
         end_users=end_users,
+        distillation=distillation,
         monitoring=monitoring,
         logs=logs,
         secret_box=secret_box,

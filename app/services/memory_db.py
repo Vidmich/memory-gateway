@@ -21,6 +21,7 @@ from typing import Any
 from app.db.models import (
     ApiKey,
     Connector,
+    DistillationRun,
     Document,
     EndUser,
     Gateway,
@@ -55,6 +56,7 @@ class MemoryDatabase:
     #: memory store a fair test of the read side.
     request_logs: dict[uuid.UUID, RequestLog] = field(default_factory=dict)
     transcripts: dict[uuid.UUID, Transcript] = field(default_factory=dict)
+    distillation_runs: dict[uuid.UUID, DistillationRun] = field(default_factory=dict)
 
     def add_user(self, user: User) -> User:
         self.users[user.id] = _stamped(user)

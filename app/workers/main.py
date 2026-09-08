@@ -24,7 +24,13 @@ from app.core.logging import bind_request_id, configure_logging
 from app.core.metrics import build_metrics
 from app.services.job_queue import ARQ_FUNCTION, ARQ_HEAVY_QUEUE_KEY, ArqJobQueue, from_payload
 from app.services.jobs import JobRunner
-from app.workers.runtime import Ingestion, build_dead_letters, build_ingestion, build_runner
+from app.workers.runtime import (
+    Ingestion,
+    build_dead_letters,
+    build_distillation,
+    build_ingestion,
+    build_runner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +60,21 @@ async def startup(context: dict[str, Any]) -> None:
     # retries onto is the same queue this worker is reading from.
     queue = ArqJobQueue(context["redis"])
     ingestion = build_ingestion(clients, settings, queue=queue, metrics=metrics.extraction)
+    # Conversation memory's write half. Built here as well as in the API, from the same
+    # function, so the pass a worker runs and the pass "Distil now" runs are the same pass.
+    distillation = build_distillation(
+        clients, settings, ingestion=ingestion, metrics=metrics.distillation
+    )
 
     context["clients"] = clients
     context["ingestion"] = ingestion
+    context["distillation"] = distillation
     context["runner"] = build_runner(
         ingestion,
         settings,
         dead_letters=build_dead_letters(clients),
         metrics=metrics.jobs,
+        distillation=distillation,
     )
     logger.info("worker started", extra={"environment": settings.environment})
 

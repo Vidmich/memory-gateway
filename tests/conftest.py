@@ -38,6 +38,7 @@ from app.api.control.deps import (
     get_catalog_service,
     get_connector_service,
     get_directory_service,
+    get_distillation_service,
     get_end_user_service,
     get_gateway_service,
     get_memory_preview,
@@ -551,6 +552,9 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     end_users = auth.end_users
     if end_users is not None:
         application.dependency_overrides[get_end_user_service] = lambda: end_users.service
+    distillation = auth.distillation
+    if distillation is not None:
+        application.dependency_overrides[get_distillation_service] = lambda: distillation.service
     application.dependency_overrides[get_gateway_service] = lambda: auth.gateways
     preview = auth.preview
     if preview is not None:
@@ -577,6 +581,8 @@ async def auth_harness() -> AsyncIterator[AuthHarness]:
             application.state.connector_service = fixture.connectors.service
         if fixture.end_users is not None:
             application.state.end_user_service = fixture.end_users.service
+        if fixture.distillation is not None:
+            application.state.distillation_service = fixture.distillation.service
         application.state.gateway_service = fixture.gateways
         if fixture.preview is not None:
             application.state.memory_preview = fixture.preview
@@ -643,6 +649,8 @@ async def directory() -> AsyncIterator[DirectoryHarness]:
             application.state.connector_service = world.auth.connectors.service
         if world.auth.end_users is not None:
             application.state.end_user_service = world.auth.end_users.service
+        if world.auth.distillation is not None:
+            application.state.distillation_service = world.auth.distillation.service
         application.state.gateway_service = world.gateways
         if world.auth.preview is not None:
             application.state.memory_preview = world.auth.preview

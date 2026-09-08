@@ -69,8 +69,14 @@ describe('the memory form', () => {
       memory_max_tokens: 600,
       memory_min_score: 0.3,
       allow_anonymous_memory: false,
-      max_facts_per_user: 500,
     })
+  })
+
+  it('does not send the per-person fact bound, which belongs to the organization', () => {
+    // An end user reaches an organization through however many gateways it has, so a
+    // per-endpoint cap on how much may be known about one person is not a cap. It lives in
+    // Settings -> Organization, and sending it from here would be a 422.
+    expect(Object.keys(memoryBody(memoryForm(stored)))).not.toContain('max_facts_per_user')
   })
 
   it('still sends a partial, so a field a later task adds is not wiped', () => {

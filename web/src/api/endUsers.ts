@@ -29,7 +29,30 @@ export const keys = {
   list: (search: string, cursor?: string | null) =>
     ['end-users', { search, cursor: cursor ?? null }] as const,
   one: (id: string) => ['end-users', id] as const,
-  facts: (id: string, liveOnly: boolean) => ['end-users', id, 'memory', { liveOnly }] as const,
+  facts: (id: string, filters: FactFilters) => ['end-users', id, 'memory', filters] as const,
+}
+
+/**
+ * How the memory browser narrows a list.
+ *
+ * Applied server-side rather than in the browser, and that is not an optimisation: a page
+ * filtered after it arrives is a page that can come back empty while the next one is full,
+ * and a screen that says "no constraints" when it means "none in the first fifty" is worse
+ * than one with no filter at all.
+ */
+export type FactFilters = {
+  liveOnly?: boolean
+  kind?: string | undefined
+  minConfidence?: number | undefined
+}
+
+function factsPath(id: string | undefined, filters: FactFilters): string {
+  const query = new URLSearchParams()
+  if (filters.liveOnly) query.set('live_only', 'true')
+  if (filters.kind) query.set('kind', filters.kind)
+  if (filters.minConfidence) query.set('min_confidence', String(filters.minConfidence))
+  const suffix = query.toString()
+  return `/api/v1/end-users/${id}/memory${suffix ? `?${suffix}` : ''}`
 }
 
 function listPath(search: string, cursor?: string | null): string {
@@ -61,15 +84,12 @@ export function useEndUser(id: string | undefined): UseQueryResult<EndUserRespon
 
 export function useMemoryFacts(
   id: string | undefined,
-  liveOnly = false,
+  filters: FactFilters = {},
 ): UseQueryResult<MemoryFactPage> {
   const client = useApiClient()
   return useQuery({
-    queryKey: keys.facts(id ?? 'unknown', liveOnly),
-    queryFn: () =>
-      client.get<MemoryFactPage>(
-        `/api/v1/end-users/${id}/memory${liveOnly ? '?live_only=true' : ''}`,
-      ),
+    queryKey: keys.facts(id ?? 'unknown', filters),
+    queryFn: () => client.get<MemoryFactPage>(factsPath(id, filters)),
     enabled: Boolean(id),
   })
 }

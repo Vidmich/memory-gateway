@@ -4,14 +4,20 @@ import {
   activity,
   displayName,
   emptyMemoryHint,
+  factOrigin,
   factState,
   formatConfidence,
   formatScore,
+  groupFacts,
+  passSummary,
+  provenanceLink,
   purgeDescription,
   purgeSummary,
   stateLabel,
 } from '@/pages/endUsers'
 import { makeEndUser, makeFact } from '@/test/factories'
+
+const NOW = '2026-09-06T12:00:00Z'
 
 describe('factState', () => {
   it('is live when nothing has retracted or expired it', () => {
@@ -94,10 +100,12 @@ describe('emptyMemoryHint', () => {
     expect(hint).toContain('Seen once')
   })
 
-  it('says what is missing for somebody with real traffic and no memory', () => {
+  it('offers an action for somebody with real traffic and no memory', () => {
+    // Not "wait": distillation exists now, and the two things that produce a fact — typing
+    // one, and running a pass — are both one click away on this person's page.
     const hint = emptyMemoryHint(makeEndUser({ fact_count: 0, request_count: 40 }))
 
-    expect(hint).toContain('distillation')
+    expect(hint).toContain('distil')
   })
 })
 
@@ -129,5 +137,84 @@ describe('activity', () => {
 
     expect(line).toContain('1 request ·')
     expect(line).not.toContain('1 requests')
+  })
+})
+
+describe('folding a retracted fact under its replacement', () => {
+  it('shows the pair as a pair', () => {
+    // "Why did it say that last month" is answered by the fact that has since been
+    // replaced, and the answer is only complete if the two are together.
+    const replacement = makeFact({ id: 'new', text: 'Works in Go.' })
+    const old = makeFact({
+      id: 'old',
+      text: 'Works in Rust.',
+      superseded_at: '2026-09-01T00:00:00Z',
+      superseded_by_id: 'new',
+    })
+
+    const groups = groupFacts([replacement, old])
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.fact.id).toBe('new')
+    expect(groups[0]?.replaced.map((fact) => fact.id)).toEqual(['old'])
+  })
+
+  it('keeps a retracted fact whose replacement is not on the page', () => {
+    // Deleted, or on the next page. Folding it under something absent would make it
+    // vanish from a list it is genuinely part of.
+    const orphan = makeFact({
+      id: 'old',
+      superseded_at: '2026-09-01T00:00:00Z',
+      superseded_by_id: 'gone',
+    })
+
+    expect(groupFacts([orphan]).map((group) => group.fact.id)).toEqual(['old'])
+  })
+
+  it('keeps a fact retracted by hand at the top level', () => {
+    // Nothing replaced it — somebody said it was wrong — so there is no pair to show.
+    const retracted = makeFact({ superseded_at: '2026-09-01T00:00:00Z' })
+
+    expect(groupFacts([retracted])).toEqual([{ fact: retracted, replaced: [] }])
+  })
+
+  it('folds several generations under the one that is current', () => {
+    const current = makeFact({ id: 'c' })
+    const first = makeFact({ id: 'a', superseded_by_id: 'c', superseded_at: NOW })
+    const second = makeFact({ id: 'b', superseded_by_id: 'c', superseded_at: NOW })
+
+    expect(groupFacts([current, first, second])[0]?.replaced).toHaveLength(2)
+  })
+})
+
+describe('provenance', () => {
+  it('links a distilled fact to the request it was learned from', () => {
+    const fact = makeFact({ source_log_id: 'log-1' })
+
+    expect(provenanceLink(fact)).toBe('/monitoring?request=log-1')
+    expect(factOrigin(fact)).toContain('conversation')
+  })
+
+  it('says a hand-written fact was written by hand rather than linking nowhere', () => {
+    expect(provenanceLink(makeFact())).toBeNull()
+    expect(factOrigin(makeFact())).toBe('Added by hand')
+  })
+})
+
+describe('what "distil now" says afterwards', () => {
+  it('reports the dispositions, because a count alone is not evidence', () => {
+    const line = passSummary({ sessions: 2, inserted: 1, deduped: 3, superseded: 1 })
+
+    expect(line).toContain('2 conversations')
+    expect(line).toContain('1 new')
+    expect(line).toContain('3 already known')
+  })
+
+  it('distinguishes "nothing new to read" from "nothing was learned"', () => {
+    // Zero facts written has several causes and they need different actions. "0" alone is
+    // the answer that sends somebody to read logs.
+    const line = passSummary({ sessions: 0, inserted: 0, deduped: 0, superseded: 0 })
+
+    expect(line).toContain('already been distilled')
   })
 })

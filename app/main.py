@@ -39,6 +39,7 @@ from app.services.catalog_store import PostgresCatalogStore
 from app.services.connectors import ConnectorService
 from app.services.directory import DirectoryService
 from app.services.directory_store import PostgresDirectoryStore
+from app.services.distillation_service import DistillationService
 from app.services.end_user_resolver import EndUserResolver, RequestCounters
 from app.services.end_user_store import PostgresEndUserStore
 from app.services.end_users import EndUserService
@@ -64,7 +65,7 @@ from app.services.request_log import LogFlusher, LogQueue, RequestLogService
 from app.services.retrieval import MemoryService, Retriever
 from app.services.routing import Router
 from app.services.tokenizer import build_tokenizer
-from app.workers.runtime import build_ingestion, build_queue
+from app.workers.runtime import build_distillation, build_ingestion, build_queue
 
 logger = logging.getLogger(__name__)
 
@@ -108,13 +109,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.upstream_router = upstream_router
 
+        # Ingestion. Built here, in the API process, because two of its operations are
+        # synchronous — deleting a document and reconciling a connector — and the worker
+        # builds the same objects from the same function, so the two cannot drift.
+        ingestion = build_ingestion(
+            clients, settings, queue=build_queue(clients.jobs), metrics=metrics.extraction
+        )
+        app.state.ingestion = ingestion
+        # Conversation memory's write half, from the same builder the worker uses. Built
+        # *before* the log flusher because the flusher holds its trigger: a transcript that
+        # has just been committed is the event that arms a distillation pass.
+        distillation = build_distillation(
+            clients, settings, ingestion=ingestion, metrics=metrics.distillation
+        )
+        app.state.distillation = distillation
+
         # The request log's write half. The queue is created before the flusher because
         # the flusher only reads from it, and started here rather than lazily so a
         # process that has accepted a request has already proved it can drain one.
         log_queue = LogQueue(metrics=metrics.logs)
         request_logs = RequestLogService(
             log_queue,
-            LogFlusher(log_queue, PostgresLogWriter(clients.session_factory), metrics=metrics.logs),
+            LogFlusher(
+                log_queue,
+                PostgresLogWriter(clients.session_factory),
+                metrics=metrics.logs,
+                # Task 13's one touch point with the serving half, and it is on the far
+                # side of the commit: a pass is armed only once the transcript it will read
+                # exists. Failures here are swallowed — see ``LogFlusher._notify``.
+                subscriber=distillation.trigger,
+            ),
         )
         request_logs.start()
         app.state.request_logs = request_logs
@@ -123,14 +147,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             metrics_repository,
             cache=RedisSummaryCache(clients.redis),
         )
-
-        # Ingestion. Built here, in the API process, because two of its operations are
-        # synchronous — deleting a document and reconciling a connector — and the worker
-        # builds the same objects from the same function, so the two cannot drift.
-        ingestion = build_ingestion(
-            clients, settings, queue=build_queue(clients.jobs), metrics=metrics.extraction
-        )
-        app.state.ingestion = ingestion
         # Retrieval reads the same index ingestion writes, through the same two ports —
         # which is what makes "did my upload become searchable" and "does the gateway see
         # it" the same question rather than two systems that agree by convention.
@@ -171,6 +187,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings=ingestion.settings,
         )
 
+        directory_store = PostgresDirectoryStore(clients.session_factory)
+        app.state.distillation_service = DistillationService(
+            distillation.store,
+            # The organization row is where the settings live, so this reads and writes
+            # through the same store the Organizations screen does.
+            directory=directory_store,
+            end_users=end_user_store,
+            distiller=distillation.distiller,
+            models=distillation.models,
+            debouncer=distillation.debouncer,
+            # So that changing the debounce delay applies to the next request rather than
+            # to the one after the flusher's cache expires.
+            cache=distillation.trigger,
+        )
+
         hasher = build_hasher(settings)
         app.state.auth_service = AuthService(
             PostgresAuthStore(clients.session_factory),
@@ -182,7 +213,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings=settings,
         )
         app.state.directory_service = DirectoryService(
-            PostgresDirectoryStore(clients.session_factory),
+            directory_store,
             hasher=hasher,
             settings=settings,
         )

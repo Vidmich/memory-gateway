@@ -103,6 +103,11 @@ class LogPolicy:
     assembled_prompt: bool = True
     response_body: bool = True
     redaction_patterns: tuple[str, ...] = ()
+    #: Whether this gateway's traffic may feed conversation memory (SPEC §10.2, task 13).
+    #: Resolved with the rest of the policy so that a gateway switched off mid-stream still
+    #: distils the request that was already in flight the way it was configured when it
+    #: started — the same snapshot rule as everything else here.
+    distillation: bool = False
 
     @classmethod
     def of(cls, config: LoggingConfig) -> LogPolicy:
@@ -111,6 +116,11 @@ class LogPolicy:
             assembled_prompt=config.log_assembled_prompt,
             response_body=config.log_response_body,
             redaction_patterns=tuple(config.redaction_patterns),
+            # Both halves, because the schema's validator only refuses the combination on
+            # *write*: a row stored before that rule existed can still say "distil without
+            # bodies", and the answer to that is to distil nothing rather than to read a
+            # transcript that was never captured.
+            distillation=config.enable_distillation and config.log_request_body,
         )
 
     @property
@@ -445,6 +455,19 @@ def _messages(
 # ---------------------------------------------------------------------------
 
 
+class TranscriptSubscriber(Protocol):
+    """Somebody who wants to know that transcripts have landed (task 13).
+
+    One method, called after the batch is committed and never before. A protocol rather
+    than a direct reference to :class:`~app.services.distillation_trigger.
+    DistillationTrigger`, because this module is the request path's logging and must not
+    grow an import of the memory subsystem — and because a worker process builds a flusher
+    with no subscriber at all.
+    """
+
+    async def consider(self, records: Sequence[RequestRecord]) -> Any: ...
+
+
 class LogWriter(Protocol):
     """Where a flushed batch goes. One call per batch, and it may raise."""
 
@@ -562,6 +585,7 @@ class LogFlusher:
         batch_size: int = BATCH_SIZE,
         interval_seconds: float = FLUSH_INTERVAL_SECONDS,
         redaction_budget_seconds: float = DEFAULT_BUDGET_SECONDS,
+        subscriber: TranscriptSubscriber | None = None,
     ) -> None:
         self._queue = queue
         self._writer = writer
@@ -569,6 +593,7 @@ class LogFlusher:
         self._batch_size = batch_size
         self._interval = interval_seconds
         self._redaction_budget = redaction_budget_seconds
+        self._subscriber = subscriber
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -624,6 +649,24 @@ class LogFlusher:
             )
             return
         self._metrics.written.inc(len(prepared))
+        await self._notify(prepared)
+
+    async def _notify(self, prepared: Sequence[RequestRecord]) -> None:
+        """Tell the subscriber the transcripts are committed. Never fails upward.
+
+        After the write, so a job cannot arrive at a worker before the row it is about
+        exists. Failing here costs the conversation memory those requests would have
+        produced; failing *upward* would lose the log batch that has already been written,
+        which would be a strictly worse trade for a strictly less important feature.
+        """
+        if self._subscriber is None:
+            return
+        try:
+            await self._subscriber.consider(prepared)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("could not queue distillation for a batch", exc_info=True)
 
     def _redact(self, record: RequestRecord) -> RequestRecord:
         """Apply the gateway's patterns, or drop the bodies trying.
@@ -770,5 +813,6 @@ __all__ = [
     "RequestRecorder",
     "StreamRecorder",
     "StreamTee",
+    "TranscriptSubscriber",
     "as_json",
 ]

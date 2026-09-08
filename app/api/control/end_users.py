@@ -83,6 +83,8 @@ async def list_memory(
     actor: CurrentActor,
     service: _Service,
     live_only: Annotated[bool, Query()] = False,
+    kind: Annotated[str | None, Query(max_length=16)] = None,
+    min_confidence: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
     cursor: _Cursor = None,
     limit: _Limit = None,
 ) -> Page[MemoryFactResponse]:
@@ -91,9 +93,20 @@ async def list_memory(
     Superseded and expired facts are included unless ``live_only`` is set: the browser's
     job includes explaining an answer the assistant gave last month, and the fact that
     explains it is usually the one that has since been replaced.
+
+    ``kind`` and ``min_confidence`` are what make a distilled memory readable. A person
+    with two hundred facts is ordinary once distillation is running, and the two questions
+    somebody actually arrives with are "what must the answers respect" — the constraints —
+    and "what is the model merely guessing" — everything below a confidence they choose.
     """
     page = await service.list_facts(
-        actor, end_user_id, live_only=live_only, cursor=cursor, limit=limit
+        actor,
+        end_user_id,
+        live_only=live_only,
+        kind=kind,
+        min_confidence=min_confidence,
+        cursor=cursor,
+        limit=limit,
     )
     return Page(
         items=[MemoryFactResponse.of(fact) for fact in page.items],

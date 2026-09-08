@@ -263,6 +263,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/distillation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Distillation Settings
+         * @description What this organization has decided about writing its own memory, plus today's spend.
+         *
+         *     The usage figure comes from the same table the cap is enforced against, so the number
+         *     on the screen is the number that will refuse the next pass.
+         */
+        get: operations["get_distillation_settings_api_v1_distillation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Distillation Settings
+         * @description A partial update. Only the fields present in the body are changed.
+         *
+         *     ``model_id: null`` is a value, not an omission: it means "go back to the platform
+         *     default", and a body that could not express it would make clearing the selector
+         *     impossible.
+         */
+        patch: operations["update_distillation_settings_api_v1_distillation_patch"];
+        trace?: never;
+    };
+    "/api/v1/distillation/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Memory Health
+         * @description SPEC §10.1's memory health, plus the two rates that catch a silent failure.
+         *
+         *     A dedupe rate near 100% means passes are succeeding and producing nothing; a
+         *     supersession rate near zero on an established user means contradictions are not being
+         *     caught. Both look like health from every other angle, which is why they are here rather
+         *     than left to be inferred from the fact count.
+         */
+        get: operations["get_memory_health_api_v1_distillation_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{document_id}": {
         parameters: {
             query?: never;
@@ -365,6 +421,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/end-users/{end_user_id}/distil": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Distil Now
+         * @description Run a distillation pass over this person's pending conversations, now.
+         *
+         *     The real pass — same extractor, same threshold, same reconciliation as the background
+         *     job — so what it reports is what the scheduled one would have done. It answers the
+         *     question the debounce makes hard to ask: is this working, and if not, why not.
+         */
+        post: operations["distil_now_api_v1_end_users__end_user_id__distil_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/end-users/{end_user_id}/memory": {
         parameters: {
             query?: never;
@@ -379,6 +459,11 @@ export interface paths {
          *     Superseded and expired facts are included unless ``live_only`` is set: the browser's
          *     job includes explaining an answer the assistant gave last month, and the fact that
          *     explains it is usually the one that has since been replaced.
+         *
+         *     ``kind`` and ``min_confidence`` are what make a distilled memory readable. A person
+         *     with two hundred facts is ordinary once distillation is running, and the two questions
+         *     somebody actually arrives with are "what must the answers respect" — the constraints —
+         *     and "what is the model merely guessing" — everything below a confidence they choose.
          */
         get: operations["list_memory_api_v1_end_users__end_user_id__memory_get"];
         put?: never;
@@ -1252,6 +1337,114 @@ export interface components {
             hint?: string | null;
         };
         /**
+         * DistillationConfig
+         * @description SPEC §6.4's knobs, per organization.
+         */
+        DistillationConfig: {
+            /**
+             * Daily Call Cap
+             * @default 5000
+             */
+            daily_call_cap: number;
+            /**
+             * Debounce Seconds
+             * @default 30
+             */
+            debounce_seconds: number;
+            /**
+             * Dedupe Threshold
+             * @default 0.92
+             */
+            dedupe_threshold: number;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Max Facts Per User
+             * @default 500
+             */
+            max_facts_per_user: number;
+            /** Model Id */
+            model_id?: string | null;
+            /**
+             * Per User Daily Cap
+             * @default 24
+             */
+            per_user_daily_cap: number;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /**
+         * DistillationSettingsRequest
+         * @description A partial update, merged into whatever is stored.
+         *
+         *     Every field optional and applied only when present, so a form that renders six knobs
+         *     and a later build that renders seven do not overwrite each other's.
+         */
+        DistillationSettingsRequest: {
+            /** Daily Call Cap */
+            daily_call_cap?: number | null;
+            /** Debounce Seconds */
+            debounce_seconds?: number | null;
+            /** Dedupe Threshold */
+            dedupe_threshold?: number | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Max Facts Per User */
+            max_facts_per_user?: number | null;
+            /** Model Id */
+            model_id?: string | null;
+            /** Per User Daily Cap */
+            per_user_daily_cap?: number | null;
+        };
+        /**
+         * DistillationSettingsResponse
+         * @description The blob, plus the two things the screen needs that are not settings.
+         */
+        DistillationSettingsResponse: {
+            config: components["schemas"]["DistillationConfig"];
+            /** Effective Model Id */
+            effective_model_id?: string | null;
+            /** Effective Model Name */
+            effective_model_name?: string | null;
+            usage: components["schemas"]["DistillationUsage"];
+            /**
+             * Using Platform Default
+             * @default false
+             */
+            using_platform_default: boolean;
+        };
+        /**
+         * DistillationUsage
+         * @description What has been spent against the caps today, so the form can show the guard biting.
+         *
+         *     ``day_started_at`` is returned rather than implied: the cap resets at UTC midnight and
+         *     an operator in Auckland reading "4,998 of 5,000 used" needs to know how long that has
+         *     left to run.
+         */
+        DistillationUsage: {
+            /**
+             * Calls Today
+             * @default 0
+             */
+            calls_today: number;
+            /**
+             * Daily Call Cap
+             * @default 5000
+             */
+            daily_call_cap: number;
+            /**
+             * Day Started At
+             * Format: date-time
+             */
+            day_started_at: string;
+        };
+        /**
          * DocumentChunk
          * @description One indexed chunk, as the inspector shows it. No score: nothing was searched for.
          */
@@ -1732,6 +1925,48 @@ export interface components {
              */
             remember: boolean;
         };
+        /**
+         * ManualPassResponse
+         * @description What "Distil now" did.
+         *
+         *     ``reason`` is the field that makes the button useful. Zero facts written has several
+         *     causes — nothing new was said, the daily cap is spent, no model is configured, the
+         *     extractor found nothing durable — and they need four different actions.
+         */
+        ManualPassResponse: {
+            /**
+             * Deduped
+             * @default 0
+             */
+            deduped: number;
+            /**
+             * Evicted
+             * @default 0
+             */
+            evicted: number;
+            /**
+             * Inserted
+             * @default 0
+             */
+            inserted: number;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Rejected
+             * @default 0
+             */
+            rejected: number;
+            /**
+             * Sessions
+             * @default 0
+             */
+            sessions: number;
+            /**
+             * Superseded
+             * @default 0
+             */
+            superseded: number;
+        };
         /** MemberResponse */
         MemberResponse: {
             /**
@@ -1803,11 +2038,6 @@ export interface components {
              * @default 6
              */
             doc_top_k: number;
-            /**
-             * Max Facts Per User
-             * @default 500
-             */
-            max_facts_per_user: number;
             /**
              * Memory Enabled
              * @default true
@@ -1905,6 +2135,8 @@ export interface components {
             source_log_id: string | null;
             /** Superseded At */
             superseded_at: string | null;
+            /** Superseded By Id */
+            superseded_by_id?: string | null;
             /** Text */
             text: string;
         };
@@ -1923,6 +2155,125 @@ export interface components {
             superseded?: boolean | null;
             /** Text */
             text?: string | null;
+        };
+        /**
+         * MemoryHealthDayResponse
+         * @description One day of the memory-health chart.
+         */
+        MemoryHealthDayResponse: {
+            /**
+             * Day
+             * Format: date-time
+             */
+            day: string;
+            /**
+             * Deduped
+             * @default 0
+             */
+            deduped: number;
+            /**
+             * Failures
+             * @default 0
+             */
+            failures: number;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Superseded
+             * @default 0
+             */
+            superseded: number;
+            /**
+             * Written
+             * @default 0
+             */
+            written: number;
+        };
+        /**
+         * MemoryHealthResponse
+         * @description SPEC §10.1's memory health, with the rates computed here rather than in the browser.
+         *
+         *     The three ratios are sent rather than left to the client, because each has a
+         *     denominator that is easy to get subtly wrong — a failure rate over *successful* passes,
+         *     a dedupe rate over inserted facts instead of proposed ones — and a chart that quietly
+         *     disagrees with the alert is worse than no chart.
+         */
+        MemoryHealthResponse: {
+            /**
+             * Average Facts Per End User
+             * @default 0
+             */
+            average_facts_per_end_user: number;
+            /**
+             * Candidates
+             * @default 0
+             */
+            candidates: number;
+            /** Days */
+            days: components["schemas"]["MemoryHealthDayResponse"][];
+            /**
+             * Dedupe Rate
+             * @default 0
+             */
+            dedupe_rate: number;
+            /**
+             * Deduped
+             * @default 0
+             */
+            deduped: number;
+            /**
+             * End Users With Facts
+             * @default 0
+             */
+            end_users_with_facts: number;
+            /**
+             * Evicted
+             * @default 0
+             */
+            evicted: number;
+            /**
+             * Facts
+             * @default 0
+             */
+            facts: number;
+            /**
+             * Failure Rate
+             * @default 0
+             */
+            failure_rate: number;
+            /**
+             * Failures
+             * @default 0
+             */
+            failures: number;
+            /**
+             * Rejected
+             * @default 0
+             */
+            rejected: number;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Superseded
+             * @default 0
+             */
+            superseded: number;
+            /**
+             * Supersession Rate
+             * @default 0
+             */
+            supersession_rate: number;
+            /**
+             * Written
+             * @default 0
+             */
+            written: number;
         };
         /**
          * MemoryPreviewRequest
@@ -3242,6 +3593,90 @@ export interface operations {
             };
         };
     };
+    get_distillation_settings_api_v1_distillation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DistillationSettingsResponse"];
+                };
+            };
+        };
+    };
+    update_distillation_settings_api_v1_distillation_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DistillationSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DistillationSettingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_memory_health_api_v1_distillation_health_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryHealthResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     delete_document_api_v1_documents__document_id__delete: {
         parameters: {
             query?: never;
@@ -3399,10 +3834,43 @@ export interface operations {
             };
         };
     };
+    distil_now_api_v1_end_users__end_user_id__distil_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualPassResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_memory_api_v1_end_users__end_user_id__memory_get: {
         parameters: {
             query?: {
                 live_only?: boolean;
+                kind?: string | null;
+                min_confidence?: number | null;
                 cursor?: string | null;
                 limit?: number | null;
             };

@@ -27,7 +27,6 @@ export type MemoryForm = {
   memoryMaxTokens: string
   memoryMinScore: string
   allowAnonymousMemory: boolean
-  maxFactsPerUser: string
 }
 
 /** Mirrors the server's `MemoryConfig` bounds. Kept in step by `memory.test.ts`. */
@@ -37,7 +36,6 @@ export const LIMITS = {
   maxTokens: { min: 0, max: 100_000 },
   nTurns: { min: 1, max: 20 },
   timeoutMs: { min: 50, max: 5000 },
-  factsPerUser: { min: 1, max: 10_000 },
 } as const
 
 export function memoryForm(config: MemoryConfig): MemoryForm {
@@ -55,7 +53,6 @@ export function memoryForm(config: MemoryConfig): MemoryForm {
     memoryMaxTokens: String(config.memory_max_tokens ?? 600),
     memoryMinScore: String(config.memory_min_score ?? 0.3),
     allowAnonymousMemory: config.allow_anonymous_memory ?? false,
-    maxFactsPerUser: String(config.max_facts_per_user ?? 500),
   }
 }
 
@@ -81,7 +78,6 @@ export function memoryBody(form: MemoryForm): Record<string, unknown> {
     memory_max_tokens: Number(form.memoryMaxTokens),
     memory_min_score: Number(form.memoryMinScore),
     allow_anonymous_memory: form.allowAnonymousMemory,
-    max_facts_per_user: Number(form.maxFactsPerUser),
   }
 }
 
@@ -152,14 +148,6 @@ export function memoryProblem(form: MemoryForm): string | null {
   const factTokens = Number(form.memoryMaxTokens)
   if (!Number.isInteger(factTokens) || factTokens < LIMITS.maxTokens.min) {
     return 'Memory token budget is a whole number of tokens.'
-  }
-  const cap = Number(form.maxFactsPerUser)
-  if (
-    !Number.isInteger(cap) ||
-    cap < LIMITS.factsPerUser.min ||
-    cap > LIMITS.factsPerUser.max
-  ) {
-    return `Facts kept per person is between ${LIMITS.factsPerUser.min} and ${LIMITS.factsPerUser.max}.`
   }
   return null
 }

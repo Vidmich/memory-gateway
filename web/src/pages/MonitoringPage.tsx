@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import {
   RANGES,
@@ -24,6 +25,7 @@ import {
 } from '@/components/chartSeries'
 import { DataTable, type Column } from '@/components/DataTable'
 import { StatusBadge } from '@/components/StatusBadge'
+import { MemoryHealthPanel } from '@/pages/MemoryHealthPanel'
 import { RequestDrawer } from '@/pages/RequestDrawer'
 
 /**
@@ -52,7 +54,11 @@ export function MonitoringPage() {
   const [cursor, setCursor] = useState<string | null>(null)
   const [previous, setPrevious] = useState<(string | null)[]>([])
   const [tail, setTail] = useState(true)
-  const [selected, setSelected] = useState<string | null>(null)
+  // Seeded from the URL so a link can open one request. Task 13's memory browser points
+  // at the conversation a fact was learned from, and a breadcrumb that only worked by
+  // clicking through the table would not be a breadcrumb.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [selected, setSelected] = useState<string | null>(searchParams.get('request'))
 
   // Recomputed only when the range changes, and rounded to the minute inside
   // `resolveRange` — otherwise every render is a new query key.
@@ -240,6 +246,10 @@ export function MonitoringPage() {
         </ChartFrame>
       </div>
 
+      <div className="mt-4">
+        <MemoryHealthPanel />
+      </div>
+
       <section className="mt-8">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-slate-900">Requests</h2>
@@ -289,7 +299,14 @@ export function MonitoringPage() {
         <RequestDrawer
           logId={selected}
           gateways={gateways?.items ?? []}
-          onClose={() => setSelected(null)}
+          onClose={() => {
+            setSelected(null)
+            // Take the id out of the URL too, or reloading reopens what was just closed.
+            if (searchParams.has('request')) {
+              searchParams.delete('request')
+              setSearchParams(searchParams, { replace: true })
+            }
+          }}
         />
       ) : null}
     </div>

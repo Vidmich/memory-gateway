@@ -46,7 +46,7 @@ from app.core.errors import Conflict, NotFound, Validation
 from app.core.tenancy import Actor
 from app.db.models import EndUser, MemoryFact
 from app.db.models.end_user import FACT_KINDS, MAX_FACT_LENGTH
-from app.schemas.gateway_config import MAX_FACTS_PER_USER
+from app.schemas.distillation import organization_distillation
 from app.services.embeddings import Embedder
 from app.services.end_user_store import EndUserStore, EndUserTransaction, FactDraft, FactPatch
 from app.services.fact_vectors import FactPoint, FactVectorStore, fact_payload
@@ -99,13 +99,11 @@ class EndUserService:
         vectors: FactVectorStore,
         embedder: Embedder,
         logs: MetricsRepository | None = None,
-        max_facts_per_user: int = MAX_FACTS_PER_USER,
     ) -> None:
         self._store = store
         self._vectors = vectors
         self._embedder = embedder
         self._logs = logs
-        self._max_facts = max_facts_per_user
 
     @property
     def embedding_model(self) -> str:
@@ -146,6 +144,8 @@ class EndUserService:
         end_user_id: uuid.UUID,
         *,
         live_only: bool = False,
+        kind: str | None = None,
+        min_confidence: float | None = None,
         cursor: str | None = None,
         limit: int | None = None,
     ) -> Page[MemoryFact]:
@@ -154,12 +154,26 @@ class EndUserService:
         Superseded and expired rows are included by default. They are not noise: "why did
         it say that last month" is answered by the fact that has since been replaced, and
         a browser that showed only live memory could not answer it at all.
+
+        ``kind`` and ``min_confidence`` narrow it. An unknown kind is a 422 rather than an
+        empty page: "constraints" instead of "constraint" would otherwise read as "this
+        person has no constraints", which is the wrong answer to a question about what the
+        assistant must respect.
         """
+        if kind is not None:
+            _check_kind(kind)
+        if min_confidence is not None:
+            _check_confidence(min_confidence)
         size = clamp_limit(limit)
         async with self._store.begin(actor.scope) as transaction:
             await self._require(transaction, end_user_id)
             rows = await transaction.facts(
-                end_user_id, after=decode_cursor(cursor), limit=size, live_only=live_only
+                end_user_id,
+                after=decode_cursor(cursor),
+                limit=size,
+                live_only=live_only,
+                kind=kind,
+                min_confidence=min_confidence,
             )
         return page_of(list(rows), limit=size, cursor_of=lambda row: row.id)
 
@@ -218,9 +232,15 @@ class EndUserService:
         async with self._store.begin(actor.scope) as transaction:
             end_user = await self._require(transaction, end_user_id)
             organization_id = end_user.organization_id
-            if await transaction.count_facts(end_user_id) >= self._max_facts:
+            # The bound is the organization's, not this service's and not a gateway's: an
+            # end user reaches an organization through however many endpoints it has, and
+            # a per-endpoint cap on how much may be known about one person is not a cap.
+            bound = organization_distillation(
+                await transaction.organization_settings(organization_id)
+            ).max_facts_per_user
+            if await transaction.count_facts(end_user_id) >= bound:
                 raise Conflict(
-                    f"This user already has the maximum of {self._max_facts} facts. "
+                    f"This user already has the maximum of {bound} facts. "
                     f"Delete or supersede one before adding another."
                 )
             fact = await transaction.add_fact(

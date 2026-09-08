@@ -15,9 +15,10 @@ import pytest
 
 from app.core.config import Settings, get_settings
 from app.services.job_queue import ARQ_FUNCTION
-from app.services.jobs import DELETE_CONNECTOR, INGEST_DOCUMENT, JOB_NAMES
+from app.services.jobs import DELETE_CONNECTOR, DISTIL_MEMORY, INGEST_DOCUMENT, JOB_NAMES
 from app.workers.main import WorkerSettings, run_gateway_job
 from app.workers.runtime import (
+    Distillation,
     build_handlers,
     embedding_settings,
     ingestion_settings,
@@ -25,6 +26,7 @@ from app.workers.runtime import (
 )
 from tests.auth_support import make_organization
 from tests.connector_support import build_connectors
+from tests.distillation_support import build_distillation
 
 
 def test_the_queue_and_the_worker_agree_on_the_function_name() -> None:
@@ -52,8 +54,37 @@ def test_there_is_a_handler_for_every_job_this_build_can_enqueue() -> None:
     fixture = build_connectors(make_organization())
     ingestion = _ingestion_of(fixture)
 
-    assert set(build_handlers(ingestion)) == set(JOB_NAMES)
-    assert set(JOB_NAMES) == {INGEST_DOCUMENT, DELETE_CONNECTOR}
+    assert set(build_handlers(ingestion, _distillation_of()[0])) == set(JOB_NAMES)
+    assert set(JOB_NAMES) == {INGEST_DOCUMENT, DELETE_CONNECTOR, DISTIL_MEMORY}
+
+
+def test_a_worker_without_conversation_memory_registers_two_handlers() -> None:
+    """A deployment that has not enabled it runs a worker with two, and a ``distil_memory``
+    job arriving there is dead-lettered *by name* — a visible bad deploy rather than a
+    silent one."""
+    handlers = build_handlers(_ingestion_of(build_connectors(make_organization())))
+
+    assert set(handlers) == {INGEST_DOCUMENT, DELETE_CONNECTOR}
+
+
+async def test_the_distillation_handler_turns_string_ids_back_into_uuids() -> None:
+    """The same rule as the ingestion handler: the payload crossed a process boundary as
+    JSON, and unpacking it is all a handler is allowed to be."""
+    distillation, fixture = _distillation_of()
+    alice = await fixture.end_user()
+    fixture.log(alice)
+    handlers = build_handlers(_ingestion_of(build_connectors(make_organization())), distillation)
+
+    await handlers[DISTIL_MEMORY](
+        {
+            "organization_id": str(fixture.organization_id),
+            "end_user_id": str(alice.id),
+            "session_id": "thread-1",
+            "token": None,
+        }
+    )
+
+    assert await fixture.texts_of(alice) == ["Works in Rust."]
 
 
 async def test_a_handler_turns_string_ids_back_into_uuids() -> None:
@@ -104,6 +135,26 @@ def test_the_settings_reach_the_pieces_that_read_them() -> None:
 
 def _settings(**overrides: Any) -> Settings:
     return get_settings().model_copy(update=overrides)
+
+
+def _distillation_of() -> tuple[Distillation, Any]:
+    """The bundle :func:`~app.workers.runtime.build_distillation` returns, over memory,
+    and the fixture behind it so a test can read back what a handler wrote.
+
+    Assembled by hand for the same reason ``_ingestion_of`` is: the composition root takes
+    :class:`~app.core.clients.Clients`, which opens pools this test has no use for.
+    """
+    fixture = build_distillation()
+    return Distillation(
+        store=fixture.store,
+        end_users=fixture.end_users,
+        vectors=fixture.vectors,
+        debouncer=fixture.debouncer,
+        models=fixture.resolver,
+        reconciler=fixture.reconciler,
+        distiller=fixture.distiller,
+        trigger=fixture.trigger,
+    ), fixture
 
 
 def _ingestion_of(fixture: Any) -> Any:

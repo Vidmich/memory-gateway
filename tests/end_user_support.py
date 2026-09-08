@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from app.core.ids import uuid7
 from app.core.tenancy import Actor, TenantScope
 from app.db.models import EndUser, MemoryFact, Organization
+from app.schemas.distillation import ORG_DISTILLATION
 from app.services.embeddings import HashEmbedder
 from app.services.end_user_resolver import EndUserResolver, RequestCounters
 from app.services.end_user_store import MemoryEndUserStore
@@ -151,6 +152,17 @@ def build_end_users(
     max_facts_per_user: int = 500,
 ) -> EndUserFixture:
     database = database or MemoryDatabase()
+    # The organization row has to be *in* the database, not merely passed alongside it:
+    # the per-person fact bound lives in `organizations.settings`, and a fixture that kept
+    # the row outside would silently test the default whatever it was asked for.
+    organization.settings = {
+        **(organization.settings or {}),
+        ORG_DISTILLATION: {
+            **(organization.settings or {}).get(ORG_DISTILLATION, {}),
+            "max_facts_per_user": max_facts_per_user,
+        },
+    }
+    database.add_organization(organization)
     store = MemoryEndUserStore(database)
     vectors = vectors or MemoryFactVectorStore()
     embedder = embedder or HashEmbedder(dimension=dimension, model="hash-bow")
@@ -170,7 +182,6 @@ def build_end_users(
             vectors=vectors,
             embedder=embedder,
             logs=logs or MemoryMetricsRepository(database),
-            max_facts_per_user=max_facts_per_user,
         ),
         organization=organization,
     )

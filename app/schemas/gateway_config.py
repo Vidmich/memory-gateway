@@ -20,12 +20,6 @@ from pydantic import Field, model_validator
 from app.core.patterns import UnsafePattern, check_pattern
 from app.schemas.config import CONFIG_VERSION, ConfigBlob, merge_config
 
-#: SPEC §6.4's per-user bound on conversation memory. A module constant as well as a
-#: field default, because the manual-entry path in :mod:`app.services.end_users` has no
-#: gateway to read the field from — a fact typed into the memory browser belongs to a
-#: person, not to an endpoint.
-MAX_FACTS_PER_USER = 500
-
 MAX_REDACTION_PATTERNS = 20
 MAX_REDACTION_PATTERN_LENGTH = 200
 
@@ -70,10 +64,6 @@ class MemoryConfig(ConfigBlob):
     #: networks — a coarse, surprising basis for something that stores durable personal
     #: facts, and not a thing to switch on for somebody without their asking.
     allow_anonymous_memory: bool = False
-    #: SPEC §6.4's bound. Enforced by manual entry here and by distillation's eviction in
-    #: task 13; a person's durable memory that has grown past five hundred sentences has
-    #: stopped being memory and become a transcript.
-    max_facts_per_user: int = Field(default=MAX_FACTS_PER_USER, ge=1, le=10_000)
     query_strategy: Literal["last_user_message", "last_n_turns"] = "last_user_message"
     #: Read only by ``last_n_turns``. Stored whatever the strategy, so switching to
     #: ``last_user_message`` to compare and back does not lose the number somebody tuned.
@@ -99,6 +89,10 @@ class LoggingConfig(ConfigBlob):
     #: Applied to bodies before persistence. Compiled here so a broken pattern is a 422
     #: on the form, not an exception on the logging path of somebody's live traffic.
     redaction_patterns: list[str] = Field(default_factory=list)
+    #: Whether *this endpoint's* traffic feeds conversation memory. Not the same switch
+    #: as :attr:`app.schemas.distillation.DistillationConfig.enabled`, which is the
+    #: organization's: a gateway serving an internal batch job should teach the assistant
+    #: nothing while the rest of the organization goes on learning.
     enable_distillation: bool = True
 
     @model_validator(mode="after")
@@ -164,7 +158,6 @@ def organization_logging_defaults(settings: Mapping[str, Any] | None) -> dict[st
 
 __all__ = [
     "CONFIG_VERSION",
-    "MAX_FACTS_PER_USER",
     "ORG_LOGGING_DEFAULTS",
     "ConfigBlob",
     "LimitsConfig",

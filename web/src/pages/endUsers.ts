@@ -78,8 +78,9 @@ export function displayName(endUser: EndUserResponse): string {
  *
  * Three different causes, and only one of them is a problem worth acting on: a person who
  * has just arrived has nothing stored yet, a person whose traffic is anonymous will never
- * have anything unless the gateway is changed, and a person with traffic and no facts is
- * waiting for distillation that this build does not have yet.
+ * have anything unless the gateway is changed, and a person with traffic and no facts has
+ * had conversations that distillation found nothing durable in — or has not been distilled
+ * at all, which is a setting rather than a wait.
  */
 export function emptyMemoryHint(endUser: EndUserResponse): string | null {
   if (endUser.fact_count > 0) return null
@@ -87,7 +88,7 @@ export function emptyMemoryHint(endUser: EndUserResponse): string | null {
     return 'Anonymous callers are identified by address. Send X-Gateway-User to keep memory about a real person.'
   }
   if (endUser.request_count <= 1) return 'Seen once. Nothing has been learned yet.'
-  return 'Nothing stored yet. Add a fact by hand, or wait for automatic distillation.'
+  return 'Nothing stored yet. Add a fact by hand, or distil their conversations now.'
 }
 
 /**
@@ -122,4 +123,73 @@ export function activity(endUser: EndUserResponse): string {
     endUser.request_count === 1 ? '' : 's'
   }`
   return `${requests} · last seen ${new Date(endUser.last_seen_at).toLocaleString()}`
+}
+
+/**
+ * A live fact, with the ones it replaced folded underneath it.
+ *
+ * The memory browser has to answer two questions at once: what does the assistant believe
+ * *now*, and why did it say that last month. Listing both flat answers the first badly —
+ * once distillation is running, half the list is history — and answering only the first
+ * makes the second impossible. So a retracted fact whose replacement is on the page is
+ * shown *inside* it, collapsed, and a retracted fact whose replacement is not (deleted,
+ * or on another page) stays at the top level rather than disappearing.
+ */
+export type FactGroup = {
+  fact: MemoryFactResponse
+  replaced: MemoryFactResponse[]
+}
+
+export function groupFacts(facts: MemoryFactResponse[]): FactGroup[] {
+  const present = new Set(facts.map((fact) => fact.id))
+  const replacedBy = new Map<string, MemoryFactResponse[]>()
+
+  for (const fact of facts) {
+    const parent = fact.superseded_by_id
+    // Only fold under a replacement that is actually on the page. Otherwise the fact
+    // would vanish from a list it is genuinely part of.
+    if (parent && present.has(parent)) {
+      replacedBy.set(parent, [...(replacedBy.get(parent) ?? []), fact])
+    }
+  }
+
+  return facts
+    .filter((fact) => !(fact.superseded_by_id && present.has(fact.superseded_by_id)))
+    .map((fact) => ({ fact, replaced: replacedBy.get(fact.id) ?? [] }))
+}
+
+/**
+ * Where a fact came from, or `null` when nothing recorded it.
+ *
+ * A link into the monitoring drawer, which is what makes a surprising fact debuggable:
+ * "where did it learn that" has an answer that is a request rather than a shrug. The
+ * request may have been dropped by retention — the drawer says so — and that is still a
+ * better answer than no breadcrumb at all.
+ */
+export function provenanceLink(fact: MemoryFactResponse): string | null {
+  return fact.source_log_id ? `/monitoring?request=${fact.source_log_id}` : null
+}
+
+/** How a fact came to exist, in two words. Distillation writes a source; a person does not. */
+export function factOrigin(fact: MemoryFactResponse): string {
+  return fact.source_log_id ? 'Learned from a conversation' : 'Added by hand'
+}
+
+/** What "Distil now" says afterwards. Numbers, because "done" is not evidence. */
+export function passSummary(result: {
+  sessions: number
+  inserted: number
+  deduped: number
+  superseded: number
+}): string {
+  if (result.sessions === 0) {
+    return 'Nothing new to read. Every logged conversation for this person has already been distilled.'
+  }
+  const parts = [
+    `${result.inserted} new`,
+    `${result.deduped} already known`,
+    `${result.superseded} replaced`,
+  ]
+  const threads = `${result.sessions} conversation${result.sessions === 1 ? '' : 's'}`
+  return `Read ${threads}: ${parts.join(', ')}.`
 }

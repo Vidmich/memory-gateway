@@ -24,6 +24,8 @@ import type {
   MemberResponse,
   MemoryFactResponse,
   MemorySearchHit,
+  DistillationSettings,
+  MemoryHealth,
   ModelResponse,
   OrganizationResponse,
   ProbeResponse,
@@ -200,7 +202,6 @@ export function makeGateway(overrides: Partial<GatewayResponse> = {}): GatewayRe
       memory_max_tokens: 600,
       memory_min_score: 0.3,
       allow_anonymous_memory: false,
-      max_facts_per_user: 500,
       query_strategy: 'last_user_message',
       query_n_turns: 3,
       retrieval_timeout_ms: 800,
@@ -537,6 +538,7 @@ export function makeFact(overrides: Partial<MemoryFactResponse> = {}): MemoryFac
     confidence: 1.0,
     source_log_id: null,
     superseded_at: null,
+    superseded_by_id: null,
     expires_at: null,
     created_at: NOW,
     last_seen_at: NOW,
@@ -548,6 +550,49 @@ export function makeMemoryHit(overrides: Partial<MemorySearchHit> = {}): MemoryS
   return {
     fact: makeFact(),
     score: 0.71,
+    ...overrides,
+  }
+}
+
+export function makeDistillationSettings(
+  overrides: Partial<DistillationSettings> = {},
+): DistillationSettings {
+  return {
+    config: {
+      version: 1,
+      enabled: true,
+      model_id: null,
+      debounce_seconds: 30,
+      dedupe_threshold: 0.92,
+      max_facts_per_user: 500,
+      daily_call_cap: 5000,
+      per_user_daily_cap: 24,
+    },
+    usage: { calls_today: 0, daily_call_cap: 5000, day_started_at: NOW },
+    effective_model_id: null,
+    effective_model_name: null,
+    using_platform_default: false,
+    ...overrides,
+  }
+}
+
+export function makeMemoryHealth(overrides: Partial<MemoryHealth> = {}): MemoryHealth {
+  return {
+    days: [],
+    runs: 0,
+    failures: 0,
+    written: 0,
+    deduped: 0,
+    superseded: 0,
+    evicted: 0,
+    rejected: 0,
+    candidates: 0,
+    facts: 0,
+    end_users_with_facts: 0,
+    failure_rate: 0,
+    dedupe_rate: 0,
+    supersession_rate: 0,
+    average_facts_per_end_user: 0,
     ...overrides,
   }
 }

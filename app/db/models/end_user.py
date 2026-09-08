@@ -176,6 +176,18 @@ class MemoryFact(Base, UUIDPrimaryKeyMixin):
     #: Set instead of deleting when a newer fact replaces this one. Recall skips it; the
     #: browser shows it greyed, because "why did it say that last week" needs the row.
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: The fact that replaced this one, when there is one. Task 13's distillation sets it
+    #: alongside ``superseded_at``; a retraction by hand sets only the timestamp, because
+    #: nothing replaced it.
+    #:
+    #: ``ON DELETE SET NULL`` rather than ``CASCADE``: deleting the replacement must not
+    #: delete the history it replaced. The row then reads as "retracted, and what replaced
+    #: it is gone too", which is the truth.
+    superseded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("memory_facts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     #: A fact with a shelf life — "is travelling until the 14th". Null is the common case
     #: and means "until something supersedes it".
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

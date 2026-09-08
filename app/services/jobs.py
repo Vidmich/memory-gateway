@@ -350,12 +350,13 @@ class JobRunner:
 
 INGEST_DOCUMENT = "ingest_document"
 DELETE_CONNECTOR = "delete_connector"
+DISTIL_MEMORY = "distil_memory"
 
-#: Every job this build knows how to run. Two, because those are the two pieces of work
-#: that are genuinely unbounded — one file's extraction and embedding, and a connector's
-#: whole teardown. Resync is not here: SPEC §9.1 has it return a summary, which a job
-#: cannot do, and what it does synchronously is a listing plus row writes.
-JOB_NAMES = (INGEST_DOCUMENT, DELETE_CONNECTOR)
+#: Every job this build knows how to run. Three: one file's extraction and embedding, a
+#: connector's whole teardown, and one conversation's distillation — all unbounded work
+#: that a request must not wait on. Resync is not here: SPEC §9.1 has it return a summary,
+#: which a job cannot do, and what it does synchronously is a listing plus row writes.
+JOB_NAMES = (INGEST_DOCUMENT, DELETE_CONNECTOR, DISTIL_MEMORY)
 
 
 def ingest_key(document_id: uuid.UUID, content_hash: str | None) -> str:
@@ -393,6 +394,19 @@ def queue_for(source_name: str) -> str | None:
     return HEAVY_QUEUE if extension_of(source_name) in HEAVY_EXTENSIONS else None
 
 
+def distil_key(end_user_id: uuid.UUID, session_id: str | None, token: str) -> str:
+    """One key per *armed pass*, not per conversation.
+
+    The token is in the key on purpose, and it is the opposite of what
+    :func:`ingest_key` does. Two turns of one conversation must produce two jobs, because
+    the second one exists precisely to supersede the first: deduplicating them would leave
+    the pass scheduled at the first turn's deadline, in the middle of the exchange it is
+    supposed to be waiting out. What stops the work from happening twice is the debounce
+    token, checked when the job runs — not the queue.
+    """
+    return f"distil:{end_user_id}:{session_id or '-'}:{token}"
+
+
 def resync_key(connector_id: uuid.UUID) -> str:
     """The lock name for a reconciliation. Pressing the button twice is one sync."""
     return f"resync:{connector_id}"
@@ -404,6 +418,7 @@ def delete_key(connector_id: uuid.UUID) -> str:
 
 __all__ = [
     "DELETE_CONNECTOR",
+    "DISTIL_MEMORY",
     "HEAVY_EXTENSIONS",
     "HEAVY_QUEUE",
     "INGEST_DOCUMENT",
@@ -420,6 +435,7 @@ __all__ = [
     "Retry",
     "RetryPolicy",
     "delete_key",
+    "distil_key",
     "ingest_key",
     "queue_for",
     "resync_key",

@@ -367,22 +367,15 @@ function ConversationMemory({
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field
-              name="memory_config.max_facts_per_user"
-              label="Facts kept per person"
-              hint="Past this, the lowest-scoring facts are evicted. A memory of more than a few hundred sentences has stopped being memory."
-            >
-              {(props) => (
-                <TextInput
-                  {...props}
-                  type="number"
-                  min={1}
-                  max={10000}
-                  value={form.maxFactsPerUser}
-                  onChange={(event) => set('maxFactsPerUser', event.target.value)}
-                />
-              )}
-            </Field>
+            <p className="mb-4 text-sm text-slate-500">
+              How much is remembered about one person, and which model does the
+              remembering, are set once for the whole organization —{' '}
+              <Link to="/settings" className="font-medium underline">
+                Settings → Organization
+              </Link>
+              . A person reaches you through however many gateways you have, and a
+              per-endpoint cap on how much may be known about them is not a cap.
+            </p>
             <div className="mb-4 self-end">
               <label className="flex items-start gap-2">
                 <input

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import sys
+import uuid
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError, field_validator, model_validator
@@ -140,6 +141,18 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_batch_size: int = Field(default=96, ge=1, le=2048)
     embedding_max_concurrency: int = Field(default=4, ge=1, le=64)
+
+    # -- conversation memory (SPEC §6.4) -----------------------------------
+    #: The platform's default distillation model, as an upstream-model id. An organization
+    #: that has not chosen one of its own distils with this; with neither set, distillation
+    #: skips and says so on the Settings screen rather than failing quietly.
+    #:
+    #: An id rather than a name because a name is unique only within one catalog, and a
+    #: lookup that resolved to a different organization's "gpt-4o-mini" would be both a
+    #: bill and a disclosure. It has to name a *global* model, since it is used by every
+    #: organization. Task 17 moves this into ``platform_settings``, where it becomes a
+    #: selector on a screen instead of a UUID in an environment variable.
+    distillation_model_id: uuid.UUID | None = None
 
     # -- worker ------------------------------------------------------------
     job_max_attempts: int = Field(default=5, ge=1, le=20)

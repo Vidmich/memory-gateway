@@ -69,13 +69,24 @@ def build_logs(
     maxsize: int = 1000,
     shed_fraction: float = 0.7,
     redaction_budget_seconds: float = DEFAULT_BUDGET_SECONDS,
+    subscriber: Any | None = None,
 ) -> LogFixture:
+    """The write path over memory.
+
+    ``subscriber`` is task 13's hook — what the flusher calls once a batch of transcripts
+    is committed. ``None`` is the ordinary case here and in a worker process: conversation
+    memory is optional wiring, not a dependency of logging.
+    """
     registry = CollectorRegistry()
     metrics = build_log_metrics(registry)
     writer = MemoryLogWriter(database or MemoryDatabase())
     queue = LogQueue(metrics=metrics, maxsize=maxsize, shed_fraction=shed_fraction)
     flusher = LogFlusher(
-        queue, writer, metrics=metrics, redaction_budget_seconds=redaction_budget_seconds
+        queue,
+        writer,
+        metrics=metrics,
+        redaction_budget_seconds=redaction_budget_seconds,
+        subscriber=subscriber,
     )
     return LogFixture(
         service=RequestLogService(queue, flusher),

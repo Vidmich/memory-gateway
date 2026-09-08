@@ -25,6 +25,8 @@ from pydantic import BaseModel, ConfigDict
 
 from app.db.models import RequestLog, Transcript
 from app.schemas.routing import AttemptResponse
+from app.services.distillation_service import ManualPass
+from app.services.distillation_store import MemoryHealth
 from app.services.metrics_store import Bucket, LogDetail, Summary
 from app.services.monitoring import Series
 
@@ -247,10 +249,97 @@ class RequestDetailResponse(BaseModel):
         )
 
 
+class MemoryHealthDayResponse(BaseModel):
+    """One day of the memory-health chart."""
+
+    model_config = _CONFIG
+
+    day: datetime
+    runs: int = 0
+    failures: int = 0
+    written: int = 0
+    deduped: int = 0
+    superseded: int = 0
+
+
+class MemoryHealthResponse(BaseModel):
+    """SPEC §10.1's memory health, with the rates computed here rather than in the browser.
+
+    The three ratios are sent rather than left to the client, because each has a
+    denominator that is easy to get subtly wrong — a failure rate over *successful* passes,
+    a dedupe rate over inserted facts instead of proposed ones — and a chart that quietly
+    disagrees with the alert is worse than no chart.
+    """
+
+    model_config = _CONFIG
+
+    days: list[MemoryHealthDayResponse]
+    runs: int = 0
+    failures: int = 0
+    written: int = 0
+    deduped: int = 0
+    superseded: int = 0
+    evicted: int = 0
+    rejected: int = 0
+    candidates: int = 0
+    facts: int = 0
+    end_users_with_facts: int = 0
+    failure_rate: float = 0.0
+    dedupe_rate: float = 0.0
+    supersession_rate: float = 0.0
+    average_facts_per_end_user: float = 0.0
+
+    @classmethod
+    def of(cls, health: MemoryHealth) -> Self:
+        return cls(
+            days=[MemoryHealthDayResponse(**asdict(day)) for day in health.days],
+            runs=health.runs,
+            failures=health.failures,
+            written=health.written,
+            deduped=health.deduped,
+            superseded=health.superseded,
+            evicted=health.evicted,
+            rejected=health.rejected,
+            candidates=health.candidates,
+            facts=health.facts,
+            end_users_with_facts=health.end_users_with_facts,
+            failure_rate=health.failure_rate,
+            dedupe_rate=health.dedupe_rate,
+            supersession_rate=health.supersession_rate,
+            average_facts_per_end_user=health.average_facts_per_end_user,
+        )
+
+
+class ManualPassResponse(BaseModel):
+    """What "Distil now" did.
+
+    ``reason`` is the field that makes the button useful. Zero facts written has several
+    causes — nothing new was said, the daily cap is spent, no model is configured, the
+    extractor found nothing durable — and they need four different actions.
+    """
+
+    model_config = _CONFIG
+
+    sessions: int = 0
+    inserted: int = 0
+    deduped: int = 0
+    superseded: int = 0
+    evicted: int = 0
+    rejected: int = 0
+    reason: str | None = None
+
+    @classmethod
+    def of(cls, result: ManualPass) -> Self:
+        return cls(**asdict(result))
+
+
 __all__ = [
     "AttemptResponse",
     "BucketResponse",
     "ErrorGroupResponse",
+    "ManualPassResponse",
+    "MemoryHealthDayResponse",
+    "MemoryHealthResponse",
     "ModelTrafficResponse",
     "PercentilesResponse",
     "RequestDetailResponse",

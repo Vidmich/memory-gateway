@@ -161,6 +161,12 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ),
     ScopedEndpoint("PATCH", f"/api/v1/memory-facts/{FOREIGN_FACT}", {"text": "Owned."}),
     ScopedEndpoint("DELETE", f"/api/v1/memory-facts/{FOREIGN_FACT}"),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/end-users/{FOREIGN_END_USER}/distil",
+        note="reading another organization's stored conversations, through their own "
+        "distillation model, and writing what it finds into their memory",
+    ),
 )
 
 #: The global catalog is readable by everyone, so a foreign-id test on ``GET`` would be

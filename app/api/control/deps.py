@@ -20,6 +20,7 @@ from app.services.auth import AuthenticationRequired, AuthService, Identity, Req
 from app.services.catalog import CatalogService
 from app.services.connectors import ConnectorService
 from app.services.directory import DirectoryService
+from app.services.distillation_service import DistillationService
 from app.services.end_users import EndUserService
 from app.services.gateways import GatewayService
 from app.services.memory_preview import MemoryPreview
@@ -62,6 +63,11 @@ def get_connector_service(request: Request) -> ConnectorService:
 
 def get_end_user_service(request: Request) -> EndUserService:
     service: EndUserService = request.app.state.end_user_service
+    return service
+
+
+def get_distillation_service(request: Request) -> DistillationService:
+    service: DistillationService = request.app.state.distillation_service
     return service
 
 

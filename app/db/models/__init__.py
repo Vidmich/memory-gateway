@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from app.db.models.api_key import ApiKey
 from app.db.models.connector import Connector, Document, JobDeadLetter
+from app.db.models.distillation import DistillationRun
 from app.db.models.end_user import EndUser, MemoryFact
 from app.db.models.gateway import Gateway, GatewayTarget
 from app.db.models.invitation import Invitation
@@ -22,6 +23,7 @@ from app.db.models.user import User
 __all__ = [
     "ApiKey",
     "Connector",
+    "DistillationRun",
     "Document",
     "EndUser",
     "Gateway",

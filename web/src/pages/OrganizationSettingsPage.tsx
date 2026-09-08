@@ -7,6 +7,7 @@ import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { Field, Form, SubmitButton, TextInput } from '@/components/Form'
 import { StatusBadge } from '@/components/StatusBadge'
 import { useToast } from '@/components/Toast'
+import { DistillationSettings } from '@/pages/DistillationSettings'
 
 /**
  * Settings → Organization (SPEC §13.1).
@@ -114,12 +115,14 @@ export function OrganizationSettingsPage() {
         </Form>
       </div>
 
+      <DistillationSettings />
+
       <section className="mt-8 rounded-lg border border-slate-200 bg-white p-6">
-        <h2 className="text-sm font-semibold text-slate-900">Defaults</h2>
+        <h2 className="text-sm font-semibold text-slate-900">Stored defaults</h2>
         <p className="mt-2 max-w-xl text-sm text-slate-600">
-          Org-level defaults — logging, retention, and the distillation model — are stored
-          here and land in tasks 07, 13 and 17. The field exists now so those tasks add a
-          control rather than a migration.
+          Everything this organization has set, as it is stored. The write-back section
+          above edits the <code className="font-mono">distillation</code> key; logging
+          defaults and retention land in task 17.
         </p>
         <pre className="mt-3 overflow-x-auto rounded-md bg-slate-50 p-3 font-mono text-xs text-slate-600">
           {JSON.stringify(organization.settings, null, 2)}

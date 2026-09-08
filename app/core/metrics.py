@@ -139,6 +139,30 @@ class ExtractionMetrics:
 
 
 @dataclass(frozen=True)
+class DistillationMetrics:
+    """Writing memory, as three numbers (SPEC §10.1, task 13).
+
+    ``passes`` is labelled by outcome, and the failure rate over it is the number an alert
+    fires on. The other two are the ones that catch a distillation that is *working* and
+    useless.
+
+    ``dispositions`` counts what happened to each thing the extractor proposed —
+    ``inserted``, ``deduped``, ``superseded``, ``rejected``, ``evicted``. Two ratios over it
+    are the health signals SPEC §10.1 cannot express and this feature cannot do without.
+    Dedupe near 100% means passes are succeeding and producing nothing new; supersession
+    near zero on an established user means contradictions are not being caught. Both look
+    exactly like success from every other angle: green jobs, no errors, facts on the screen.
+
+    A label rather than five counters, because the useful questions are all ratios between
+    them and a ratio across five series is five queries.
+    """
+
+    passes: Counter
+    duration: Histogram
+    dispositions: Counter
+
+
+@dataclass(frozen=True)
 class Metrics:
     registry: CollectorRegistry
     http_requests: Counter
@@ -150,6 +174,7 @@ class Metrics:
     jobs: JobMetrics
     retrieval: RetrievalMetrics
     extraction: ExtractionMetrics
+    distillation: DistillationMetrics
 
 
 def build_metrics(*, service_name: str, version: str) -> Metrics:
@@ -194,6 +219,33 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         jobs=build_job_metrics(registry),
         retrieval=build_retrieval_metrics(registry),
         extraction=build_extraction_metrics(registry),
+        distillation=build_distillation_metrics(registry),
+    )
+
+
+def build_distillation_metrics(registry: CollectorRegistry) -> DistillationMetrics:
+    return DistillationMetrics(
+        passes=Counter(
+            "distillation_passes_total",
+            "Distillation passes by outcome: succeeded, failed, skipped.",
+            labelnames=("outcome",),
+            registry=registry,
+        ),
+        duration=Histogram(
+            "distillation_duration_seconds",
+            "How long one distillation pass took, model call included.",
+            # Wider than retrieval's by an order of magnitude: this is a completion from a
+            # cheap model plus a handful of embeddings, on a background worker where
+            # seconds are ordinary and only tens of seconds are a problem.
+            buckets=(0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 60.0),
+            registry=registry,
+        ),
+        dispositions=Counter(
+            "distillation_facts_total",
+            "What became of each proposed fact: inserted, deduped, superseded, rejected, evicted.",
+            labelnames=("disposition",),
+            registry=registry,
+        ),
     )
 
 

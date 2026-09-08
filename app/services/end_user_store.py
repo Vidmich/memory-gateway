@@ -31,7 +31,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -39,8 +39,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import uuid7
 from app.core.tenancy import TenantScope
-from app.db.models import EndUser, MemoryFact
-from app.db.scoping import ScopedRepository, scoped
+from app.db.models import EndUser, MemoryFact, Organization
+from app.db.scoping import ScopedRepository, scoped, unscoped
 from app.services.memory_db import MemoryDatabase
 
 
@@ -152,11 +152,62 @@ class EndUserTransaction(Protocol):
         after: uuid.UUID | None,
         limit: int,
         live_only: bool = False,
-    ) -> Sequence[MemoryFact]: ...
+        kind: str | None = None,
+        min_confidence: float | None = None,
+    ) -> Sequence[MemoryFact]:
+        """One end user's facts, newest first, optionally narrowed.
+
+        The filters are here rather than applied after paging, because a page filtered by
+        the caller is a page that can come back empty while the next one is full — and a
+        memory browser that says "no constraints" when it means "none in the first fifty"
+        is worse than one with no filter at all.
+        """
+        ...
 
     async def add_fact(self, end_user: EndUser, draft: FactDraft) -> MemoryFact: ...
 
     async def delete_fact(self, fact: MemoryFact) -> None: ...
+
+    async def all_facts(self, end_user_id: uuid.UUID) -> Sequence[MemoryFact]:
+        """Everything stored about one person, live or not, unpaged.
+
+        Bounded by ``max_facts_per_user``, and read by exactly one caller: the eviction
+        that enforces that bound (SPEC §6.4, step 5). Deciding what to forget requires
+        seeing all of it — a page would evict the worst of a page.
+        """
+        ...
+
+    async def facts_by_id(
+        self, end_user_id: uuid.UUID, fact_ids: Sequence[uuid.UUID]
+    ) -> Sequence[MemoryFact]:
+        """Rows for ids this end user owns, live or not.
+
+        Unlike :meth:`live_facts` this keeps superseded and expired rows, because it backs
+        distillation's ``supersedes`` check: an id the model named that belongs to somebody
+        else has to come back *empty*, and an id that is merely already retracted has to
+        come back present so the pass can say "already done" rather than "not yours".
+        """
+        ...
+
+    async def observe(self, fact: MemoryFact, *, confidence: float, seen_at: datetime) -> None:
+        """The dedupe path: this fact was said again. See :func:`reinforced`."""
+        ...
+
+    async def supersede(
+        self, fact: MemoryFact, *, replacement_id: uuid.UUID | None, at: datetime
+    ) -> None:
+        """Retire a fact in favour of another. The row stays; recall stops reading it."""
+        ...
+
+    async def organization_settings(self, organization_id: uuid.UUID) -> Mapping[str, Any]:
+        """The organization's settings blob.
+
+        Here rather than in a store of its own because the two settings this subsystem
+        reads — the per-person fact bound and the distillation knobs — are about a
+        *person*, and every caller that wants them is already holding one of these
+        transactions.
+        """
+        ...
 
     async def delete_facts_of(self, end_user_id: uuid.UUID) -> int:
         """Every fact for one end user, gone. The erasure path; returns the row count."""
@@ -315,6 +366,8 @@ class PostgresEndUserTransaction:
         after: uuid.UUID | None,
         limit: int,
         live_only: bool = False,
+        kind: str | None = None,
+        min_confidence: float | None = None,
     ) -> Sequence[MemoryFact]:
         statement = (
             self._facts.select()
@@ -324,6 +377,10 @@ class PostgresEndUserTransaction:
         )
         if live_only:
             statement = statement.where(live_clause(datetime.now(UTC)))
+        if kind is not None:
+            statement = statement.where(MemoryFact.kind == kind)
+        if min_confidence is not None:
+            statement = statement.where(MemoryFact.confidence >= min_confidence)
         if after is not None:
             statement = statement.where(MemoryFact.id < after)
         return (await self._session.execute(statement)).scalars().all()
@@ -342,6 +399,44 @@ class PostgresEndUserTransaction:
 
     async def delete_fact(self, fact: MemoryFact) -> None:
         await self._facts.delete(fact)
+
+    async def all_facts(self, end_user_id: uuid.UUID) -> Sequence[MemoryFact]:
+        statement = self._facts.select().where(MemoryFact.end_user_id == end_user_id)
+        return (await self._session.execute(statement)).scalars().all()
+
+    async def facts_by_id(
+        self, end_user_id: uuid.UUID, fact_ids: Sequence[uuid.UUID]
+    ) -> Sequence[MemoryFact]:
+        if not fact_ids:
+            return []
+        statement = self._facts.select().where(
+            MemoryFact.end_user_id == end_user_id, MemoryFact.id.in_(list(fact_ids))
+        )
+        return (await self._session.execute(statement)).scalars().all()
+
+    async def observe(self, fact: MemoryFact, *, confidence: float, seen_at: datetime) -> None:
+        fact.confidence = reinforced(float(fact.confidence), confidence)
+        fact.last_seen_at = seen_at
+
+    async def supersede(
+        self, fact: MemoryFact, *, replacement_id: uuid.UUID | None, at: datetime
+    ) -> None:
+        fact.superseded_at = at
+        fact.superseded_by_id = replacement_id
+
+    async def organization_settings(self, organization_id: uuid.UUID) -> Mapping[str, Any]:
+        if not self._scope.permits(organization_id):
+            return {}
+        statement = (
+            select(Organization.settings)
+            .where(Organization.id == organization_id)
+            # `organizations` is keyed by `id` rather than by `organization_id`, so the
+            # scope guard does not cover it and the check above is the whole of the
+            # isolation. Said out loud rather than left implicit.
+            .execution_options(**unscoped("the organizations table is keyed by id"))
+        )
+        found = (await self._session.execute(statement)).scalar_one_or_none()
+        return dict(found or {})
 
     async def delete_facts_of(self, end_user_id: uuid.UUID) -> int:
         rows = await self._facts.fetch(
@@ -422,6 +517,18 @@ class PostgresEndUserStore:
     async def begin(self, scope: TenantScope) -> AsyncIterator[EndUserTransaction]:
         async with self._session_factory() as session:
             yield PostgresEndUserTransaction(session, scope)
+
+
+def reinforced(stored: float, observed: float) -> float:
+    """Confidence after the same fact has been said again.
+
+    Monotonic on purpose: hearing something a second time never makes the system less sure
+    of it, so an extractor that returns 0.6 for a sentence a person typed by hand at 1.0
+    cannot talk the certainty back down. Above that floor it moves a third of the way to
+    the top, which reaches near-certainty in a handful of repetitions without ever quite
+    arriving — nothing written by a model should become unfalsifiable.
+    """
+    return min(1.0, max(stored, stored + (1.0 - stored) / 3.0, observed))
 
 
 def _escaped(value: str) -> str:
@@ -524,11 +631,17 @@ class MemoryEndUserTransaction:
         after: uuid.UUID | None,
         limit: int,
         live_only: bool = False,
+        kind: str | None = None,
+        min_confidence: float | None = None,
     ) -> Sequence[MemoryFact]:
         now = datetime.now(UTC)
         rows = self._own_facts(end_user_id)
         if live_only:
             rows = [fact for fact in rows if is_live(fact, now)]
+        if kind is not None:
+            rows = [fact for fact in rows if fact.kind == kind]
+        if min_confidence is not None:
+            rows = [fact for fact in rows if float(fact.confidence) >= min_confidence]
         ordered = sorted(rows, key=lambda row: row.id, reverse=True)
         if after is not None:
             ordered = [row for row in ordered if row.id < after]
@@ -539,6 +652,31 @@ class MemoryEndUserTransaction:
 
     async def delete_fact(self, fact: MemoryFact) -> None:
         self._db.memory_facts.pop(fact.id, None)
+
+    async def all_facts(self, end_user_id: uuid.UUID) -> Sequence[MemoryFact]:
+        return self._own_facts(end_user_id)
+
+    async def facts_by_id(
+        self, end_user_id: uuid.UUID, fact_ids: Sequence[uuid.UUID]
+    ) -> Sequence[MemoryFact]:
+        wanted = set(fact_ids)
+        return [fact for fact in self._own_facts(end_user_id) if fact.id in wanted]
+
+    async def observe(self, fact: MemoryFact, *, confidence: float, seen_at: datetime) -> None:
+        fact.confidence = reinforced(float(fact.confidence), confidence)
+        fact.last_seen_at = seen_at
+
+    async def supersede(
+        self, fact: MemoryFact, *, replacement_id: uuid.UUID | None, at: datetime
+    ) -> None:
+        fact.superseded_at = at
+        fact.superseded_by_id = replacement_id
+
+    async def organization_settings(self, organization_id: uuid.UUID) -> Mapping[str, Any]:
+        if not self._scope.permits(organization_id):
+            return {}
+        found = self._db.organizations.get(organization_id)
+        return dict(getattr(found, "settings", None) or {})
 
     async def delete_facts_of(self, end_user_id: uuid.UUID) -> int:
         rows = self._own_facts(end_user_id)
@@ -616,4 +754,5 @@ __all__ = [
     "PostgresEndUserTransaction",
     "is_live",
     "live_clause",
+    "reinforced",
 ]

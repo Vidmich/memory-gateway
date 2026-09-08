@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { ApiError } from '@/api/client'
+import { useDistilNow } from '@/api/distillation'
 import {
   useCreateFact,
   useDeleteFact,
@@ -11,7 +12,7 @@ import {
   useSearchMemory,
   useUpdateFact,
 } from '@/api/endUsers'
-import type { EndUserResponse, MemoryFactResponse, MemorySearchHit } from '@/api/types'
+import type { EndUserResponse, MemorySearchHit } from '@/api/types'
 import { useAuth } from '@/auth/AuthContext'
 import { can } from '@/auth/capabilities'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -24,12 +25,17 @@ import {
   KIND_HINTS,
   activity,
   displayName,
+  factOrigin,
   factState,
   formatConfidence,
   formatScore,
+  groupFacts,
+  passSummary,
+  provenanceLink,
   purgeDescription,
   purgeSummary,
   stateLabel,
+  type FactGroup,
   type FactKind,
 } from '@/pages/endUsers'
 
@@ -54,15 +60,31 @@ import {
  * **Purge names what stays.** People expect a purge to remove the *person*; it removes
  * what was learned about them and leaves the record that they were here. Finding that out
  * afterwards is finding it out too late, so the dialog says it before.
+ *
+ * **A retracted fact is folded under the one that replaced it.** Once distillation is
+ * running, half of a long-lived person's memory is history, and a flat list of both answers
+ * "what does it believe now" badly. The pair is what explains an old answer, so it is shown
+ * as a pair rather than as two rows fifty apart.
+ *
+ * **"Distil now" runs the real pass and says what it did.** The feature's worst failure is
+ * invisible latency: somebody adds a preference, waits, refreshes, and cannot tell whether
+ * the debounce has not fired, the model is misconfigured, or the extractor decided the
+ * sentence was not durable. One button answers all three.
  */
 export function EndUserDetailPage() {
   const { endUserId } = useParams<{ endUserId: string }>()
   const { user } = useAuth()
   const writes = can(user, 'resources:write')
   const [liveOnly, setLiveOnly] = useState(false)
+  const [kind, setKind] = useState('')
+  const [minConfidence, setMinConfidence] = useState('')
 
   const { data: endUser, isLoading, isError } = useEndUser(endUserId)
-  const { data: page } = useMemoryFacts(endUserId, liveOnly)
+  const { data: page } = useMemoryFacts(endUserId, {
+    liveOnly,
+    kind: kind || undefined,
+    minConfidence: minConfidence ? Number(minConfidence) : undefined,
+  })
 
   if (isLoading) return <FullPageSpinner label="Loading memory…" />
   if (isError || !endUser) {
@@ -104,6 +126,8 @@ export function EndUserDetailPage() {
 
       <MemorySearch endUserId={endUser.id} />
 
+      {writes ? <DistilNow endUserId={endUser.id} /> : null}
+
       {writes ? <AddFact endUserId={endUser.id} /> : null}
 
       <section className="mb-8 rounded-lg border border-slate-200 bg-white p-5">
@@ -111,26 +135,58 @@ export function EndUserDetailPage() {
           <h2 className="text-sm font-semibold text-slate-900">
             What the assistant knows ({endUser.fact_count} in use)
           </h2>
-          <label className="flex items-center gap-2 text-xs text-slate-600">
-            <input
-              type="checkbox"
-              checked={liveOnly}
-              onChange={(event) => setLiveOnly(event.target.checked)}
-              className="rounded border-slate-300"
-            />
-            Hide retracted and expired
-          </label>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+            <label className="flex items-center gap-1">
+              <span className="sr-only">Kind</span>
+              <select
+                aria-label="Filter by kind"
+                value={kind}
+                onChange={(event) => setKind(event.target.value)}
+                className="rounded-md border border-slate-300 px-2 py-1 text-xs"
+              >
+                <option value="">All kinds</option>
+                {FACT_KINDS.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-1">
+              <span className="sr-only">Confidence</span>
+              <select
+                aria-label="Filter by confidence"
+                value={minConfidence}
+                onChange={(event) => setMinConfidence(event.target.value)}
+                className="rounded-md border border-slate-300 px-2 py-1 text-xs"
+              >
+                <option value="">Any confidence</option>
+                <option value="0.8">80% and above</option>
+                <option value="0.5">50% and above</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={liveOnly}
+                onChange={(event) => setLiveOnly(event.target.checked)}
+                className="rounded border-slate-300"
+              />
+              Hide retracted and expired
+            </label>
+          </div>
         </div>
 
         {facts.length === 0 ? (
           <p className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-            Nothing stored for this person yet. Add a fact above, and the next request that
-            identifies them will carry it.
+            {kind || minConfidence
+              ? 'Nothing matches those filters. Clear them to see everything stored.'
+              : 'Nothing stored for this person yet. Add a fact above, distil their conversations, and the next request that identifies them will carry it.'}
           </p>
         ) : (
           <ul aria-label="Memory facts" className="space-y-2">
-            {facts.map((fact) => (
-              <FactRow key={fact.id} fact={fact} writes={writes} />
+            {groupFacts(facts).map((group) => (
+              <FactRow key={group.fact.id} group={group} writes={writes} />
             ))}
           </ul>
         )}
@@ -145,8 +201,10 @@ export function EndUserDetailPage() {
 // one fact
 // ---------------------------------------------------------------------------
 
-function FactRow({ fact, writes }: { fact: MemoryFactResponse; writes: boolean }) {
+function FactRow({ group, writes }: { group: FactGroup; writes: boolean }) {
+  const fact = group.fact
   const [editing, setEditing] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [text, setText] = useState(fact.text)
   const update = useUpdateFact()
   const remove = useDeleteFact()
@@ -154,6 +212,7 @@ function FactRow({ fact, writes }: { fact: MemoryFactResponse; writes: boolean }
 
   const state = factState(fact)
   const note = stateLabel(state)
+  const source = provenanceLink(fact)
 
   return (
     <li
@@ -212,6 +271,13 @@ function FactRow({ fact, writes }: { fact: MemoryFactResponse; writes: boolean }
         </span>
         <span className="tabular-nums">{formatConfidence(fact.confidence)} confidence</span>
         <span>last seen {new Date(fact.last_seen_at).toLocaleDateString()}</span>
+        {source ? (
+          <Link to={source} className="underline hover:text-slate-700">
+            {factOrigin(fact)}
+          </Link>
+        ) : (
+          <span>{factOrigin(fact)}</span>
+        )}
         {note ? <span className="font-medium text-amber-700">{note}</span> : null}
         {writes && !editing ? (
           <span className="ml-auto flex gap-3">
@@ -248,7 +314,85 @@ function FactRow({ fact, writes }: { fact: MemoryFactResponse; writes: boolean }
           </span>
         ) : null}
       </div>
+
+      {group.replaced.length > 0 ? (
+        <div className="mt-2 border-t border-dashed border-slate-200 pt-2">
+          <button
+            type="button"
+            onClick={() => setShowHistory((shown) => !shown)}
+            className="text-xs font-medium text-slate-500 hover:underline"
+          >
+            {showHistory ? 'Hide' : 'Show'} what this replaced ({group.replaced.length})
+          </button>
+          {showHistory ? (
+            <ul aria-label="Replaced facts" className="mt-2 space-y-1">
+              {group.replaced.map((old) => (
+                <li key={old.id} className="text-xs text-slate-500">
+                  <span className="line-through">{old.text}</span>
+                  <span className="ml-2">
+                    until {new Date(old.superseded_at ?? old.last_seen_at).toLocaleDateString()}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
     </li>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// distil now
+// ---------------------------------------------------------------------------
+
+function DistilNow({ endUserId }: { endUserId: string }) {
+  const distil = useDistilNow(endUserId)
+  const [outcome, setOutcome] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <section className="mb-6 rounded-lg border border-slate-200 bg-white p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">Distil now</h2>
+          <p className="mt-1 max-w-xl text-sm text-slate-500">
+            Read this person’s logged conversations and write what is durable in them. The
+            same pass the background worker runs — it normally waits for a conversation to
+            go quiet, and this does not.
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={distil.isPending}
+          onClick={() => {
+            setError(null)
+            setOutcome(null)
+            void distil
+              .mutateAsync()
+              .then((result) => setOutcome(passSummary(result)))
+              .catch((caught: unknown) => {
+                setError(
+                  caught instanceof ApiError ? caught.message : 'That could not be run.',
+                )
+              })
+          }}
+          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {distil.isPending ? 'Reading…' : 'Distil now'}
+        </button>
+      </div>
+      {outcome ? (
+        <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+          {outcome}
+        </p>
+      ) : null}
+      {error ? (
+        <p role="alert" className="mt-3 text-sm text-red-600">
+          {error}
+        </p>
+      ) : null}
+    </section>
   )
 }
 

@@ -23,6 +23,15 @@ type ServerOptions = {
   facts?: ReturnType<typeof makeFact>[]
   hits?: ReturnType<typeof makeMemoryHit>[]
   purge?: { facts: number; transcripts: number }
+  pass?: {
+    sessions: number
+    inserted: number
+    deduped: number
+    superseded: number
+    evicted: number
+    rejected: number
+    reason: string | null
+  }
 }
 
 /**
@@ -57,6 +66,21 @@ function fakeServer(options: ServerOptions = {}) {
     if (path === '/api/v1/auth/logout') return Promise.resolve(new Response(null, { status: 204 }))
     if (path.startsWith('/api/v1/metrics/summary')) return Promise.resolve(json(makeSummary()))
 
+    if (path.endsWith('/distil') && method === 'POST') {
+      return Promise.resolve(
+        json(
+          options.pass ?? {
+            sessions: 1,
+            inserted: 2,
+            deduped: 1,
+            superseded: 0,
+            evicted: 0,
+            rejected: 0,
+            reason: null,
+          },
+        ),
+      )
+    }
     if (path.includes('/memory/search') && method === 'POST') {
       return Promise.resolve(
         json({ hits: options.hits ?? [makeMemoryHit()], embedding_model: 'hash-bow' }),
@@ -69,8 +93,16 @@ function fakeServer(options: ServerOptions = {}) {
       return Promise.resolve(json(makeFact(bodyOf(init)), 201))
     }
     if (path.includes('/memory') && method === 'GET') {
-      const liveOnly = new URL(path, 'http://x').searchParams.get('live_only') === 'true'
-      const rows = liveOnly ? facts.filter((row) => !row.superseded_at) : facts
+      // The filters are applied here rather than in the page, because that is where they
+      // are applied in production — a page that filtered what it had already fetched would
+      // say "no constraints" when it meant "none on this page".
+      const query = new URL(path, 'http://x').searchParams
+      const kind = query.get('kind')
+      const floor = Number(query.get('min_confidence') ?? 0)
+      const rows = facts
+        .filter((row) => query.get('live_only') !== 'true' || !row.superseded_at)
+        .filter((row) => !kind || row.kind === kind)
+        .filter((row) => row.confidence >= floor)
       return Promise.resolve(json({ items: rows, next_cursor: null }))
     }
     if (path.startsWith('/api/v1/memory-facts/') && method === 'PATCH') {
@@ -358,5 +390,143 @@ describe('a viewer', () => {
     expect(screen.queryByRole('button', { name: 'Add fact' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Retract' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Erase memory' })).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// task 13: provenance, history, filters, and running a pass by hand
+// ---------------------------------------------------------------------------
+
+describe('a distilled memory', () => {
+  it('links a fact to the conversation it was learned from', async () => {
+    // "Where did it learn that" is the question a surprising fact produces, and the answer
+    // has to be a request rather than a shrug.
+    renderAt('/memory/eu1', fakeServer({ facts: [makeFact({ source_log_id: 'log-9' })] }))
+
+    const link = await screen.findByRole('link', { name: /Learned from a conversation/ })
+    expect(link).toHaveAttribute('href', '/monitoring?request=log-9')
+  })
+
+  it('says a hand-written fact was written by hand', async () => {
+    renderAt('/memory/eu1', fakeServer())
+
+    expect(await screen.findByText('Added by hand')).toBeInTheDocument()
+  })
+
+  it('folds a replaced fact under the one that replaced it, collapsed', async () => {
+    const user = userEvent.setup()
+    renderAt(
+      '/memory/eu1',
+      fakeServer({
+        facts: [
+          makeFact({ id: 'new', text: 'Works in Go.' }),
+          makeFact({
+            id: 'old',
+            text: 'Works in Rust.',
+            superseded_at: '2026-09-01T00:00:00Z',
+            superseded_by_id: 'new',
+          }),
+        ],
+      }),
+    )
+
+    expect(await screen.findByText('Works in Go.')).toBeInTheDocument()
+    expect(screen.queryByText('Works in Rust.')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /Show what this replaced/ }))
+
+    expect(screen.getByText('Works in Rust.')).toBeInTheDocument()
+  })
+
+  it('narrows the list by kind, server-side', async () => {
+    const user = userEvent.setup()
+    const server = fakeServer({
+      facts: [
+        makeFact({ id: 'a', kind: 'constraint', text: 'Needs GDPR-compliant answers.' }),
+        makeFact({ id: 'b', kind: 'preference', text: 'Prefers terse answers.' }),
+      ],
+    })
+    renderAt('/memory/eu1', server)
+
+    expect(await screen.findByText('Prefers terse answers.')).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Filter by kind'), 'constraint')
+
+    expect(await screen.findByText('Needs GDPR-compliant answers.')).toBeInTheDocument()
+    expect(screen.queryByText('Prefers terse answers.')).not.toBeInTheDocument()
+    expect(server.requests.some((request) => request.path.includes('kind=constraint'))).toBe(true)
+  })
+
+  it('narrows the list by confidence, so a guess can be told from a statement', async () => {
+    const user = userEvent.setup()
+    const server = fakeServer({
+      facts: [
+        makeFact({ id: 'a', confidence: 1, text: 'Works in the EU.' }),
+        makeFact({ id: 'b', confidence: 0.4, text: 'Might be a manager.' }),
+      ],
+    })
+    renderAt('/memory/eu1', server)
+
+    expect(await screen.findByText('Might be a manager.')).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Filter by confidence'), '0.8')
+
+    expect(await screen.findByText('Works in the EU.')).toBeInTheDocument()
+    expect(screen.queryByText('Might be a manager.')).not.toBeInTheDocument()
+  })
+
+  it('says the filters are why the list is empty, not that nothing is stored', async () => {
+    const user = userEvent.setup()
+    renderAt('/memory/eu1', fakeServer({ facts: [makeFact({ kind: 'preference' })] }))
+
+    await screen.findByRole('list', { name: 'Memory facts' })
+    await user.selectOptions(screen.getByLabelText('Filter by kind'), 'goal')
+
+    expect(await screen.findByText(/Nothing matches those filters/)).toBeInTheDocument()
+  })
+})
+
+describe('distil now', () => {
+  it('runs a pass and reports what it did', async () => {
+    // The feature's worst failure is invisible latency: somebody waits, refreshes, and
+    // cannot tell whether the debounce has not fired or the extractor found nothing.
+    const user = userEvent.setup()
+    const server = fakeServer()
+    renderAt('/memory/eu1', server)
+
+    await user.click(await screen.findByRole('button', { name: 'Distil now' }))
+
+    expect(await screen.findByText(/2 new, 1 already known/)).toBeInTheDocument()
+    expect(server.requests.some((request) => request.path.endsWith('/distil'))).toBe(true)
+  })
+
+  it('distinguishes "nothing new to read" from "nothing was learned"', async () => {
+    const user = userEvent.setup()
+    renderAt(
+      '/memory/eu1',
+      fakeServer({
+        pass: {
+          sessions: 0,
+          inserted: 0,
+          deduped: 0,
+          superseded: 0,
+          evicted: 0,
+          rejected: 0,
+          reason: 'nothing_pending',
+        },
+      }),
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Distil now' }))
+
+    expect(await screen.findByText(/already been distilled/)).toBeInTheDocument()
+  })
+
+  it('is not offered to a role that cannot write memory', async () => {
+    renderAt(
+      '/memory/eu1',
+      fakeServer({ user: makeUser({ role: 'org_viewer', capabilities: ['org:read'] }) }),
+    )
+
+    await screen.findByRole('list', { name: 'Memory facts' })
+    expect(screen.queryByRole('button', { name: 'Distil now' })).not.toBeInTheDocument()
   })
 })

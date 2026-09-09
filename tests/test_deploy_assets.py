@@ -68,6 +68,7 @@ NOT_A_METRIC = frozenset(
         "limit",
         "scope",
         "error_code",
+        "strategy",
     }
 )
 

@@ -286,18 +286,20 @@ class StubStore:
         return list(self.matches)
 
 
-def match(score: float, *, document: str, index: int) -> Match:
-    return Match(
-        id=f"{document}:{index}",
-        score=score,
-        payload={
-            "document_id": document,
-            "chunk_index": index,
-            "text": f"chunk {index}",
-            "source_name": "handbook.md",
-            "connector_id": str(CONNECTOR),
-        },
-    )
+def match(score: float, *, document: str, index: int, window: int | None = None) -> Match:
+    payload: dict[str, object] = {
+        "document_id": document,
+        "chunk_index": index,
+        "text": f"chunk {index}",
+        "source_name": "handbook.md",
+        "connector_id": str(CONNECTOR),
+    }
+    if window is not None:
+        # What task 20's `sentence_window` writes: the sentence that was embedded, and how
+        # far the chunk's text reaches either side of it.
+        payload["window_sentences"] = window
+        payload["embedded_text"] = f"sentence {index}"
+    return Match(id=f"{document}:{index}", score=score, payload=payload)
 
 
 async def test_an_adjacent_chunk_of_the_same_document_is_dropped(
@@ -346,6 +348,59 @@ async def test_the_higher_scoring_of_a_neighbouring_pair_survives(
     )
 
     assert [chunk.score for chunk in result.chunks] == [0.90]
+
+
+async def test_a_windowed_chunk_drops_neighbours_as_far_as_its_window_reaches(
+    embedder: HashEmbedder,
+) -> None:
+    """How far "neighbouring" reaches is a property of the chunk, not a constant. With a
+    window of two, five consecutive chunks contain the same sentence, and the default
+    radius of one would inject that paragraph three times over."""
+    store = StubStore(
+        [
+            match(0.90, document="a", index=10, window=2),
+            match(0.88, document="a", index=12, window=2),
+            match(0.70, document="a", index=20, window=2),
+        ]
+    )
+    retriever = Retriever(embedder, store)  # type: ignore[arg-type]
+
+    result = await retriever.documents(
+        organization_id=ORG, config=config(), messages=turns(("user", "refunds"))
+    )
+
+    assert [chunk.chunk_index for chunk in result.chunks] == [10, 20]
+
+
+async def test_a_windowed_chunk_reports_the_sentence_that_matched(
+    embedder: HashEmbedder,
+) -> None:
+    """Two strings with two different jobs: the window is what goes into the prompt, the
+    sentence is what the query actually matched."""
+    store = StubStore([match(0.90, document="a", index=3, window=1)])
+    retriever = Retriever(embedder, store)  # type: ignore[arg-type]
+
+    result = await retriever.documents(
+        organization_id=ORG, config=config(), messages=turns(("user", "refunds"))
+    )
+
+    assert result.chunks[0].matched_text == "sentence 3"
+    assert result.chunks[0].text == "chunk 3"
+
+
+async def test_an_ordinary_chunk_has_no_matched_text_to_report(
+    embedder: HashEmbedder,
+) -> None:
+    """``None`` rather than a copy of the text, so the distinction does not leak into every
+    screen: a chunk whose matched text is its own text has nothing to say about it."""
+    store = StubStore([match(0.90, document="a", index=3)])
+    retriever = Retriever(embedder, store)  # type: ignore[arg-type]
+
+    result = await retriever.documents(
+        organization_id=ORG, config=config(), messages=turns(("user", "refunds"))
+    )
+
+    assert result.chunks[0].matched_text is None
 
 
 async def test_the_score_floor_and_the_connector_filter_are_pushed_into_the_store(

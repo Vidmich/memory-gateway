@@ -193,6 +193,14 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: SPEC §9.4 — recorded per document so a platform embedding-model change is
     #: detectable as drift instead of silently degrading retrieval.
     embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: SPEC §9.3 — the strategy this document was actually cut with, and a digest of the
+    #: whole effective configuration. The same argument as ``embedding_model`` one line
+    #: up, and with per-format overrides it is a stronger one: two documents in the same
+    #: connector can legitimately be cut differently, so "what is this connector set to"
+    #: no longer answers "how was this document cut". A connector reindexed halfway holds
+    #: two chunkings at once, and without these nothing says which document is which.
+    chunk_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    chunk_fingerprint: Mapped[str | None] = mapped_column(String(32), nullable=True)
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     connector: Mapped[Connector] = relationship(back_populates="documents")

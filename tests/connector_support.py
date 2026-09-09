@@ -19,13 +19,13 @@ from typing import Any
 
 from app.core.config import Settings, get_settings
 from app.core.ids import uuid7
-from app.core.metrics import ExtractionMetrics
+from app.core.metrics import ChunkingMetrics, ExtractionMetrics
 from app.core.tenancy import Actor, TenantScope
 from app.db.models import Connector, Document, Organization
 from app.services.connector_source import storage_prefix
 from app.services.connector_store import MemoryConnectorStore
 from app.services.connectors import ConnectorService
-from app.services.embeddings import HashEmbedder
+from app.services.embeddings import Embedder, HashEmbedder
 from app.services.extraction import ExtractorRegistry, build_registry
 from app.services.ingestion import IngestionPipeline, IngestionSettings
 from app.services.job_queue import MemoryJobQueue
@@ -83,7 +83,7 @@ class ConnectorFixture:
     store: MemoryConnectorStore
     objects: MemoryObjectStore
     vectors: MemoryVectorStore
-    embedder: HashEmbedder
+    embedder: Embedder
     registry: ExtractorRegistry
     queue: MemoryJobQueue
     lock: MemoryLock
@@ -213,13 +213,18 @@ def build_connectors(
     connector: Connector | None = None,
     dimension: int = DIMENSION,
     metrics: ExtractionMetrics | None = None,
+    chunking_metrics: ChunkingMetrics | None = None,
+    #: Swapped in by the tests that need the provider to misbehave — task 20 made chunking
+    #: a step that can call one, so "the embedding provider is down" is now a thing that
+    #: happens *before* a document is indexed as well as during.
+    embedder: Embedder | None = None,
 ) -> ConnectorFixture:
     settings = settings or get_settings()
     database = database or MemoryDatabase()
     store = MemoryConnectorStore(database)
     objects = objects or MemoryObjectStore()
     vectors = vectors or MemoryVectorStore()
-    embedder = HashEmbedder(dimension=dimension, model="hash-bow")
+    embedder = embedder or HashEmbedder(dimension=dimension, model="hash-bow")
     registry = build_registry()
     queue = MemoryJobQueue()
     lock = MemoryLock()
@@ -239,6 +244,7 @@ def build_connectors(
         # second of interpreter startup per child and buys isolation that only
         # `tests/test_extraction_pool.py` is about.
         metrics=metrics,
+        chunking_metrics=chunking_metrics,
     )
     service = ConnectorService(
         store,

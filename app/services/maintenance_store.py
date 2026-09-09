@@ -122,6 +122,24 @@ class OrganizationRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ConnectorChunking:
+    """One connector's chunking settings and what it has indexed, across tenants.
+
+    Read by :class:`~app.services.reindex.Reindexer` to answer the one question a platform
+    embedding-model change now has to ask before it starts: which connectors have to be
+    *recut* rather than re-embedded. The blob is returned raw and interpreted by the
+    reindexer, because deciding what "model-dependent" means is a chunking question and
+    this module has no business holding an opinion about it.
+    """
+
+    organization_id: uuid.UUID
+    connector_id: uuid.UUID
+    chunking: dict[str, Any]
+    #: Documents currently in a terminal indexed state. What the recut would actually cost.
+    indexed_documents: int
+
+
+@dataclass(frozen=True, slots=True)
 class RunState:
     """A maintenance run as the job sees it."""
 
@@ -178,6 +196,19 @@ class MaintenanceTransaction(AuditingTransaction, Protocol):
     async def document_uris(self, organization_id: uuid.UUID) -> set[str]: ...
 
     async def storage_prefixes(self, organization_id: uuid.UUID) -> list[str]: ...
+
+    # -- reindex ---------------------------------------------------------
+    async def connector_chunkings(self) -> list[ConnectorChunking]:
+        """Every connector's chunking blob, platform-wide, with its indexed document count."""
+        ...
+
+    async def indexed_documents(self, connector_id: uuid.UUID) -> list[uuid.UUID]:
+        """The documents a recut of this connector would have to run again, oldest first.
+
+        Only the indexed ones: a document that failed extraction will fail it again, and a
+        pending one has a job coming that will cut it with the current settings anyway.
+        """
+        ...
 
     # -- runs ------------------------------------------------------------
     async def unfinished(self, job: str) -> RunState | None: ...
@@ -399,6 +430,44 @@ class PostgresMaintenanceTransaction(PostgresAuditRecorder):
             .execution_options(**unscoped(_REASON))
         )
         return {str(row[0]) for row in rows.all()}
+
+    async def connector_chunkings(self) -> list[ConnectorChunking]:
+        indexed = (
+            select(Document.connector_id, func.count().label("indexed"))
+            .where(Document.status == "indexed")
+            .group_by(Document.connector_id)
+            .subquery()
+        )
+        rows = await self._session.execute(
+            select(
+                Connector.organization_id,
+                Connector.id,
+                Connector.chunking,
+                func.coalesce(indexed.c.indexed, 0),
+            )
+            .outerjoin(indexed, indexed.c.connector_id == Connector.id)
+            .where(Connector.status != "deleting")
+            .order_by(Connector.organization_id, Connector.id)
+            .execution_options(**unscoped(_REASON))
+        )
+        return [
+            ConnectorChunking(
+                organization_id=row[0],
+                connector_id=row[1],
+                chunking=dict(row[2] or {}),
+                indexed_documents=int(row[3] or 0),
+            )
+            for row in rows.all()
+        ]
+
+    async def indexed_documents(self, connector_id: uuid.UUID) -> list[uuid.UUID]:
+        rows = await self._session.execute(
+            select(Document.id)
+            .where(Document.connector_id == connector_id, Document.status == "indexed")
+            .order_by(Document.id)
+            .execution_options(**unscoped(_REASON))
+        )
+        return [row[0] for row in rows.all()]
 
     async def fact_ids(self, organization_id: uuid.UUID) -> set[str]:
         rows = await self._session.execute(
@@ -720,6 +789,31 @@ class MemoryMaintenanceTransaction(MemoryAuditRecorder):
             for row in self._db.documents.values()
             if row.organization_id == organization_id
         }
+
+    async def connector_chunkings(self) -> list[ConnectorChunking]:
+        return [
+            ConnectorChunking(
+                organization_id=row.organization_id,
+                connector_id=row.id,
+                chunking=dict(row.chunking or {}),
+                indexed_documents=sum(
+                    1
+                    for document in self._db.documents.values()
+                    if document.connector_id == row.id and document.status == "indexed"
+                ),
+            )
+            for row in sorted(
+                self._db.connectors.values(), key=lambda row: (row.organization_id, row.id)
+            )
+            if row.status != "deleting"
+        ]
+
+    async def indexed_documents(self, connector_id: uuid.UUID) -> list[uuid.UUID]:
+        return sorted(
+            row.id
+            for row in self._db.documents.values()
+            if row.connector_id == connector_id and row.status == "indexed"
+        )
 
     async def fact_ids(self, organization_id: uuid.UUID) -> set[str]:
         return {

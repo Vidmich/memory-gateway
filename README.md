@@ -395,11 +395,48 @@ roadmap gap does not read as a broken product.
 files are never read past the sniff window, so a folder of videos costs 8 KB each rather
 than their size.
 
-**Chunking** is per connector (SPEC §9.3): `recursive`, `fixed` or `by_heading`, with a
-token size and an overlap. Sizes are counted with the embedding model's own tokenizer, and
-a cut is walked back to a paragraph, then a sentence, then a word boundary — never
-mid-word. Changing any of it invalidates the chunks already stored, so the editor says so
-at the moment of the change, and only when there is an index to invalidate.
+**Chunking** is per connector (SPEC §9.3), with six strategies in two groups. Three cut on
+a token budget adjusted for punctuation — `recursive` walks a cut back to a paragraph, then
+a sentence, then a word boundary, never mid-word; `by_heading` uses the document's own
+sections; `fixed` is the escape hatch for content whose structure means nothing. Three cut
+on something a token budget cannot see:
+
+* **`semantic`** embeds each sentence and cuts where consecutive-sentence distance exceeds
+  a percentile breakpoint over *this document's own* distribution — a percentile because
+  the distance scale belongs to the embedding model, and an absolute threshold would need
+  retuning every time that model changed. `chunk_size` becomes a ceiling rather than a
+  target, with a floor underneath it so a page of short sentences does not become one chunk
+  each.
+* **`sentence_window`** embeds a sentence and returns it with its neighbours: a small unit
+  to match on, enough context to answer with. The two strings are different and both are
+  stored, so the chunk inspector can highlight what actually matched — otherwise the first
+  question under this strategy is "why does this chunk not contain the words I searched
+  for", with the answer nowhere on the screen.
+* **`code`** splits on declarations and carries the enclosing signature into every fragment,
+  so a citation names the function rather than lines 40–80 of a file. Structural for Python,
+  JavaScript, TypeScript and Go; `recursive` everywhere else and for any file that will not
+  parse — a syntax error costs a worse cut of that file, never a failed document.
+
+**A connector is a source, not a format**, so chunking has per-format overrides: a
+repository cuts its code structurally and its Markdown recursively, and adding an override
+for code reindexes the code files and leaves a thousand PDFs alone. The connector screen
+shows what each format actually resolves to, because a resolution rule nobody can see is a
+rule everybody guesses at.
+
+**Nobody can pick a strategy from a description**, so **Compare** runs candidates over one
+real document side by side and reports the four numbers that make two chunkings comparable —
+chunk count, the token distribution, how many chunks the size limit decided rather than the
+strategy, and how many boundaries fell mid-sentence — plus what one ingestion would cost at
+the embedding provider under each. It goes through the same splitter ingestion does and
+writes nothing. Without it this is three more words in a dropdown, and every user picks
+`semantic` because it sounds better.
+
+Changing any of it invalidates the chunks already stored, so the editor says so at the
+moment of the change, names which formats it affected, and only when there is an index to
+invalidate. Under `semantic` there is one more consequence, and it is said where the choice
+is made: the embedding model becomes part of the chunking configuration, so a future
+platform model change has to **recut** that connector from object storage rather than
+re-embed it.
 
 **The index** is one Qdrant collection per organization, `org_{org_id}_docs`, cosine
 distance, with payload indexes on `connector_id` and `document_id`. Point ids are
@@ -486,7 +523,11 @@ tell a healthy document from one that reports `indexed` and answers badly — th
 identical everywhere else on the screen. `extraction_duration_seconds{format}` and
 `extractions_total{format, outcome}` are the same question in Prometheus: extraction
 degrades one format at a time, and an unlabelled failure rate averages that into
-invisibility.
+invisibility. `chunking_duration_seconds{strategy}` and `chunk_size_tokens{strategy}` are
+the equivalent pair for the step after it, and the labels matter for the same reason twice
+over: chunking is network-bound under `semantic` and instant under everything else, and a
+chunk-size distribution collapsing toward one sentence is what a strategy looks like when
+it is working and useless.
 
 ### The worker
 
@@ -1573,7 +1614,8 @@ screen.
 | `POST /api/v1/connectors/{id}/upload` | Multipart, many files at once, streamed to object storage. Always 200, with a per-file outcome. |
 | `POST /api/v1/connectors/{id}/upload-url` | A short-lived presigned `PUT`, for scripted uploads. Picked up by the next resync. |
 | `POST /api/v1/connectors/{id}/resync` | Reconcile against storage; reports `{added, updated, deleted, unchanged, skipped}`. |
-| `POST /api/v1/connectors/{id}/reindex` | Re-run ingestion for every document — how a chunking change is applied. Not the platform reindex: that re-embeds, this re-chunks. |
+| `POST /api/v1/connectors/{id}/reindex` | Re-run ingestion, optionally narrowed to the formats a change invalidated — how a chunking change is applied. Not the platform reindex: that re-embeds, this re-chunks. |
+| `POST /api/v1/connectors/{id}/chunking/preview` | **Compare**: candidate chunkings over one document, with their numbers. Writes nothing, and spends at the embedding provider. |
 | `POST /api/v1/connectors/{id}/search` | Debug-only semantic search over one connector's chunks, with scores. |
 | `POST /api/v1/documents/{id}/reindex` | The retry button. Resets the row to `pending` and enqueues it. |
 | `GET /api/v1/documents/{id}/chunks` | The chunk inspector: what one document became, with each chunk's page or section. |

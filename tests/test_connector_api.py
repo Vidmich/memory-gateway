@@ -491,6 +491,196 @@ async def test_a_skipped_document_carries_a_reason_code_beside_its_sentence(
 
 
 # ---------------------------------------------------------------------------
+# chunking: overrides, compare, and a narrowed reindex (task 20)
+# ---------------------------------------------------------------------------
+
+
+async def indexed(
+    harness: AuthHarness, token: str, connector: dict[str, Any], *files: tuple[str, bytes]
+) -> list[dict[str, Any]]:
+    """Upload, drain the queue, and hand back the document rows."""
+    await upload(harness.client, harness.bearer(token), connector["id"], *files)
+    fixture = harness.auth.connectors
+    assert fixture is not None
+    await fixture.run_jobs()
+    listed = await harness.client.get(
+        f"/api/v1/connectors/{connector['id']}/documents", headers=harness.bearer(token)
+    )
+    rows: list[dict[str, Any]] = listed.json()["items"]
+    return rows
+
+
+async def test_a_connector_reports_what_each_format_resolves_to(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    """Sent rather than left to the client to recompute. The resolution rule lives in one
+    place, and a screen that derived it independently would eventually show a
+    configuration the pipeline does not use."""
+    connector = await created(
+        auth_harness,
+        token,
+        chunking={"strategy": "recursive", "overrides": {"code": {"strategy": "code"}}},
+    )
+
+    assert connector["effective_chunking"]["code"]["strategy"] == "code"
+    assert connector["effective_chunking"]["pdf"]["strategy"] == "recursive"
+    assert connector["effective_chunking"]["code"]["overrides"] == {}
+
+
+async def test_an_override_for_an_unknown_format_is_a_422(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    """Refused rather than ignored: an override under a misspelled key is a setting that is
+    stored, displayed, and applied to nothing."""
+    response = await auth_harness.client.post(
+        "/api/v1/connectors",
+        headers=auth_harness.bearer(token),
+        json={"name": "Typo", "chunking": {"overrides": {"pdfs": {"chunk_size": 500}}}},
+    )
+
+    assert response.status_code == 422
+    assert "not a format" in response.text
+
+
+async def test_an_unknown_setting_inside_an_override_is_a_422(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    response = await auth_harness.client.post(
+        "/api/v1/connectors",
+        headers=auth_harness.bearer(token),
+        json={"name": "Typo two", "chunking": {"overrides": {"pdf": {"chunk_sizes": 500}}}},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_a_patch_names_the_formats_it_invalidated(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    """So the prompt can say "reindex the code files" instead of "reindex everything" when
+    only an override moved."""
+    connector = await created(auth_harness, token)
+    await indexed(auth_harness, token, connector, ("handbook.md", HANDBOOK))
+
+    response = await auth_harness.client.patch(
+        f"/api/v1/connectors/{connector['id']}",
+        headers=auth_harness.bearer(token),
+        json={"chunking": {"overrides": {"code": {"strategy": "code"}}}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reindex_required"] is True
+    assert body["reindex_formats"] == ["code"]
+
+
+async def test_a_reindex_can_be_narrowed_to_the_formats_that_changed(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    connector = await created(auth_harness, token)
+    await indexed(auth_harness, token, connector, ("handbook.md", HANDBOOK))
+
+    response = await auth_harness.client.post(
+        f"/api/v1/connectors/{connector['id']}/reindex",
+        headers=auth_harness.bearer(token),
+        json={"formats": ["code"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["documents"] == 0, "the Markdown file is not a code file"
+
+
+async def test_a_reindex_with_no_body_still_covers_everything(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    """The old shape, which the UI sends when the connector's own settings moved."""
+    connector = await created(auth_harness, token)
+    await indexed(auth_harness, token, connector, ("handbook.md", HANDBOOK))
+
+    response = await auth_harness.client.post(
+        f"/api/v1/connectors/{connector['id']}/reindex", headers=auth_harness.bearer(token)
+    )
+
+    assert response.json()["documents"] == 1
+
+
+async def test_a_reindex_naming_an_unknown_format_is_a_422(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    connector = await created(auth_harness, token)
+
+    response = await auth_harness.client.post(
+        f"/api/v1/connectors/{connector['id']}/reindex",
+        headers=auth_harness.bearer(token),
+        json={"formats": ["pdfs"]},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_compare_returns_a_column_per_candidate_and_writes_nothing(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    """The demoable half of task 20. Without it this ships three more words in a dropdown
+    and every user picks by name."""
+    connector = await created(auth_harness, token)
+    [document] = await indexed(auth_harness, token, connector, ("handbook.md", HANDBOOK))
+
+    response = await auth_harness.client.post(
+        f"/api/v1/connectors/{connector['id']}/chunking/preview",
+        headers=auth_harness.bearer(token),
+        json={
+            "document_id": document["id"],
+            "candidates": [{"label": "tiny", "chunk_size": 50, "overlap": 0}],
+            "query": "who pays for widgets",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [candidate["label"] for candidate in body["candidates"]] == ["current", "tiny"]
+    assert body["format_kind"] == "markdown"
+    for candidate in body["candidates"]:
+        assert candidate["distribution"]["chunks"] == candidate["total_chunks"]
+        assert candidate["embedded_texts"] > 0
+        assert candidate["best"] is not None
+
+    after = await auth_harness.client.get(
+        f"/api/v1/documents/{document['id']}/chunks", headers=auth_harness.bearer(token)
+    )
+    assert after.json()["chunk_count"] == document["chunk_count"]
+
+
+async def test_compare_refuses_more_candidates_than_it_will_render(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    connector = await created(auth_harness, token)
+    [document] = await indexed(auth_harness, token, connector, ("handbook.md", HANDBOOK))
+
+    response = await auth_harness.client.post(
+        f"/api/v1/connectors/{connector['id']}/chunking/preview",
+        headers=auth_harness.bearer(token),
+        json={"document_id": document["id"], "candidates": [{"chunk_size": 60}] * 9},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_compare_is_a_404_for_a_document_that_does_not_exist(
+    auth_harness: AuthHarness, token: str
+) -> None:
+    connector = await created(auth_harness, token)
+
+    response = await auth_harness.client.post(
+        f"/api/v1/connectors/{connector['id']}/chunking/preview",
+        headers=auth_harness.bearer(token),
+        json={"document_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # capabilities
 # ---------------------------------------------------------------------------
 

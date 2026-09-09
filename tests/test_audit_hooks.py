@@ -112,6 +112,13 @@ UNAUDITED: dict[tuple[str, str], str] = {
     ("POST", f"{API}/connectors/{{connector_id}}/search"): (
         "A read that takes a body because the query is one. Nothing is written."
     ),
+    ("POST", f"{API}/connectors/{{connector_id}}/chunking/preview"): (
+        "Runs candidate chunkings over one document and writes nothing — no vectors, no "
+        "rows, not even the candidate it liked. A body because several configurations and "
+        "a query do not fit in a query string. It is the one read in this router that "
+        "*spends* something, at the embedding provider, and that is bounded by the "
+        "document-size ceiling rather than by an audit entry."
+    ),
     ("POST", f"{API}/connectors/{{connector_id}}/upload-url"): (
         "Mints a presigned URL and writes nothing at all. What it authorises shows up "
         "as `connector.resync`, which is the reconciliation that has to exist anyway."

@@ -223,6 +223,10 @@ class ReindexEstimate(BaseModel):
     ``points`` and ``tokens`` are counted rather than guessed — the chunks are in the
     index with their text — so this is an estimate only in the sense that a provider's
     tokenizer may differ from ours by a few percent.
+
+    The recut figures are the exception and are deliberately *not* folded into the token
+    count. Nothing here knows how many chunks re-chunking a document under a new model will
+    produce, and a number invented for that would be the one an operator anchored on.
     """
 
     collections: list[str] = Field(default_factory=list)
@@ -232,6 +236,14 @@ class ReindexEstimate(BaseModel):
     from_model: str | None = None
     to_model: str
     to_dimension: int
+    #: Connectors whose chunk boundaries came out of the embedding model and therefore have
+    #: to be *recut* from object storage rather than re-embedded from the index — task 20's
+    #: ``semantic`` strategy. Counted separately because it is a different kind of cost:
+    #: object reads, extraction and re-chunking, none of which the token figure above
+    #: covers. An operator deciding whether to change the platform model needs to see it
+    #: before they decide, not discover it from the run's duration.
+    recut_connectors: int = 0
+    recut_documents: int = 0
 
 
 class ReindexRequest(BaseModel):

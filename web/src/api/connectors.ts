@@ -21,6 +21,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tan
 import type { UploadProgress } from '@/api/client'
 import { useApiClient } from '@/auth/AuthContext'
 import type {
+  ChunkingPreviewResponse,
   ConnectorCreateRequest,
   ConnectorPage,
   ConnectorResponse,
@@ -166,19 +167,47 @@ export function useDeleteConnector() {
 }
 
 /**
- * Re-run ingestion for every document in a connector.
+ * Re-run ingestion for a connector's documents, optionally narrowed to some formats.
  *
  * Not `POST /platform/reindex`, despite the shared word. That one re-embeds chunks that are
  * still correct under a new model; this one exists because a changed `chunk_size` makes the
  * chunks themselves wrong, and only running the pipeline again fixes that.
+ *
+ * `formats` is what makes a per-format override affordable: adding one for code re-runs the
+ * code files and leaves a thousand PDFs indexed. Omitted means everything, which is the
+ * right answer when the connector's own settings moved.
  */
 export function useReindexConnector(connectorId: string | undefined) {
   const client = useApiClient()
   const invalidate = useInvalidateConnectors()
   return useMutation({
-    mutationFn: () =>
-      client.post<{ documents: number }>(`/api/v1/connectors/${connectorId}/reindex`, {}),
+    mutationFn: (formats?: string[]) =>
+      client.post<{ documents: number }>(`/api/v1/connectors/${connectorId}/reindex`, {
+        formats: formats && formats.length > 0 ? formats : null,
+      }),
     onSuccess: invalidate,
+  })
+}
+
+/**
+ * **Compare**: run candidate chunkings over one document and return what each produces.
+ *
+ * A mutation rather than a query even though it writes nothing, and deliberately: it costs
+ * money at the embedding provider on every call, so it must run when somebody presses a
+ * button and never because a component re-rendered.
+ */
+export function usePreviewChunking(connectorId: string | undefined) {
+  const client = useApiClient()
+  return useMutation({
+    mutationFn: (body: {
+      document_id: string
+      candidates?: Record<string, unknown>[]
+      query?: string | null
+    }) =>
+      client.post<ChunkingPreviewResponse>(
+        `/api/v1/connectors/${connectorId}/chunking/preview`,
+        body,
+      ),
   })
 }
 

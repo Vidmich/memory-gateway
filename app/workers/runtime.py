@@ -29,6 +29,7 @@ from app.core.clients import Clients
 from app.core.config import Settings
 from app.core.crypto import SecretBox
 from app.core.metrics import (
+    ChunkingMetrics,
     DistillationMetrics,
     ExtractionMetrics,
     JobMetrics,
@@ -166,6 +167,7 @@ def build_ingestion(
     queue: JobQueue,
     backends: VectorBackends,
     metrics: ExtractionMetrics | None = None,
+    chunking_metrics: ChunkingMetrics | None = None,
     embedding: EmbeddingChoice | None = None,
 ) -> Ingestion:
     limits = ingestion_settings(settings)
@@ -212,6 +214,7 @@ def build_ingestion(
             settings=limits,
             pool=pool,
             metrics=metrics,
+            chunking_metrics=chunking_metrics,
         ),
         settings=limits,
         pool=pool,
@@ -374,6 +377,10 @@ def build_platform(
         embedder_for=lambda choice: build_embedder(
             embedding_settings(settings, choice), clients.internal
         ),
+        # The pipeline itself, as the recutter. A connector whose chunk boundaries came out
+        # of the embedding model cannot be reindexed by re-embedding its stored text, and
+        # the only thing that knows how to cut a document is the thing that cuts documents.
+        recutter=ingestion.pipeline,
     )
     migrator = VectorMigrator(
         backends,

@@ -427,6 +427,127 @@
       ]
     },
     {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Chunking duration p95, by strategy",
+      "description": "Chunking was a pure CPU step until task 20. Under `semantic` it makes an embedding call per sentence, which turns the pipeline's cheapest phase into a network-bound one \u2014 this is where that becomes visible, and it is why the series is split by strategy rather than averaged.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, strategy) (rate(chunking_duration_seconds_bucket[30m])))",
+          "legendFormat": "{{strategy}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Chunk size p50 / p95, by strategy",
+      "description": "The signal that catches a strategy that is working and useless: `semantic` collapsing to one chunk per sentence because the floor is too low, or `by_heading` producing 40-token chunks on a document of many small sections. Both look like success everywhere else \u2014 documents indexed, no errors, chunks on the screen.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, strategy) (rate(chunk_size_tokens_bucket[30m])))",
+          "legendFormat": "p95 {{strategy}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le, strategy) (rate(chunk_size_tokens_bucket[30m])))",
+          "legendFormat": "p50 {{strategy}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
       "id": 8,
       "type": "timeseries",
       "title": "Retention: rows pruned",
@@ -437,7 +558,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 22,
+        "y": 30,
         "w": 8,
         "h": 7
       },
@@ -493,7 +614,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 22,
+        "y": 30,
         "w": 8,
         "h": 7
       },
@@ -549,7 +670,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 22,
+        "y": 30,
         "w": 8,
         "h": 7
       },

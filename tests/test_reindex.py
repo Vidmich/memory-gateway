@@ -23,12 +23,13 @@ import pytest
 from app.core.errors import Conflict
 from app.core.ids import uuid7
 from app.core.tenancy import Actor, TenantScope
-from app.db.models import Organization
+from app.db.models import Connector, Document, Organization
 from app.schemas.platform import EmbeddingChoice
-from app.services.reindex import progress_of
+from app.services.embeddings import Embedder
+from app.services.reindex import estimated_cost_lines, progress_of
 from app.services.reindex_store import EMBEDDING, FAILED, SUCCEEDED, SWAPPED
 from app.services.vector_index import successor, version_of, versioned
-from app.services.vector_store import ChunkPoint, collection_for
+from app.services.vector_store import ChunkPoint, collection_for, point_id
 from tests.platform_support import DIMENSION, PlatformFixture, build_platform
 
 
@@ -387,3 +388,194 @@ async def test_a_target_records_the_collection_it_was_building(
 
     assert run.targets[0].collection == versioned(organization, 2)
     assert run.targets[0].status not in (SWAPPED, EMBEDDING)
+
+
+# ---------------------------------------------------------------------------
+# the recut path (task 20)
+# ---------------------------------------------------------------------------
+
+
+class RecordingRecutter:
+    """A recutter that rebuilds each document into a fixed number of points.
+
+    A double rather than the real pipeline, deliberately: what is under test here is the
+    *reindexer's* arithmetic and its decisions — which connectors are recut, what the count
+    check compares against, what happens when one document will not read. That the real
+    recut produces the right chunks is
+    ``tests/test_chunking_pipeline.py``'s job, and running an extraction stack through this
+    file would test both badly.
+    """
+
+    def __init__(self, *, per_document: int = 3, broken: set[uuid.UUID] | None = None) -> None:
+        self.per_document = per_document
+        self.broken = broken or set()
+        self.seen: list[uuid.UUID] = []
+        self.models: list[str] = []
+
+    async def recut(
+        self, *, organization_id: uuid.UUID, document_id: uuid.UUID, embedder: Embedder
+    ) -> list[ChunkPoint]:
+        self.seen.append(document_id)
+        self.models.append(embedder.model)
+        if document_id in self.broken:
+            raise RuntimeError("this object is no longer in storage")
+        vectors = await embedder.embed([f"recut {index}" for index in range(self.per_document)])
+        return [
+            ChunkPoint(
+                id=point_id(document_id, index),
+                vector=list(vector),
+                payload={
+                    "text": f"recut {index}",
+                    "document_id": str(document_id),
+                    "chunk_index": index,
+                },
+            )
+            for index, vector in enumerate(vectors)
+        ]
+
+
+def add_connector(
+    platform: PlatformFixture,
+    organization: uuid.UUID,
+    *,
+    strategy: str,
+    documents: int = 1,
+) -> tuple[uuid.UUID, list[uuid.UUID]]:
+    """A connector row and its indexed documents, without running ingestion."""
+    connector = Connector(
+        id=uuid7(),
+        organization_id=organization,
+        name=f"{strategy} source",
+        type="managed_file_drop",
+        chunking={"strategy": strategy},
+        status="ready",
+    )
+    platform.db.connectors[connector.id] = connector
+    ids = []
+    for index in range(documents):
+        document = Document(
+            id=uuid7(),
+            organization_id=organization,
+            connector_id=connector.id,
+            source_uri=f"orgs/{organization}/{index}.md",
+            source_name=f"{index}.md",
+            mime_type="text/markdown",
+            size_bytes=64,
+            status="indexed",
+            chunk_count=2,
+        )
+        platform.db.documents[document.id] = document
+        ids.append(document.id)
+    return connector.id, ids
+
+
+async def test_the_estimate_names_the_connectors_that_have_to_be_recut() -> None:
+    """A different *kind* of cost, not a bigger one: object reads, extraction and
+    re-chunking, none of which the token figure covers. An operator deciding whether to
+    change the platform model needs it before they decide, not from the run's duration."""
+    platform = build_platform(recutter=RecordingRecutter())
+    organization = await seed(platform, chunks=4)
+    add_connector(platform, organization, strategy="semantic", documents=3)
+    add_connector(platform, organization, strategy="recursive", documents=9)
+
+    estimate = await platform.reindexer.estimate(
+        choice=EmbeddingChoice(provider="hash", name="hash-wide", dimension=DIMENSION)
+    )
+
+    assert estimate.recut_connectors == 1
+    assert estimate.recut_documents == 3
+    assert any("recut from object storage" in line for line in estimated_cost_lines(estimate))
+
+
+async def test_nothing_is_recut_when_no_connector_chunks_with_the_model() -> None:
+    platform = build_platform(recutter=RecordingRecutter())
+    organization = await seed(platform, chunks=4)
+    add_connector(platform, organization, strategy="recursive", documents=5)
+
+    estimate = await platform.reindexer.estimate()
+
+    assert estimate.recut_connectors == 0
+    assert estimate.recut_documents == 0
+
+
+async def test_a_semantic_connector_is_recut_and_the_rest_is_re_embedded(
+    actor: Actor,
+) -> None:
+    """The expensive case, end to end. The copied points keep their text; the recut ones
+    are rebuilt from storage with the *new* model deciding the boundaries."""
+    recutter = RecordingRecutter(per_document=3)
+    platform = build_platform(recutter=recutter)
+    organization = await seed(platform, chunks=0)
+    semantic_connector, semantic_documents = add_connector(
+        platform, organization, strategy="semantic", documents=2
+    )
+    plain_connector, _ = add_connector(platform, organization, strategy="recursive")
+    await platform.index_chunks(
+        organization, uuid7(), "old boundaries here", connector_id=semantic_connector
+    )
+    await platform.index_chunks(organization, uuid7(), "a", "b", "c", connector_id=plain_connector)
+
+    run = await platform.reindexer.start(actor)
+    finished = await platform.reindexer.run(run.id)
+
+    assert finished.status == SUCCEEDED
+    assert sorted(recutter.seen) == sorted(semantic_documents)
+    live = await platform.index.live_collection(organization)
+    assert live is not None
+    texts = {
+        str(point.payload.get("text"))
+        for point in (await platform.index.scroll(live, cursor=None, limit=100)).points
+    }
+    assert texts == {"a", "b", "c", "recut 0", "recut 1", "recut 2"}
+    assert "old boundaries here" not in texts, "the semantic connector's old cut is gone"
+
+
+async def test_the_recut_uses_the_model_the_run_is_moving_to(actor: Actor) -> None:
+    """Recutting with the serving model would make the whole extra expense buy nothing:
+    the boundaries would still be the old model's opinion."""
+    recutter = RecordingRecutter()
+    platform = build_platform(recutter=recutter)
+    organization = await seed(platform, chunks=2)
+    add_connector(platform, organization, strategy="semantic")
+
+    run = await platform.reindexer.start(
+        actor, choice=EmbeddingChoice(provider="hash", name="hash-next", dimension=DIMENSION)
+    )
+    await platform.reindexer.run(run.id)
+
+    assert recutter.models == ["hash-next"]
+
+
+async def test_a_document_that_cannot_be_recut_does_not_fail_the_tenant(
+    actor: Actor,
+) -> None:
+    """One file of a corpus. The old collection still has whatever it had for it, and
+    failing a whole tenant's reindex because somebody deleted an object would be a far
+    worse trade — so the count check compares against what was actually produced."""
+    recutter = RecordingRecutter()
+    platform = build_platform(recutter=recutter)
+    organization = await seed(platform, chunks=2)
+    _, documents = add_connector(platform, organization, strategy="semantic", documents=2)
+    recutter.broken = {documents[0]}
+
+    run = await platform.reindexer.start(actor)
+    finished = await platform.reindexer.run(run.id)
+
+    assert finished.status == SUCCEEDED
+    assert finished.targets[0].status == SWAPPED
+
+
+async def test_a_reindexer_with_no_recutter_refuses_rather_than_copying(actor: Actor) -> None:
+    """A silent fallback would re-embed a semantic connector's old boundaries, report
+    success, and leave a collection whose cut came from a model no longer in use — with
+    nothing anywhere saying so."""
+    platform = build_platform()  # no recutter, which is how the API process is built
+    organization = await seed(platform, chunks=2)
+    add_connector(platform, organization, strategy="semantic")
+
+    run = await platform.reindexer.start(actor)
+    finished = await platform.reindexer.run(run.id)
+
+    assert finished.status == FAILED
+    assert "recut" in (finished.error or "")
+    assert await platform.index.live_collection(organization) == versioned(organization, 1)

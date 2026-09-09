@@ -112,15 +112,23 @@ class Chunk:
     document_id: str | None
     connector_id: str | None
     chunk_index: int
+    #: The text that was actually embedded, when it is not the whole chunk — task 20's
+    #: ``sentence_window`` strategy. ``None`` everywhere else, which is what keeps the
+    #: distinction from leaking into every other screen: a chunk whose matched text is its
+    #: own text has nothing to say about the difference.
+    matched_text: str | None = None
 
     @classmethod
     def of(cls, match: Match) -> Chunk:
         payload = match.payload
         section = payload.get("page_or_section")
+        embedded = payload.get("embedded_text")
+        text = str(payload.get("text", ""))
         return cls(
             id=match.id,
             score=match.score,
-            text=str(payload.get("text", "")),
+            text=text,
+            matched_text=str(embedded) if embedded and str(embedded) != text else None,
             # A document whose name is missing is still a usable citation target by id;
             # rendering "source: None" into somebody's prompt is not.
             source_name=str(payload.get("source_name") or "untitled"),
@@ -503,6 +511,12 @@ def _dedupe(matches: Sequence[Match]) -> list[Match]:
     different document out of the block. Keeping the higher-scoring one of a pair loses
     little: they are near-identical, and the sentence at the boundary is in both.
 
+    How far "neighbouring" reaches is a property of the chunk, not a constant. Under task
+    20's ``sentence_window`` the overlap is the entire design: with a window of two, five
+    consecutive chunks contain the same sentence, and a radius of one would inject that
+    paragraph three times over — spending the budget on copies of one passage, which is
+    the exact failure this function exists to prevent.
+
     Matches arrive sorted by score, so the first of a neighbouring pair seen here is the
     better one.
     """
@@ -510,14 +524,30 @@ def _dedupe(matches: Sequence[Match]) -> list[Match]:
     for match in matches:
         document = match.payload.get("document_id")
         index = int(match.payload.get("chunk_index", 0) or 0)
+        radius = _radius(match)
         if any(
             existing.payload.get("document_id") == document
-            and abs(int(existing.payload.get("chunk_index", 0) or 0) - index) <= 1
+            and abs(int(existing.payload.get("chunk_index", 0) or 0) - index)
+            <= max(radius, _radius(existing))
             for existing in kept
         ):
             continue
         kept.append(match)
     return kept
+
+
+def _radius(match: Match) -> int:
+    """How many chunks either side of this one contain some of its text.
+
+    Read off the point rather than off the connector's current configuration: the filter
+    runs on search results, and a connector reindexed since would answer about chunks that
+    are no longer there.
+    """
+    window = match.payload.get("window_sentences")
+    try:
+        return max(1, int(window)) if window is not None else 1
+    except (TypeError, ValueError):
+        return 1
 
 
 def _as_str(value: Any) -> str | None:

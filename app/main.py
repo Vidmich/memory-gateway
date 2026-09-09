@@ -179,6 +179,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             queue=build_queue(clients.jobs),
             backends=vector_backends,
             metrics=metrics.extraction,
+            chunking_metrics=metrics.chunking,
             embedding=platform_settings.snapshot.embedding,
         )
         app.state.ingestion = ingestion

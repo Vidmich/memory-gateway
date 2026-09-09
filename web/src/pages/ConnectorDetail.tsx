@@ -3,6 +3,8 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   useDeleteDocument,
   useDocumentChunks,
+  useDocuments,
+  usePreviewChunking,
   useReindexConnector,
   useReindexDocument,
   useSearch,
@@ -10,7 +12,13 @@ import {
   useUpload,
   useUploadUrl,
 } from '@/api/connectors'
-import type { ConnectorResponse, DocumentResponse, SearchHit } from '@/api/types'
+import type {
+  ChunkingCandidate,
+  ChunkingPreviewResponse,
+  ConnectorResponse,
+  DocumentResponse,
+  SearchHit,
+} from '@/api/types'
 import { CopyButton } from '@/components/CopyButton'
 import { Field, Form, Select, SubmitButton, TextInput } from '@/components/Form'
 import { StatusBadge } from '@/components/StatusBadge'
@@ -23,10 +31,16 @@ import {
   chunkingForm,
   chunkingProblem,
   chunkingWarning,
+  comparisonRows,
   documentTone,
   explanationFor,
   formatBytes,
+  formatResolutions,
   pageLabel,
+  reindexScope,
+  strategyCost,
+  strategyFields,
+  strategyLabel,
   uploadSnippet,
   type ChunkingForm,
 } from '@/pages/connectors'
@@ -352,8 +366,22 @@ export function ChunkInspector({
               <span className="font-mono">{chunk.token_count ?? 0} tokens</span>
             </div>
             <p className="line-clamp-4 whitespace-pre-wrap text-xs text-slate-600">
-              {chunk.text}
+              {/* Under `sentence_window` the chunk's text is not what was embedded, and
+                  without marking the difference the first debugging session is "why does
+                  this chunk not contain the words I searched for" — with the answer
+                  nowhere on this screen. */}
+              {chunk.embedded_text ? (
+                <Highlighted text={chunk.text} matched={chunk.embedded_text} />
+              ) : (
+                chunk.text
+              )}
             </p>
+            {chunk.embedded_text ? (
+              <p className="mt-1 text-[10px] text-slate-400">
+                The highlighted sentence is what was embedded; the rest is context this chunk
+                carries into the prompt.
+              </p>
+            ) : null}
           </li>
         ))}
       </ol>
@@ -368,6 +396,7 @@ export function ChunkInspector({
 export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
   const reindex = useReindexConnector(connector.id)
   const [form, setForm] = useState<ChunkingForm>(() => chunkingForm(connector.chunking))
+  const [comparing, setComparing] = useState(false)
   const update = useUpdateConnector(connector.id)
   const { notify } = useToast()
 
@@ -381,6 +410,8 @@ export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
   const problem = chunkingProblem(form)
   const warning = chunkingWarning(connector, changed)
   const strategy = CHUNK_STRATEGIES.find((entry) => entry.value === form.strategy)
+  const shows = strategyFields(form.strategy)
+  const cost = strategyCost(form.strategy)
 
   const submit = async () => {
     await update.mutateAsync({ chunking: chunkingBody(form) })
@@ -420,19 +451,67 @@ export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
             />
           )}
         </Field>
-        <Field name="chunking.overlap" label="Overlap (tokens)">
-          {({ id, invalid, describedBy }) => (
-            <TextInput
-              id={id}
-              type="number"
-              invalid={invalid}
-              describedBy={describedBy}
-              value={form.overlap}
-              onChange={(event) => setForm({ ...form, overlap: event.target.value })}
-            />
-          )}
-        </Field>
+        {shows.overlap ? (
+          <Field name="chunking.overlap" label="Overlap (tokens)">
+            {({ id, invalid, describedBy }) => (
+              <TextInput
+                id={id}
+                type="number"
+                invalid={invalid}
+                describedBy={describedBy}
+                value={form.overlap}
+                onChange={(event) => setForm({ ...form, overlap: event.target.value })}
+              />
+            )}
+          </Field>
+        ) : null}
+        {shows.window ? (
+          <Field
+            name="chunking.window_sentences"
+            label="Window (sentences either side)"
+            hint="The sentence is what a query matches; the window is what goes into the prompt."
+          >
+            {({ id, invalid, describedBy }) => (
+              <TextInput
+                id={id}
+                type="number"
+                invalid={invalid}
+                describedBy={describedBy}
+                value={form.windowSentences}
+                onChange={(event) => setForm({ ...form, windowSentences: event.target.value })}
+              />
+            )}
+          </Field>
+        ) : null}
+        {shows.breakpoint ? (
+          <Field
+            name="chunking.breakpoint_percentile"
+            label="Breakpoint percentile"
+            hint="A percentile of this document's own distances, not an absolute number — the scale is a property of the embedding model."
+          >
+            {({ id, invalid, describedBy }) => (
+              <TextInput
+                id={id}
+                type="number"
+                invalid={invalid}
+                describedBy={describedBy}
+                value={form.breakpointPercentile}
+                onChange={(event) =>
+                  setForm({ ...form, breakpointPercentile: event.target.value })
+                }
+              />
+            )}
+          </Field>
+        ) : null}
       </div>
+
+      {cost ? (
+        /* Said once, where the choice is made. A trade-off whose consequence arrives
+           months later is one nobody connects to the dropdown that caused it. */
+        <p className="mb-4 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+          {cost}
+        </p>
+      ) : null}
 
       <label className="mb-4 flex items-center gap-2 text-sm text-slate-700">
         <input
@@ -459,12 +538,12 @@ export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
         <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
           <p>
             The chunking has changed since these documents were indexed, so their chunks are
-            stale. Reindexing runs them through the pipeline again.
+            stale. Reindexing runs {reindexScope(connector)} through the pipeline again.
           </p>
           <button
             type="button"
             onClick={() =>
-              reindex.mutate(undefined, {
+              reindex.mutate(connector.reindex_formats ?? [], {
                 onSuccess: (result: { documents: number }) =>
                   notify(
                     `Reindexing ${result.documents} document${
@@ -475,15 +554,259 @@ export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
             }
             className="mt-2 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-100"
           >
-            {reindex.isPending ? 'Queueing…' : 'Reindex every document'}
+            {reindex.isPending ? 'Queueing…' : `Reindex ${reindexScope(connector)}`}
           </button>
         </div>
       ) : null}
 
-      <SubmitButton busy={update.isPending} disabled={!changed || problem !== null}>
-        Save chunking
-      </SubmitButton>
+      <div className="flex flex-wrap items-center gap-3">
+        <SubmitButton busy={update.isPending} disabled={!changed || problem !== null}>
+          Save chunking
+        </SubmitButton>
+        <button
+          type="button"
+          onClick={() => setComparing((open) => !open)}
+          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+        >
+          {comparing ? 'Hide comparison' : 'Compare'}
+        </button>
+      </div>
+
+      <FormatResolutions connector={connector} />
+      {comparing ? <ChunkingCompare connector={connector} form={form} /> : null}
     </Form>
+  )
+}
+
+/**
+ * What each format this connector could hold actually resolves to.
+ *
+ * Displayed rather than left to be inferred, because a resolution rule nobody can see is a
+ * rule everybody guesses at — and the guess that a per-format override applies to a format
+ * it does not is invisible until retrieval quietly gets worse.
+ */
+export function FormatResolutions({ connector }: { connector: ConnectorResponse }) {
+  const rows = formatResolutions(connector)
+  const overridden = rows.filter((row) => row.overridden)
+  if (overridden.length === 0) {
+    return (
+      <p className="mt-4 text-xs text-slate-500">
+        Every format is cut the same way. Per-format overrides are set through the API.
+      </p>
+    )
+  }
+  return (
+    <div className="mt-4">
+      <p className="mb-1 text-xs font-medium text-slate-600">What each format resolves to</p>
+      <ul className="divide-y divide-slate-200 rounded-md border border-slate-200 bg-white text-xs">
+        {rows.map((row) => (
+          <li key={row.kind} className="flex items-center justify-between gap-2 px-2 py-1.5">
+            <span className={row.overridden ? 'font-medium text-slate-800' : 'text-slate-600'}>
+              {row.label}
+            </span>
+            <span className="text-slate-600">
+              {strategyLabel(row.strategy)}, {row.chunkSize} tokens
+              {row.overridden ? (
+                <span className="ml-1 rounded bg-slate-100 px-1 text-slate-500">override</span>
+              ) : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/**
+ * **Compare**: the same document cut several ways, side by side.
+ *
+ * Nobody can pick a chunking strategy from a description — the right answer depends on the
+ * corpus. Without this, every user picks by name, which in practice means picking
+ * `semantic` because it sounds better, paying for it at every ingestion, and never finding
+ * out whether it helped.
+ *
+ * The candidate sent is the *form's* current state, so what is compared is the change
+ * somebody is about to save rather than a hypothetical.
+ */
+export function ChunkingCompare({
+  connector,
+  form,
+}: {
+  connector: ConnectorResponse
+  form: ChunkingForm
+}) {
+  const documents = useDocuments(connector.id, 'indexed')
+  const preview = usePreviewChunking(connector.id)
+  const [documentId, setDocumentId] = useState('')
+  const [query, setQuery] = useState('')
+
+  const rows = documents.data?.items ?? []
+  const chosen = documentId || rows[0]?.id || ''
+
+  const run = () => {
+    if (!chosen) return
+    preview.mutate({
+      document_id: chosen,
+      candidates: [{ label: 'proposed', ...chunkingBody(form) }],
+      query: query.trim() || null,
+    })
+  }
+
+  return (
+    <div className="mt-6 rounded-md border border-slate-200 bg-slate-50 p-3">
+      <p className="mb-2 text-sm font-medium text-slate-800">Compare</p>
+      <p className="mb-3 text-xs text-slate-600">
+        Runs the settings above against one document beside what this connector does today.
+        Nothing is saved, and nothing is indexed — but it does embed the document, so it
+        costs what one ingestion would.
+      </p>
+
+      <div className="mb-3 grid gap-2 sm:grid-cols-2">
+        <label className="text-xs text-slate-600">
+          Document
+          <select
+            value={chosen}
+            onChange={(event) => setDocumentId(event.target.value)}
+            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+          >
+            {rows.length === 0 ? <option value="">Nothing indexed yet</option> : null}
+            {rows.map((document: DocumentResponse) => (
+              <option key={document.id} value={document.id}>
+                {document.source_name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs text-slate-600">
+          Question (optional)
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="what does the travel policy cover?"
+            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+          />
+        </label>
+      </div>
+
+      <button
+        type="button"
+        onClick={run}
+        disabled={!chosen || preview.isPending}
+        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+      >
+        {preview.isPending ? 'Running…' : 'Run comparison'}
+      </button>
+
+      {preview.isError ? (
+        <p role="alert" className="mt-2 text-sm text-red-600">
+          The comparison could not be run.
+        </p>
+      ) : null}
+      {preview.data ? <ComparisonResult result={preview.data} /> : null}
+    </div>
+  )
+}
+
+function ComparisonResult({ result }: { result: ChunkingPreviewResponse }) {
+  const candidates = result.candidates
+  return (
+    <div className="mt-4">
+      <table className="w-full table-fixed border-collapse text-xs">
+        <thead>
+          <tr className="text-left text-slate-500">
+            <th className="w-48 py-1 font-medium">
+              {result.source_name}
+              <span className="ml-1 font-normal text-slate-400">({result.format_kind})</span>
+            </th>
+            {candidates.map((candidate: ChunkingCandidate) => (
+              <th key={candidate.label} className="py-1 font-medium text-slate-700">
+                {candidate.label}
+                <span className="ml-1 font-normal text-slate-400">
+                  {strategyLabel(candidate.strategy)}
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200">
+          {comparisonRows(candidates).map((row) => (
+            <tr key={row.label}>
+              <td className="py-1 pr-2 text-slate-500">{row.label}</td>
+              {row.values.map((value, index) => (
+                <td key={`${row.label}-${index}`} className="py-1 font-mono text-slate-700">
+                  {value}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        {candidates.map((candidate: ChunkingCandidate) => (
+          <div key={candidate.label}>
+            <p className="mb-1 text-xs font-medium text-slate-600">{candidate.label}</p>
+            <ol className="space-y-1">
+              {candidate.chunks.slice(0, 12).map((chunk) => (
+                <li
+                  key={chunk.index}
+                  className={
+                    'rounded-md border bg-white p-2 ' +
+                    (candidate.best === chunk.index
+                      ? 'border-emerald-400 ring-1 ring-emerald-200'
+                      : 'border-slate-200')
+                  }
+                >
+                  <div className="mb-0.5 flex justify-between text-[10px] text-slate-400">
+                    <span>{chunk.section ?? `Chunk ${chunk.index + 1}`}</span>
+                    <span className="font-mono">
+                      {chunk.token_count} tok
+                      {chunk.score !== null && chunk.score !== undefined
+                        ? ` · ${chunk.score.toFixed(2)}`
+                        : ''}
+                    </span>
+                  </div>
+                  {/* The boundaries are drawn by the blocks themselves: one box per chunk,
+                      in cut order, is the same information as lines over the text and
+                      cannot disagree with what the splitter actually returned. */}
+                  <p className="line-clamp-3 whitespace-pre-wrap text-[11px] text-slate-600">
+                    {chunk.embedded_text ? (
+                      <Highlighted text={chunk.text} matched={chunk.embedded_text} />
+                    ) : (
+                      chunk.text
+                    )}
+                  </p>
+                </li>
+              ))}
+            </ol>
+            {candidate.total_chunks > 12 ? (
+              <p className="mt-1 text-[10px] text-slate-400">
+                {candidate.total_chunks - 12} more. The numbers above cover all of them.
+              </p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The matched sentence, marked inside its window.
+ *
+ * Only `sentence_window` produces a chunk whose text is not what was embedded, and without
+ * this the first debugging session under it is "why does this chunk not contain the words I
+ * searched for" — with the answer nowhere on the screen.
+ */
+function Highlighted({ text, matched }: { text: string; matched: string }) {
+  const at = text.indexOf(matched)
+  if (at < 0) return <>{text}</>
+  return (
+    <>
+      {text.slice(0, at)}
+      <mark className="bg-amber-100 text-slate-800">{matched}</mark>
+      {text.slice(at + matched.length)}
+    </>
   )
 }
 

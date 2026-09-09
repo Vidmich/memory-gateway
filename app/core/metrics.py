@@ -161,6 +161,31 @@ class ExtractionMetrics:
 
 
 @dataclass(frozen=True)
+class ChunkingMetrics:
+    """Cutting a document up, as two numbers (task 20).
+
+    Both labelled by *strategy*, because that is the axis the answer lives on and because
+    one of these strategies is not like the others. ``chunking`` was a pure CPU step for
+    the whole of this product's life; under ``semantic`` it makes an embedding call per
+    sentence, which turns the pipeline's cheapest phase into a network-bound one. An
+    unlabelled duration averages a millisecond of ``recursive`` together with two seconds
+    of ``semantic`` and hides exactly the thing worth seeing.
+
+    ``sizes`` is the chunk-size distribution, and it is the signal that catches a strategy
+    that is *working* and useless: ``semantic`` collapsing to one chunk per sentence
+    because the floor is too low, or ``by_heading`` producing 40-token chunks on a
+    document of many small sections. Both look like success from every other angle —
+    documents indexed, no errors, chunks on the screen.
+
+    The label values come from the strategy literal, which is a closed set, so the
+    cardinality is the number of strategies and does not grow with the corpus.
+    """
+
+    duration: Histogram
+    sizes: Histogram
+
+
+@dataclass(frozen=True)
 class DistillationMetrics:
     """Writing memory, as three numbers (SPEC §10.1, task 13).
 
@@ -273,6 +298,7 @@ class Metrics:
     jobs: JobMetrics
     retrieval: RetrievalMetrics
     extraction: ExtractionMetrics
+    chunking: ChunkingMetrics
     distillation: DistillationMetrics
     rate_limits: RateLimitMetrics
     audit: AuditMetrics
@@ -322,6 +348,7 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         jobs=build_job_metrics(registry),
         retrieval=build_retrieval_metrics(registry),
         extraction=build_extraction_metrics(registry),
+        chunking=build_chunking_metrics(registry),
         distillation=build_distillation_metrics(registry),
         rate_limits=build_rate_limit_metrics(registry),
         audit=build_audit_metrics(registry),
@@ -449,6 +476,33 @@ def build_extraction_metrics(registry: CollectorRegistry) -> ExtractionMetrics:
             "extractions_total",
             "Files read, by format and outcome: ok, failed, skipped.",
             labelnames=("format", "outcome"),
+            registry=registry,
+        ),
+    )
+
+
+def build_chunking_metrics(registry: CollectorRegistry) -> ChunkingMetrics:
+    """Split out like the others, so a pipeline can be built in a test on its own."""
+    return ChunkingMetrics(
+        duration=Histogram(
+            "chunking_duration_seconds",
+            "How long cutting one document up took, by strategy.",
+            labelnames=("strategy",),
+            # The bottom edges are where the CPU-only strategies live and the top ones are
+            # where `semantic` lives once it is embedding a sentence at a time. A single
+            # scale spanning both is the point: the chart has to show one turning into the
+            # other after somebody changes a dropdown.
+            buckets=(0.001, 0.005, 0.025, 0.1, 0.5, 1.0, 2.5, 5.0, 15.0, 30.0, 60.0),
+            registry=registry,
+        ),
+        sizes=Histogram(
+            "chunk_size_tokens",
+            "Tokens per produced chunk, by strategy.",
+            labelnames=("strategy",),
+            # Straddles the whole legal range of `chunk_size` (50..4000) with enough edges
+            # near the bottom to make "this strategy is producing one sentence per chunk"
+            # visible, which is the failure worth catching.
+            buckets=(16, 32, 64, 128, 256, 512, 1000, 2000, 4000),
             registry=registry,
         ),
     )

@@ -21,7 +21,7 @@ full object, so what is shown is always what will actually happen.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Self
+from typing import Any, Self, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict
 
@@ -109,6 +109,10 @@ def _reject_unknown(schema: type[BaseModel], merged: Mapping[str, Any], *, field
     let ``{"per_end_user": {"requests_per_minutes": 60}}`` through — accepted, stored,
     and silently never applied, which is the exact failure this function exists to
     prevent one level up.
+
+    A mapping *of* models is checked entry by entry, which is what task 20's
+    ``chunking.overrides`` needs: the keys there are format names chosen by the caller, so
+    the recursion has to happen one level deeper than the field.
     """
     known = schema.model_fields
     for key, value in merged.items():
@@ -118,11 +122,31 @@ def _reject_unknown(schema: type[BaseModel], merged: Mapping[str, Any], *, field
                 f"Allowed: {', '.join(sorted(set(known) - {'version'}))}.",
                 param=f"{field}.{key}",
             )
-        nested = known[key].annotation
-        if not isinstance(value, Mapping) or not isinstance(nested, type):
+        nested, keyed = _nested_schema(known[key].annotation)
+        if nested is None or not isinstance(value, Mapping):
             continue
-        if issubclass(nested, BaseModel):
+        if not keyed:
             _reject_unknown(nested, value, field=f"{field}.{key}")
+            continue
+        for name, entry in value.items():
+            if isinstance(entry, Mapping):
+                _reject_unknown(nested, entry, field=f"{field}.{key}.{name}")
+
+
+def _nested_schema(annotation: Any) -> tuple[type[BaseModel] | None, bool]:
+    """The model a field holds, and whether it holds a *mapping* of them.
+
+    ``(None, False)`` for everything else, including a list of models: a list is replaced
+    wholesale by :func:`_deep_merge`, so there is no partial entry to check keys against.
+    """
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation, False
+    if get_origin(annotation) in (dict, Mapping):
+        arguments = get_args(annotation)
+        value = arguments[1] if len(arguments) == 2 else None
+        if isinstance(value, type) and issubclass(value, BaseModel):
+            return value, True
+    return None, False
 
 
 def _first_problem(exc: Exception) -> tuple[str, str]:

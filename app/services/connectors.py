@@ -38,13 +38,19 @@ from app.core.tenancy import Actor
 from app.db.models import Connector, Document
 from app.db.models.connector import CONNECTOR_TYPES, TERMINAL_DOCUMENT_STATUSES
 from app.schemas.config import merge_config
-from app.schemas.connector_config import ChunkingConfig, requires_reindex
+from app.schemas.connector_config import ChunkingConfig, changed_formats
 from app.services.audit import Target, summarize
 from app.services.audit_snapshots import subject, target_of
+from app.services.chunking_preview import (
+    ChunkingPreviewer,
+    PreviewResult,
+    PreviewTooLarge,
+    candidates_from,
+)
 from app.services.connector_source import storage_prefix
 from app.services.connector_store import ConnectorStore, ConnectorTransaction, DocumentDraft
 from app.services.embeddings import Embedder
-from app.services.filetypes import SNIFF_BYTES, sniff
+from app.services.filetypes import SNIFF_BYTES, format_label, sniff
 from app.services.ingestion import IngestionPipeline, IngestionSettings, ResyncSummary
 from app.services.jobs import (
     DELETE_CONNECTOR,
@@ -64,6 +70,11 @@ logger = logging.getLogger(__name__)
 #: Documents re-enqueued per transaction by a connector-wide reindex. Bounded so one
 #: button press on a large connector is many short transactions rather than one long one.
 REINDEX_PAGE = 200
+
+#: Ceiling on a document previewed for chunking. Far below the ingestion limit on purpose:
+#: a preview embeds what it reads and stores none of it, so the size that matters is the
+#: size of a document whose chunks somebody can actually look at.
+PREVIEW_MAX_BYTES = 2 * 1024 * 1024
 
 MAX_NAME_LENGTH = 200
 
@@ -113,6 +124,11 @@ class ConnectorView:
     #: them. Set by an update, so the UI can say "reindex to apply" at the moment the
     #: change is made rather than in a banner that is always on.
     reindex_required: bool = False
+    #: Which format kinds that change invalidated. Empty unless ``reindex_required``. A
+    #: set rather than a flag because a per-format override should reindex the code files
+    #: and leave the PDFs alone — see
+    #: :func:`~app.schemas.connector_config.changed_formats`.
+    reindex_formats: frozenset[str] = frozenset()
 
     @property
     def document_count(self) -> int:
@@ -308,7 +324,7 @@ class ConnectorService:
                 )
 
             after = ChunkingConfig.load(connector.chunking)
-            changed = requires_reindex(before, after)
+            changed = changed_formats(before, after)
             # A chunking change is the one edit here with consequences beyond the row —
             # every existing chunk is now stale — so the diff naming `chunking.*` is what
             # explains a reindex that follows it.
@@ -327,7 +343,7 @@ class ConnectorService:
         if changed:
             logger.info(
                 "connector chunking changed; existing chunks are now stale",
-                extra={"connector_id": str(connector_id)},
+                extra={"connector_id": str(connector_id), "formats": sorted(changed)},
             )
         return ConnectorView(
             connector=connector,
@@ -335,7 +351,8 @@ class ConnectorService:
             total_bytes=sizes.get(connector_id, 0),
             # Only meaningful when something is actually indexed. Telling somebody to
             # reindex an empty connector is noise they will learn to ignore.
-            reindex_required=changed and bool(counts.get(connector_id)),
+            reindex_required=bool(changed) and bool(counts.get(connector_id)),
+            reindex_formats=changed,
         )
 
     async def delete_connector(self, actor: Actor, connector_id: uuid.UUID) -> None:
@@ -419,6 +436,61 @@ class ConnectorService:
         )
         return DocumentChunks(chunks=stored, chunk_count=expected)
 
+    async def preview_chunking(
+        self,
+        actor: Actor,
+        connector_id: uuid.UUID,
+        document_id: uuid.UUID,
+        *,
+        candidates: list[dict[str, Any]] | None = None,
+        query: str | None = None,
+    ) -> PreviewResult:
+        """Run candidate chunking configurations over one document. Writes nothing.
+
+        **Compare**, on the connector's Chunking tab. Scoped by the connector row first and
+        the document second, so an id from another organization is a 404 before an object
+        is fetched — the same order as every other route here, and for the same reason.
+
+        The connector in the path is *checked* rather than decorative: a document belonging
+        to a different connector is a 404 even inside the same organization, because the
+        baseline the comparison is drawn against is this connector's configuration and a
+        comparison against the wrong baseline is worse than no comparison.
+
+        Capped at :data:`PREVIEW_MAX_BYTES` rather than at the ingestion limit. This
+        endpoint spends money at the embedding provider on every call and nothing it
+        produces is stored, so the ceiling is the size of a document somebody can actually
+        read the chunks of, not the size of a document this product can index.
+        """
+        async with self._store.begin(actor.scope) as transaction:
+            await self._require(transaction, connector_id)
+            document = await transaction.document(document_id)
+            if document is None or document.connector_id != connector_id:
+                raise NotFound("Document not found.")
+            organization_id = document.organization_id
+            if document.size_bytes > PREVIEW_MAX_BYTES:
+                raise PreviewTooLarge(
+                    f"'{document.source_name}' is {document.size_bytes // (1024 * 1024)} MB. "
+                    f"Pick a document under {PREVIEW_MAX_BYTES // (1024 * 1024)} MB to compare "
+                    "chunking on — the comparison embeds it, and a large one costs a great "
+                    "deal to produce a screen nobody can read.",
+                    param="document_id",
+                )
+
+        read = await self._pipeline.read_document(
+            organization_id=organization_id, document_id=document_id, cap=PREVIEW_MAX_BYTES
+        )
+        kind = format_label(read.media_type)
+        previewer = ChunkingPreviewer(embedder=self._embedder, tokenizer=self._pipeline.tokenizer)
+        return await previewer.run(
+            read.extracted,
+            candidates_from(read.chunking, candidates, kind=kind),
+            document_id=document_id,
+            source_name=read.source_name,
+            media_type=read.media_type,
+            format_kind=kind,
+            query=query,
+        )
+
     async def reindex_document(self, actor: Actor, document_id: uuid.UUID) -> Document:
         """The **Retry** button, and the way a chunking change is applied to one file."""
         outbox = JobOutbox(self._queue)
@@ -454,8 +526,10 @@ class ConnectorService:
         await outbox.flush()
         return document
 
-    async def reindex_connector(self, actor: Actor, connector_id: uuid.UUID) -> int:
-        """Apply a chunking change to every document this connector holds.
+    async def reindex_connector(
+        self, actor: Actor, connector_id: uuid.UUID, *, formats: Sequence[str] | None = None
+    ) -> int:
+        """Apply a chunking change to the documents this connector holds.
 
         A *different* operation from task 17's platform reindex, and the difference is
         worth stating because both are called "reindex". Changing the embedding model
@@ -463,6 +537,11 @@ class ConnectorService:
         themselves wrong, so nothing short of running the pipeline again fixes it. This is
         therefore the same path as **Retry** on one document, applied to all of them,
         rather than anything to do with collections or aliases.
+
+        ``formats`` narrows it to the format kinds actually affected, which is what makes
+        a per-format override worth having: adding one for code re-runs the code files and
+        leaves a thousand PDFs indexed. ``None`` means every document, which is the right
+        default and the only correct answer when the connector's own settings moved.
 
         Documents in a non-terminal state are skipped: they already have a job coming, and
         resetting one mid-ingestion would race the worker that is writing it.
@@ -473,6 +552,7 @@ class ConnectorService:
         are already on their way, which is the right partial outcome for a button somebody
         pressed by hand.
         """
+        wanted = frozenset(formats) if formats is not None else None
         queued = 0
         after: uuid.UUID | None = None
         while True:
@@ -483,6 +563,8 @@ class ConnectorService:
                 for document in page:
                     after = document.id
                     if document.status not in TERMINAL_DOCUMENT_STATUSES:
+                        continue
+                    if wanted is not None and format_label(document.mime_type or "") not in wanted:
                         continue
                     document.status = "pending"
                     document.error = None
@@ -517,7 +599,11 @@ class ConnectorService:
                 break
         logger.info(
             "connector reindex enqueued",
-            extra={"connector_id": str(connector_id), "documents": queued},
+            extra={
+                "connector_id": str(connector_id),
+                "documents": queued,
+                "formats": sorted(wanted) if wanted is not None else "all",
+            },
         )
         return queued
 

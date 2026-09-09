@@ -87,6 +87,7 @@ async def startup(context: dict[str, Any]) -> None:
         queue=queue,
         backends=backends,
         metrics=metrics.extraction,
+        chunking_metrics=metrics.chunking,
         embedding=platform_settings.snapshot.embedding,
     )
     # Conversation memory's write half. Built here as well as in the API, from the same

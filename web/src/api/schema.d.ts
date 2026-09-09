@@ -207,6 +207,32 @@ export interface paths {
         patch: operations["update_connector_api_v1_connectors__connector_id__patch"];
         trace?: never;
     };
+    "/api/v1/connectors/{connector_id}/chunking/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Chunking
+         * @description **Compare**: run candidate chunking configurations over one document.
+         *
+         *     A read, and behind the read capability, because it changes nothing — but it is the one
+         *     read in this router that *spends money*, at the embedding provider, on every call. Hence
+         *     the document-size ceiling in the service and the cap on candidates in the schema. The
+         *     connector in the path is checked rather than decorative: the baseline every candidate is
+         *     compared against is that connector's effective configuration for this document's format.
+         */
+        post: operations["preview_chunking_api_v1_connectors__connector_id__chunking_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connectors/{connector_id}/documents": {
         parameters: {
             query?: never;
@@ -235,13 +261,15 @@ export interface paths {
         put?: never;
         /**
          * Reindex Connector
-         * @description Re-run ingestion for every document, which is how a chunking change is applied.
+         * @description Re-run ingestion for this connector's documents, which is how a chunking change is
+         *     applied.
          *
          *     Not the same operation as ``POST /platform/reindex``, despite the name they share. That
          *     one re-embeds chunks that are still correct under a new model; this one exists because a
          *     changed ``chunk_size`` makes the chunks themselves wrong, and only running the pipeline
          *     again fixes that. The connector detail screen offers it exactly when ``reindex_required``
-         *     comes back set.
+         *     comes back set, and passes ``reindex_formats`` straight back as ``formats`` — so adding
+         *     a per-format override re-runs the files it applies to and leaves the rest indexed.
          */
         post: operations["reindex_connector_api_v1_connectors__connector_id__reindex_post"];
         delete?: never;
@@ -1725,20 +1753,71 @@ export interface components {
         /** @enum {string} */
         ChangeKind: "added" | "removed" | "changed";
         /**
+         * ChunkDistribution
+         * @description Four numbers and two counts. Enough to compare two strategies, short enough to read
+         *     at a glance — which a wall of chunk text is not.
+         */
+        ChunkDistribution: {
+            /** At Ceiling */
+            at_ceiling: number;
+            /** Chunks */
+            chunks: number;
+            /** Max Tokens */
+            max_tokens: number;
+            /** Median Tokens */
+            median_tokens: number;
+            /** Mid Sentence */
+            mid_sentence: number;
+            /** Min Tokens */
+            min_tokens: number;
+            /** P95 Tokens */
+            p95_tokens: number;
+        };
+        /** ChunkingCandidateResponse */
+        ChunkingCandidateResponse: {
+            /** Best */
+            best: number | null;
+            /** Chunks */
+            chunks: components["schemas"]["PreviewChunkResponse"][];
+            distribution: components["schemas"]["ChunkDistribution"];
+            /** Embedded Texts */
+            embedded_texts: number;
+            /** Label */
+            label: string;
+            /** Strategy */
+            strategy: string;
+            /** Total Chunks */
+            total_chunks: number;
+        };
+        /**
          * ChunkingConfig
          * @description SPEC §9.3, with the defaults it names.
          */
         ChunkingConfig: {
+            /**
+             * Breakpoint Percentile
+             * @default 85
+             */
+            breakpoint_percentile: number;
             /**
              * Chunk Size
              * @default 1000
              */
             chunk_size: number;
             /**
+             * Min Chunk Size
+             * @default 200
+             */
+            min_chunk_size: number;
+            /**
              * Overlap
              * @default 150
              */
             overlap: number;
+            /** Overrides */
+            overrides?: {
+                [key: string]: components["schemas"]["ChunkingOverride"];
+            };
             /**
              * Respect Boundaries
              * @default true
@@ -1749,12 +1828,81 @@ export interface components {
              * @default recursive
              * @enum {string}
              */
-            strategy: "recursive" | "fixed" | "by_heading";
+            strategy: "recursive" | "fixed" | "by_heading" | "semantic" | "sentence_window" | "code";
             /**
              * Version
              * @default 1
              */
             version: number;
+            /**
+             * Window Sentences
+             * @default 2
+             */
+            window_sentences: number;
+        };
+        /**
+         * ChunkingOverride
+         * @description A partial :class:`ChunkingConfig`, for one format kind.
+         *
+         *     Every field optional, with ``None`` meaning "inherit" — spelled out rather than
+         *     derived from :class:`ChunkingConfig` by a metaclass. These fields are the API: they
+         *     appear in the OpenAPI document and in the generated client, and a model generated
+         *     from another one with subtly different validation is a bug that only shows up in the
+         *     wrong half of a form.
+         *
+         *     Not a :class:`~app.schemas.config.ConfigBlob`, deliberately. A blob carries a
+         *     ``version`` because it is a stored document; an override is a *fragment* of one, and
+         *     giving each entry its own version would put a required field with no meaning into
+         *     every request that sets one. It keeps the blob's permissive-on-load behaviour, which
+         *     is the half that matters here.
+         */
+        ChunkingOverride: {
+            /** Breakpoint Percentile */
+            breakpoint_percentile?: number | null;
+            /** Chunk Size */
+            chunk_size?: number | null;
+            /** Min Chunk Size */
+            min_chunk_size?: number | null;
+            /** Overlap */
+            overlap?: number | null;
+            /** Respect Boundaries */
+            respect_boundaries?: boolean | null;
+            /** Strategy */
+            strategy?: ("recursive" | "fixed" | "by_heading" | "semantic" | "sentence_window" | "code") | null;
+            /** Window Sentences */
+            window_sentences?: number | null;
+        };
+        /** ChunkingPreviewRequest */
+        ChunkingPreviewRequest: {
+            /** Candidates */
+            candidates?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Query */
+            query?: string | null;
+        };
+        /** ChunkingPreviewResponse */
+        ChunkingPreviewResponse: {
+            /** Candidates */
+            candidates: components["schemas"]["ChunkingCandidateResponse"][];
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Format Kind */
+            format_kind: string;
+            /** Media Type */
+            media_type: string | null;
+            /** Query */
+            query: string | null;
+            /** Source Name */
+            source_name: string;
         };
         /** ConnectorCreateRequest */
         ConnectorCreateRequest: {
@@ -1788,6 +1936,10 @@ export interface components {
             description: string | null;
             /** Document Count */
             document_count: number;
+            /** Effective Chunking */
+            effective_chunking: {
+                [key: string]: components["schemas"]["ChunkingConfig"];
+            };
             /** Error */
             error: string | null;
             /**
@@ -1799,6 +1951,8 @@ export interface components {
             last_synced_at: string | null;
             /** Name */
             name: string;
+            /** Reindex Formats */
+            reindex_formats: string[];
             /** Reindex Required */
             reindex_required: boolean;
             /** Status */
@@ -1961,6 +2115,10 @@ export interface components {
         DocumentChunk: {
             /** Chunk Index */
             chunk_index: number | null;
+            /** Chunk Strategy */
+            chunk_strategy?: string | null;
+            /** Embedded Text */
+            embedded_text?: string | null;
             /** Id */
             id: string;
             /** Page Or Section */
@@ -1981,6 +2139,8 @@ export interface components {
         DocumentResponse: {
             /** Chunk Count */
             chunk_count: number;
+            /** Chunk Strategy */
+            chunk_strategy: string | null;
             /**
              * Connector Id
              * Format: uuid
@@ -3536,6 +3696,21 @@ export interface components {
             slug: string;
             worst: components["schemas"]["LimitUsageResponse"];
         };
+        /** PreviewChunkResponse */
+        PreviewChunkResponse: {
+            /** Embedded Text */
+            embedded_text: string | null;
+            /** Index */
+            index: number;
+            /** Score */
+            score: number | null;
+            /** Section */
+            section: string | null;
+            /** Text */
+            text: string;
+            /** Token Count */
+            token_count: number;
+        };
         /**
          * ProbeResponse
          * @description The four things the button reports. Not an error envelope: "the upstream said 401"
@@ -3629,6 +3804,10 @@ export interface components {
          *     ``points`` and ``tokens`` are counted rather than guessed — the chunks are in the
          *     index with their text — so this is an estimate only in the sense that a provider's
          *     tokenizer may differ from ours by a few percent.
+         *
+         *     The recut figures are the exception and are deliberately *not* folded into the token
+         *     count. Nothing here knows how many chunks re-chunking a document under a new model will
+         *     produce, and a number invented for that would be the one an operator anchored on.
          */
         ReindexEstimate: {
             /** Collections */
@@ -3645,6 +3824,16 @@ export interface components {
              * @default 0
              */
             points: number;
+            /**
+             * Recut Connectors
+             * @default 0
+             */
+            recut_connectors: number;
+            /**
+             * Recut Documents
+             * @default 0
+             */
+            recut_documents: number;
             /** To Dimension */
             to_dimension: number;
             /** To Model */
@@ -3654,27 +3843,6 @@ export interface components {
              * @default 0
              */
             tokens: number;
-        };
-        /**
-         * ReindexRequest
-         * @description A rebuild, of the whole platform or of one organization.
-         *
-         *     There is deliberately no ``connector_id``. A reindex re-embeds chunks that are still
-         *     correct under a different model, and an embedding model is a property of the whole
-         *     *collection* — one connector re-embedded on its own would leave the tenant's index
-         *     holding vectors from two models, which is the exact failure SPEC §9.4 makes the model a
-         *     platform-level setting to prevent. The operation a connector actually needs after a
-         *     chunking change is a re-*ingestion*, which is
-         *     ``POST /api/v1/connectors/{id}/reindex``.
-         */
-        ReindexRequest: {
-            /**
-             * Dry Run
-             * @default false
-             */
-            dry_run: boolean;
-            /** Organization Id */
-            organization_id?: string | null;
         };
         /** ReindexRunResponse */
         ReindexRunResponse: {
@@ -4324,6 +4492,35 @@ export interface components {
             /** Target Collection */
             target_collection: string;
         };
+        /**
+         * ReindexRequest
+         * @description Which formats to re-run. Absent means every document.
+         */
+        app__schemas__connector__ReindexRequest: {
+            /** Formats */
+            formats?: string[] | null;
+        };
+        /**
+         * ReindexRequest
+         * @description A rebuild, of the whole platform or of one organization.
+         *
+         *     There is deliberately no ``connector_id``. A reindex re-embeds chunks that are still
+         *     correct under a different model, and an embedding model is a property of the whole
+         *     *collection* — one connector re-embedded on its own would leave the tenant's index
+         *     holding vectors from two models, which is the exact failure SPEC §9.4 makes the model a
+         *     platform-level setting to prevent. The operation a connector actually needs after a
+         *     chunking change is a re-*ingestion*, which is
+         *     ``POST /api/v1/connectors/{id}/reindex``.
+         */
+        app__schemas__platform__ReindexRequest: {
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+            /** Organization Id */
+            organization_id?: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -4693,6 +4890,41 @@ export interface operations {
             };
         };
     };
+    preview_chunking_api_v1_connectors__connector_id__chunking_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChunkingPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChunkingPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_documents_api_v1_connectors__connector_id__documents_get: {
         parameters: {
             query?: {
@@ -4737,7 +4969,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["app__schemas__connector__ReindexRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -6874,7 +7110,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ReindexRequest"];
+                "application/json": components["schemas"]["app__schemas__platform__ReindexRequest"];
             };
         };
         responses: {

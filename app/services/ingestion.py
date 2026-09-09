@@ -40,18 +40,28 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
-from app.core.metrics import ExtractionMetrics
+from app.core.errors import NotFound
+from app.core.metrics import ChunkingMetrics, ExtractionMetrics
 from app.core.tenancy import TenantScope
+from app.core.tracing import phase, record_error
 from app.db.models import Connector, Document
 from app.db.models.connector import TERMINAL_DOCUMENT_STATUSES
-from app.schemas.connector_config import ChunkingConfig
+from app.schemas.connector_config import ChunkingConfig, effective, fingerprint
 from app.services.audit import Attribution
 from app.services.audit_snapshots import subject
-from app.services.chunking import Chunk, chunk_document
+from app.services.chunking import (
+    BoundarySignal,
+    Chunk,
+    boundary_signal,
+    chunk_document,
+    needs_signal,
+    plan_signal,
+)
 from app.services.connector_source import ConnectorSource, build_source
 from app.services.connector_store import ConnectorStore, DocumentDraft
-from app.services.embeddings import Embedder
+from app.services.embeddings import Embedder, EmbeddingError
 from app.services.extraction import (
     Extracted,
     ExtractionError,
@@ -121,6 +131,29 @@ class IngestOutcome:
     reason: str | None = None
     #: Pages, slides or sheets, where the format has such a unit.
     page_count: int | None = None
+    #: How this document was cut, for ``documents.chunk_strategy`` and
+    #: ``documents.chunk_fingerprint``. The *effective* configuration's, so a connector
+    #: with a per-format override reports what actually happened to this file rather than
+    #: what the connector's top-level setting says.
+    chunk_strategy: str | None = None
+    chunk_fingerprint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadDocument:
+    """One document, fetched and extracted, on its way to a preview rather than an index."""
+
+    extracted: Extracted
+    media_type: str
+    source_name: str
+    size_bytes: int
+    #: The connector's stored configuration, unresolved. The caller applies the per-format
+    #: override, because the caller is the one that knows which candidates it is comparing
+    #: it against.
+    chunking: ChunkingConfig
+    connector_id: uuid.UUID
+    source_uri: str
+    content_hash: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +189,7 @@ class IngestionPipeline:
         settings: IngestionSettings | None = None,
         pool: ExtractionPool | None = None,
         metrics: ExtractionMetrics | None = None,
+        chunking_metrics: ChunkingMetrics | None = None,
     ) -> None:
         self._store = store
         self._objects = objects
@@ -171,6 +205,7 @@ class IngestionPipeline:
         #: isolation that only the isolation tests are about.
         self._pool = pool
         self._metrics = metrics
+        self._chunking_metrics = chunking_metrics
 
     # -- ingestion -------------------------------------------------------
 
@@ -249,7 +284,43 @@ class IngestionPipeline:
             document = await self._require(transaction, document_id)
             await self._advance(transaction, document, "chunking")
 
-        chunks = chunk_document(extracted, chunking, tokenizer=self._tokenizer)
+        # Resolved here rather than above, because the format is only known once the bytes
+        # have been sniffed — which is the whole point of per-format overrides: a
+        # connector is a source, and what is in it is discovered one file at a time.
+        cutting = effective(chunking, format_label(read.media_type))
+        cut = fingerprint(cutting, embedding_model=self._embedder.model)
+        try:
+            chunks = await self._chunk(extracted, cutting, media_type=read.media_type)
+        except EmbeddingError as error:
+            if error.retryable:
+                # The world is bad, not the document. This file will chunk perfectly in
+                # thirty seconds, so the job raises and the runner's backoff does the
+                # work — see the module docstring's failure-vs-failure distinction.
+                raise
+            outcome = IngestOutcome(
+                status="failed",
+                reason="chunking_embedding",
+                page_count=extracted.page_count,
+                chunk_strategy=cutting.strategy,
+            )
+            await self._finish(
+                scope,
+                document_id,
+                outcome,
+                # Names the provider, not the splitter. A message reading "chunking
+                # failed" sends somebody to read `chunking.py`, where there is nothing
+                # wrong: under `semantic` this step embeds every sentence, and it is the
+                # embedding call that broke.
+                error=(
+                    f"The '{cutting.strategy}' chunking strategy embeds every sentence to "
+                    f"find topic boundaries, and the embedding provider refused. {error}"
+                ),
+                media_type=read.media_type,
+                size_bytes=read.size_bytes,
+                content_hash=read.content_hash,
+            )
+            return outcome
+
         if not chunks:
             outcome = IngestOutcome(
                 status="skipped",
@@ -285,10 +356,16 @@ class IngestionPipeline:
             source_uri=reference.key,
             content_hash=read.content_hash,
             chunks=chunks,
+            config=cutting,
+            cut=cut,
         )
 
         outcome = IngestOutcome(
-            status="indexed", chunk_count=len(chunks), page_count=extracted.page_count
+            status="indexed",
+            chunk_count=len(chunks),
+            page_count=extracted.page_count,
+            chunk_strategy=cutting.strategy,
+            chunk_fingerprint=cut,
         )
         await self._finish(
             scope,
@@ -304,11 +381,74 @@ class IngestionPipeline:
                 "document_id": str(document_id),
                 "chunks": len(chunks),
                 "embedding_model": self._embedder.model,
+                "chunk_strategy": cutting.strategy,
             },
         )
         return outcome
 
-    async def _index(
+    # -- chunking --------------------------------------------------------
+
+    async def _chunk(
+        self,
+        extracted: Extracted,
+        config: ChunkingConfig,
+        *,
+        media_type: str,
+        embedder: Embedder | None = None,
+    ) -> list[Chunk]:
+        """Cut one document up, computing the boundary signal first where one is needed.
+
+        This is the only place in the product that knows a chunking strategy can require
+        network I/O, and keeping it here is the whole design:
+        :func:`~app.services.chunking.chunk_document` stays a pure function of text and
+        numbers, which is what lets every strategy be tested exhaustively without a fake
+        embedder.
+
+        The sentence spans go through the ordinary :class:`Embedder`, so they inherit its
+        batching, its retries and its rate-limit backoff. Not doing that would mean a
+        second, worse client on the same provider — and this call is the *larger* of the
+        two a semantic document makes, since there are several sentences per chunk.
+        """
+        started = time.perf_counter()
+        # The *given* embedder, defaulting to the serving one. A recut under a new model
+        # has to find its boundaries with that model — using the serving one would make
+        # the whole extra expense of the recut buy nothing.
+        embedder = embedder or self._embedder
+        with phase("ingestion.chunking", **{"chunking.strategy": config.strategy}) as span:
+            try:
+                signal: BoundarySignal | None = None
+                if needs_signal(config):
+                    request = plan_signal(extracted, config)
+                    if span.is_recording():
+                        span.set_attribute("chunking.signal_spans", len(request))
+                        span.set_attribute("chunking.signal_stride", request.stride)
+                    signal = boundary_signal(request, await embedder.embed(request.texts))
+                chunks = chunk_document(
+                    extracted,
+                    config,
+                    tokenizer=self._tokenizer,
+                    media_type=media_type,
+                    signal=signal,
+                )
+            except Exception as error:
+                record_error(span, error)
+                raise
+            finally:
+                self._observe_chunking(config.strategy, time.perf_counter() - started)
+            if span.is_recording():
+                span.set_attribute("chunking.chunks", len(chunks))
+
+        if self._chunking_metrics is not None:
+            sizes = self._chunking_metrics.sizes.labels(strategy=config.strategy)
+            for chunk in chunks:
+                sizes.observe(chunk.token_count)
+        return chunks
+
+    def _observe_chunking(self, strategy: str, seconds: float) -> None:
+        if self._chunking_metrics is not None:
+            self._chunking_metrics.duration.labels(strategy=strategy).observe(seconds)
+
+    def _points(
         self,
         *,
         organization_id: uuid.UUID,
@@ -318,15 +458,22 @@ class IngestionPipeline:
         source_uri: str,
         content_hash: str,
         chunks: Sequence[Chunk],
-    ) -> None:
-        await self._vectors.ensure_collection(organization_id, dimension=self._embedder.dimension)
-        vectors = await self._embedder.embed([chunk.text for chunk in chunks])
+        config: ChunkingConfig,
+        cut: str,
+        vectors: Sequence[Sequence[float]],
+    ) -> list[ChunkPoint]:
+        """Chunks and their vectors, as points. The one place a payload is built.
 
+        Shared by ordinary ingestion and by :meth:`recut`, because a recut whose payload
+        differed by one key from the ordinary path would produce a collection where half
+        the chunks answer a filter and half do not — and it would look perfectly healthy
+        until somebody searched with that filter.
+        """
         ingested_at = datetime.now(UTC).isoformat()
-        points = [
+        return [
             ChunkPoint(
                 id=point_id(document_id, chunk.index),
-                vector=vector,
+                vector=list(vector),
                 # SPEC §9.3's chunk metadata, in full. `text` rides along because task 10
                 # needs the content and a second round trip per chunk would double the
                 # latency of every augmented request.
@@ -342,26 +489,160 @@ class IngestionPipeline:
                     "content_hash": content_hash,
                     "token_count": chunk.token_count,
                     "text": chunk.text,
+                    "chunk_strategy": config.strategy,
+                    "chunk_fingerprint": cut,
+                    **_window_payload(chunk, config),
                 },
             )
             for chunk, vector in zip(chunks, vectors, strict=True)
         ]
+
+    async def _index(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        connector_id: uuid.UUID,
+        document_id: uuid.UUID,
+        source_name: str,
+        source_uri: str,
+        content_hash: str,
+        chunks: Sequence[Chunk],
+        config: ChunkingConfig,
+        cut: str,
+    ) -> None:
+        await self._vectors.ensure_collection(organization_id, dimension=self._embedder.dimension)
+        # `embedded_text`, not `text`. They are the same string under every strategy but
+        # `sentence_window`, where the difference is the entire proposition: the sentence
+        # is what a query is matched against and the window around it is what answers.
+        points = self._points(
+            organization_id=organization_id,
+            connector_id=connector_id,
+            document_id=document_id,
+            source_name=source_name,
+            source_uri=source_uri,
+            content_hash=content_hash,
+            chunks=chunks,
+            config=config,
+            cut=cut,
+            vectors=await self._embedder.embed([chunk.embedded_text for chunk in chunks]),
+        )
 
         # Delete first, then upsert. Deterministic ids overwrite the points that still
         # exist; only a delete removes the tail of a document that got shorter.
         await self._vectors.delete_document(organization_id, document_id)
         await self._vectors.upsert(organization_id, points)
 
+    # -- reading for a preview -------------------------------------------
+
+    @property
+    def tokenizer(self) -> Tokenizer:
+        """The one this pipeline chunks with. Exposed so a preview measures chunks the
+        same way ingestion does — two tokenizers would make the sizes on the comparison
+        screen wrong by roughly a third, which is the gap between tiktoken and the
+        word-count fallback."""
+        return self._tokenizer
+
+    async def read_document(
+        self, *, organization_id: uuid.UUID, document_id: uuid.UUID, cap: int | None = None
+    ) -> ReadDocument:
+        """Fetch and extract one stored document, indexing nothing.
+
+        Here rather than in the connector service because there must be exactly one way
+        this product turns an object into :class:`~app.services.extraction.Extracted`. A
+        second one would eventually disagree with this one, and the entire value of a
+        chunking preview is that what it shows is what ingestion would do.
+
+        Raises the same :class:`~app.services.extraction.ExtractionError` ingestion would,
+        rather than translating it: the caller is a request handler and can turn it into a
+        422 that says the same thing the document row would have said.
+        """
+        scope = TenantScope.of_organization(organization_id)
+        async with self._store.begin(scope) as transaction:
+            document = await transaction.document(document_id)
+            if document is None:
+                raise NotFound("No such document.")
+            connector = await transaction.connector(document.connector_id)
+            if connector is None:  # pragma: no cover - foreign key makes this unreachable
+                raise NotFound("No such document.")
+            source = self._source(connector)
+            reference = ObjectRef(
+                key=document.source_uri, size_bytes=document.size_bytes, etag=document.etag
+            )
+            chunking = ChunkingConfig.load(connector.chunking)
+            name = document.source_name
+            connector_id = document.connector_id
+
+        try:
+            read = await self._read(source, reference, cap=cap)
+        except KeyError as exc:
+            raise NotFound("This file is no longer in storage. Run a resync.") from exc
+        if read.outcome is not None:
+            raise SkippedDocument(
+                read.outcome.error or "This file cannot be read.",
+                reason=read.outcome.reason or "unsupported_format",
+            )
+        extracted = await self._extract(read.data, name=reference.name, media_type=read.media_type)
+        return ReadDocument(
+            extracted=extracted,
+            media_type=read.media_type,
+            source_name=name,
+            size_bytes=read.size_bytes,
+            chunking=chunking,
+            connector_id=connector_id,
+            source_uri=reference.key,
+            content_hash=read.content_hash,
+        )
+
+    async def recut(
+        self, *, organization_id: uuid.UUID, document_id: uuid.UUID, embedder: Embedder
+    ) -> list[ChunkPoint]:
+        """Re-extract and re-chunk one document under a *different* embedding model.
+
+        Task 17's platform reindex re-embeds stored chunk text, which is right for every
+        strategy but one. Under ``semantic`` the boundaries themselves came from the old
+        model, so re-embedding them faithfully reproduces the old model's opinion about
+        where the topics changed — a reindex that costs the full price and moves the
+        chunking not at all. This path pays the extra cost instead: back to object storage,
+        extract again, cut again with the new model deciding the boundaries.
+
+        Returns points and writes nothing. Where they go is the reindexer's business, and
+        it is not the live collection: they belong in the one being built beside it.
+        """
+        read = await self.read_document(organization_id=organization_id, document_id=document_id)
+        config = effective(read.chunking, format_label(read.media_type))
+        chunks = await self._chunk(
+            read.extracted, config, media_type=read.media_type, embedder=embedder
+        )
+        return self._points(
+            organization_id=organization_id,
+            connector_id=read.connector_id,
+            document_id=document_id,
+            source_name=read.source_name,
+            source_uri=read.source_uri,
+            content_hash=read.content_hash,
+            chunks=chunks,
+            config=config,
+            cut=fingerprint(config, embedding_model=embedder.model),
+            vectors=await embedder.embed([chunk.embedded_text for chunk in chunks]),
+        )
+
     # -- reading ---------------------------------------------------------
 
-    async def _read(self, source: ConnectorSource, reference: ObjectRef) -> _Read:
+    async def _read(
+        self, source: ConnectorSource, reference: ObjectRef, *, cap: int | None = None
+    ) -> _Read:
         """Stream the object, sniffing the type from the head and stopping early if it is
-        one nothing here can read."""
+        one nothing here can read.
+
+        ``cap`` overrides the per-file limit, and only the preview path uses it: comparing
+        chunking strategies on a 50 MB export would spend a great deal at the embedding
+        provider to fill a screen nobody can read.
+        """
         digest = hashlib.sha256()
         buffer = bytearray()
         stream = source.fetch(reference)
         media_type: str | None = None
-        cap = self._settings.max_file_bytes
+        cap = cap or self._settings.max_file_bytes
 
         try:
             async for piece in stream:
@@ -692,6 +973,8 @@ class IngestionPipeline:
                 document.size_bytes = size_bytes
             if content_hash:
                 document.content_hash = content_hash
+            document.chunk_strategy = outcome.chunk_strategy
+            document.chunk_fingerprint = outcome.chunk_fingerprint
             if outcome.status == "indexed":
                 document.embedding_model = self._embedder.model
                 document.indexed_at = datetime.now(UTC)
@@ -699,6 +982,25 @@ class IngestionPipeline:
                 document.indexed_at = None
                 document.embedding_model = None
             await transaction.commit()
+
+
+def _window_payload(chunk: Chunk, config: ChunkingConfig) -> dict[str, Any]:
+    """The two extra fields a windowed chunk needs, and nothing at all for the rest.
+
+    ``embedded_text`` is what the chunk inspector highlights inside the window — without
+    it, the first debugging session under ``sentence_window`` is "why does this chunk not
+    contain the words I searched for", and the answer is not discoverable from the screen.
+
+    ``window_sentences`` is read by retrieval's near-duplicate filter, which drops a chunk
+    neighbouring one it already kept. The default radius of one is right for overlapping
+    ``recursive`` chunks and far too narrow here: with a window of two, five consecutive
+    chunks share text, and injecting all of them spends the token budget on one paragraph
+    five times. Carried on the point rather than looked up from the connector because the
+    filter runs on search results, and the configuration may have changed since.
+    """
+    if not chunk.windowed:
+        return {}
+    return {"embedded_text": chunk.embedded_text, "window_sentences": config.window_sentences}
 
 
 async def _close(stream: AsyncIterator[bytes]) -> None:

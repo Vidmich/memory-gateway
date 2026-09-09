@@ -410,17 +410,66 @@ with a wall-clock cap so one pathological file cannot occupy a worker indefinite
 ### 9.3 Chunking (configurable per connector)
 
 ```
-strategy:   recursive | fixed | by_heading
+strategy:   recursive | fixed | by_heading | semantic | sentence_window | code
 chunk_size: 1000        # tokens
 overlap:    150         # tokens
 respect_boundaries: true  # do not split mid-sentence / mid-code-block
+
+breakpoint_percentile: 85   # semantic only
+min_chunk_size:        200  # semantic only — the floor
+window_sentences:      2    # sentence_window only — neighbours kept either side
+
+overrides:                  # per format kind, each a partial of the above
+  code: {strategy: code}
 ```
 
+The first three cut on a token budget, adjusted for where punctuation happens to be.
 `by_heading` uses Markdown headings, DOCX heading styles, and PPTX slide boundaries, falling
 back to `recursive` for formats with no structure.
 
+The last three cut on something a token budget cannot see:
+
+* **`semantic`** splits into sentences, embeds each, and cuts where consecutive-sentence
+  distance exceeds a percentile breakpoint over *that document's own* distribution. A
+  percentile rather than an absolute threshold, because the distance scale is a property of
+  the embedding model. `chunk_size` becomes a ceiling rather than a target, and
+  `min_chunk_size` is the floor that stops a page of short declarative sentences becoming
+  one chunk per sentence.
+* **`sentence_window`** embeds one sentence and stores that sentence plus `window_sentences`
+  neighbours as the chunk text. The two strings have different jobs: the sentence is what a
+  query matches, the window is what goes into the prompt, and §7's `doc_max_tokens` is
+  measured on the window.
+* **`code`** splits on declarations, carrying the enclosing signature into each fragment of
+  an oversized body. Structural for Python, JavaScript, TypeScript and Go; `recursive` for
+  every other language and for any file that will not parse. A syntax error must cost a
+  worse chunking of that file, never a failed document.
+
+**A connector is a source, not a format.** `overrides` maps a format kind — the closed set
+the extraction metrics are labelled by — to a partial configuration, so a repository can cut
+its code structurally and its Markdown recursively. The effective configuration for a
+document is the connector's with its format's override applied, it is what the connector
+screen displays, and a change to one override invalidates only that format's chunks.
+
+**Two strategies depend on the embedding model, and one of them changes what §9.4 costs.**
+Under `semantic` the boundaries themselves came out of the model, so a platform model change
+cannot re-embed those chunks — it has to **recut** them from object storage. The reindex
+estimate counts those connectors separately, because it is a different kind of cost from the
+token count beside it.
+
 Every chunk carries payload metadata: `org_id, connector_id, document_id, source_name,
-source_uri, page_or_section, chunk_index, ingested_at, content_hash`.
+source_uri, page_or_section, chunk_index, ingested_at, content_hash, token_count,
+chunk_strategy, chunk_fingerprint` — the last two for the same reason §9.4 records the
+embedding model, and with per-format overrides a stronger one: two documents in one
+connector can legitimately be cut differently. A `sentence_window` chunk also carries
+`embedded_text` and `window_sentences`, which is what lets the chunk inspector highlight the
+matched sentence and what tells retrieval how far its near-duplicate filter should reach.
+
+**Chunking is reviewable before it is committed.** `POST /connectors/{id}/chunking/preview`
+runs a set of candidate configurations over one document and returns, per candidate, the
+chunks it produces, a token distribution, how many chunks the size limit decided rather than
+the strategy, how many boundaries fell mid-sentence, and how many embedding calls one
+ingestion would cost. It writes nothing. Nobody can pick a chunking strategy from a
+description, and without a comparison every user picks by name.
 
 ### 9.4 Embeddings
 
@@ -447,6 +496,14 @@ source after a grace period — the same procedure as a reindex, without the re-
 Each document moves through `pending → extracting → chunking → embedding → indexed`, or lands in
 `failed` / `skipped` with a message. The UI shows per-connector counts, a live job list, and a
 retry action for failed documents.
+
+`chunking` is a pure CPU step for every strategy but `semantic`, which embeds the document's
+sentences to find its boundaries. So that step can now fail from the outside, and the two
+kinds of failure are separated exactly as elsewhere in the pipeline: a provider refusal that
+will not change on a retry marks the document `failed` with reason `chunking_embedding` and a
+message naming the *embedding provider* — not a generic chunking error, which would send
+somebody to read the splitter — while a rate limit or an outage raises, so the job's backoff
+handles it and the document is left alone.
 
 ---
 

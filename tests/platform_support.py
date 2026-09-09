@@ -36,7 +36,7 @@ from app.services.object_store import MemoryObjectStore
 from app.services.platform_service import PlatformService
 from app.services.platform_settings import PlatformSettingsService
 from app.services.platform_store import MemoryPlatformSettingsStore
-from app.services.reindex import Reindexer
+from app.services.reindex import Recutter, Reindexer
 from app.services.reindex_store import MemoryReindexStore
 from app.services.vector_backends import VectorBackends, single_backend
 from app.services.vector_index import MemoryVectorIndexAdmin
@@ -173,6 +173,9 @@ def build_platform(
     settings: Settings | None = None,
     embedder: Embedder | None = None,
     pause_seconds: float = 0.0,
+    #: Task 20. ``None`` is the shape every process but the worker has, and the reindexer
+    #: is expected to refuse a run that needs one rather than quietly copy instead.
+    recutter: Recutter | None = None,
 ) -> PlatformFixture:
     """One call, everything connected.
 
@@ -212,6 +215,7 @@ def build_platform(
         maintenance=store,
         settings=platform_settings,
         embedder_for=lambda choice: _embedder_for(choice, embed),
+        recutter=recutter,
         pause_seconds=0.0,
     )
     migrator = VectorMigrator(

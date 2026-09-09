@@ -16,6 +16,7 @@ has to handle a status it does not recognise gracefully.
 from __future__ import annotations
 
 import uuid
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any, Self
 
@@ -23,7 +24,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.db.models import Document
 from app.db.models.connector import CONNECTOR_TYPES
-from app.schemas.connector_config import ChunkingConfig
+from app.schemas.connector_config import ChunkingConfig, effective
+from app.services.chunking_preview import (
+    MAX_CANDIDATES,
+    CandidateResult,
+    Distribution,
+    PreviewChunk,
+    PreviewResult,
+)
 from app.services.connectors import (
     ConnectorDraft,
     ConnectorPatch,
@@ -31,6 +39,7 @@ from app.services.connectors import (
     PresignedUpload,
     UploadOutcome,
 )
+from app.services.filetypes import FORMAT_KINDS
 from app.services.ingestion import ResyncSummary
 from app.services.vector_store import Match, Stored
 
@@ -111,15 +120,24 @@ class ConnectorResponse(BaseModel):
     document_count: int
     counts: dict[str, int]
     total_bytes: int
+    #: What each format kind this connector could hold actually resolves to, once its
+    #: override is applied. Sent rather than left to the client to recompute: the
+    #: resolution rule lives in one place, and a screen that derived it independently
+    #: would eventually show a configuration the pipeline does not use.
+    effective_chunking: dict[str, ChunkingConfig]
     #: True only in the response to the update that caused it. A permanent banner would
     #: be ignored within a day.
     reindex_required: bool
+    #: Which formats that update invalidated, so the prompt can say "reindex the 12 code
+    #: files" instead of "reindex everything" when only an override moved.
+    reindex_formats: list[str]
     last_synced_at: datetime | None
     created_at: datetime
 
     @classmethod
     def of(cls, view: ConnectorView) -> ConnectorResponse:
         connector = view.connector
+        chunking = ChunkingConfig.load(connector.chunking)
         return cls(
             id=connector.id,
             name=connector.name,
@@ -128,11 +146,13 @@ class ConnectorResponse(BaseModel):
             status=connector.status,
             error=connector.error,
             storage_prefix=connector.storage_prefix,
-            chunking=ChunkingConfig.load(connector.chunking),
+            chunking=chunking,
+            effective_chunking={kind: effective(chunking, kind) for kind in FORMAT_KINDS},
             document_count=view.document_count,
             counts=dict(view.counts),
             total_bytes=view.total_bytes,
             reindex_required=view.reindex_required,
+            reindex_formats=sorted(view.reindex_formats),
             last_synced_at=connector.last_synced_at,
             created_at=connector.created_at,
         )
@@ -157,6 +177,10 @@ class DocumentResponse(BaseModel):
     #: Pages, slides or sheets. Null where the format has no such unit.
     page_count: int | None
     embedding_model: str | None
+    #: How this document was cut, which with per-format overrides is no longer answered by
+    #: the connector's own setting. ``None`` for a document indexed before this was
+    #: recorded — a blank rather than a guess, which is what makes it usable as drift.
+    chunk_strategy: str | None
     content_hash: str | None
     indexed_at: datetime | None
     created_at: datetime
@@ -177,6 +201,7 @@ class DocumentResponse(BaseModel):
             chunk_count=document.chunk_count,
             page_count=document.page_count,
             embedding_model=document.embedding_model,
+            chunk_strategy=document.chunk_strategy,
             content_hash=document.content_hash,
             indexed_at=document.indexed_at,
             created_at=document.created_at,
@@ -192,16 +217,26 @@ class DocumentChunk(BaseModel):
     page_or_section: str | None
     token_count: int | None
     text: str
+    #: The strategy this chunk was cut by, and — under ``sentence_window`` — the sentence
+    #: inside ``text`` that was actually embedded. The inspector highlights it, and it has
+    #: to: without it the first debugging session under that strategy is "why does this
+    #: chunk not contain the words I searched for", and the answer is not discoverable
+    #: from anything else on the screen.
+    chunk_strategy: str | None = None
+    embedded_text: str | None = None
 
     @classmethod
     def of(cls, chunk: Stored) -> DocumentChunk:
         payload = chunk.payload
+        embedded = _text(payload.get("embedded_text"))
         return cls(
             id=chunk.id,
             chunk_index=_number(payload.get("chunk_index")),
             page_or_section=_text(payload.get("page_or_section")),
             token_count=_number(payload.get("token_count")),
             text=chunk.text,
+            chunk_strategy=_text(payload.get("chunk_strategy")),
+            embedded_text=embedded if embedded and embedded != chunk.text else None,
         )
 
 
@@ -339,6 +374,132 @@ def _identifier(value: Any) -> uuid.UUID | None:
         return None
 
 
+class ReindexRequest(BaseModel):
+    """Which formats to re-run. Absent means every document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Format kinds, as reported by ``ConnectorResponse.reindex_formats``. Narrowing to
+    #: them is what makes a per-format override affordable: adding one for code re-runs
+    #: the code files and leaves a thousand PDFs where they are.
+    formats: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _known_formats(self) -> Self:
+        unknown = sorted(set(self.formats or ()) - set(FORMAT_KINDS))
+        if unknown:
+            raise ValueError(
+                f"{', '.join(unknown)}: not a format this build classifies. "
+                f"Available: {', '.join(FORMAT_KINDS)}."
+            )
+        return self
+
+
+class ChunkingCandidateRequest(BaseModel):
+    """One configuration to compare, as a partial.
+
+    Partial rather than whole, so "the same but semantic" is one key. Anything omitted is
+    taken from the connector's *effective* configuration for this document's format, which
+    is the only baseline a comparison against this document means anything against.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    label: str | None = Field(default=None, max_length=60)
+
+
+class ChunkingPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: uuid.UUID
+    candidates: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_CANDIDATES)
+    #: Optional. With one, each candidate also reports the chunk it would surface — which
+    #: is the question anybody comparing chunkings is actually asking.
+    query: str | None = Field(default=None, max_length=MAX_QUERY)
+
+
+class ChunkDistribution(BaseModel):
+    """Four numbers and two counts. Enough to compare two strategies, short enough to read
+    at a glance — which a wall of chunk text is not."""
+
+    chunks: int
+    min_tokens: int
+    median_tokens: int
+    p95_tokens: int
+    max_tokens: int
+    at_ceiling: int
+    mid_sentence: int
+
+    @classmethod
+    def of(cls, found: Distribution) -> ChunkDistribution:
+        return cls(**asdict(found))
+
+
+class PreviewChunkResponse(BaseModel):
+    index: int
+    text: str
+    section: str | None
+    token_count: int
+    embedded_text: str | None
+    score: float | None
+
+    @classmethod
+    def of(cls, chunk: PreviewChunk) -> PreviewChunkResponse:
+        return cls(
+            index=chunk.index,
+            text=chunk.text,
+            section=chunk.section,
+            token_count=chunk.token_count,
+            embedded_text=chunk.embedded_text,
+            score=chunk.score,
+        )
+
+
+class ChunkingCandidateResponse(BaseModel):
+    label: str
+    strategy: str
+    distribution: ChunkDistribution
+    chunks: list[PreviewChunkResponse]
+    total_chunks: int
+    #: What one ingestion of this document costs at the embedding provider under this
+    #: candidate. Reported beside the quality numbers on purpose: a comparison that showed
+    #: quality and hid cost would push every reader toward the most expensive option.
+    embedded_texts: int
+    best: int | None
+
+    @classmethod
+    def of(cls, result: CandidateResult) -> ChunkingCandidateResponse:
+        return cls(
+            label=result.label,
+            strategy=result.strategy,
+            distribution=ChunkDistribution.of(result.distribution),
+            chunks=[PreviewChunkResponse.of(chunk) for chunk in result.chunks],
+            total_chunks=result.total_chunks,
+            embedded_texts=result.embedded_texts,
+            best=result.best,
+        )
+
+
+class ChunkingPreviewResponse(BaseModel):
+    document_id: uuid.UUID
+    source_name: str
+    media_type: str | None
+    format_kind: str
+    query: str | None
+    candidates: list[ChunkingCandidateResponse]
+
+    @classmethod
+    def of(cls, result: PreviewResult) -> ChunkingPreviewResponse:
+        return cls(
+            document_id=result.document_id,
+            source_name=result.source_name,
+            media_type=result.media_type,
+            format_kind=result.format_kind,
+            query=result.query,
+            candidates=[ChunkingCandidateResponse.of(one) for one in result.candidates],
+        )
+
+
 class ReindexSummary(BaseModel):
     """How many documents a connector-wide reindex put back in the queue.
 
@@ -351,12 +512,19 @@ class ReindexSummary(BaseModel):
 
 
 __all__ = [
+    "ChunkDistribution",
+    "ChunkingCandidateRequest",
+    "ChunkingCandidateResponse",
+    "ChunkingPreviewRequest",
+    "ChunkingPreviewResponse",
     "ConnectorCreateRequest",
     "ConnectorResponse",
     "ConnectorUpdateRequest",
     "DocumentChunk",
     "DocumentChunksResponse",
     "DocumentResponse",
+    "PreviewChunkResponse",
+    "ReindexRequest",
     "ReindexSummary",
     "ResyncResponse",
     "SearchHit",

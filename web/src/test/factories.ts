@@ -14,6 +14,8 @@ import type {
   RetrievedChunkResponse,
   ApiKeyResponse,
   BucketResponse,
+  ChunkingConfig,
+  ChunkingPreviewResponse,
   ConnectorResponse,
   CurrentUser,
   DocumentChunk,
@@ -387,6 +389,20 @@ export function makeRequestDetail(
   }
 }
 
+/** SPEC §9.3's defaults, spelled once. Every format resolves to this until an override
+ * says otherwise, which is what the connector screen shows. */
+const CHUNKING: ChunkingConfig = {
+  version: 1,
+  strategy: 'recursive',
+  chunk_size: 1000,
+  overlap: 150,
+  respect_boundaries: true,
+  breakpoint_percentile: 85,
+  min_chunk_size: 200,
+  window_sentences: 2,
+  overrides: {},
+}
+
 export function makeConnector(overrides: Partial<ConnectorResponse> = {}): ConnectorResponse {
   return {
     id: 'c1',
@@ -396,17 +412,25 @@ export function makeConnector(overrides: Partial<ConnectorResponse> = {}): Conne
     status: 'ready',
     error: null,
     storage_prefix: 'orgs/o1/connectors/c1/',
-    chunking: {
-      version: 1,
-      strategy: 'recursive',
-      chunk_size: 1000,
-      overlap: 150,
-      respect_boundaries: true,
+    chunking: CHUNKING,
+    effective_chunking: {
+      pdf: CHUNKING,
+      docx: CHUNKING,
+      pptx: CHUNKING,
+      xlsx: CHUNKING,
+      markdown: CHUNKING,
+      html: CHUNKING,
+      csv: CHUNKING,
+      json: CHUNKING,
+      text: CHUNKING,
+      code: CHUNKING,
+      other: CHUNKING,
     },
     document_count: 2,
     counts: { indexed: 2 },
     total_bytes: 4096,
     reindex_required: false,
+    reindex_formats: [],
     last_synced_at: NOW,
     created_at: NOW,
     ...overrides,
@@ -427,6 +451,7 @@ export function makeDocument(overrides: Partial<DocumentResponse> = {}): Documen
     chunk_count: 3,
     page_count: null,
     embedding_model: 'text-embedding-3-small',
+    chunk_strategy: 'recursive',
     content_hash: 'a'.repeat(64),
     indexed_at: NOW,
     created_at: NOW,
@@ -686,6 +711,71 @@ export function makeAuditEvent(overrides: Partial<AuditEvent> = {}): AuditEvent 
     ip: '203.0.113.7',
     user_agent: 'pytest',
     request_id: 'req-1',
+    ...overrides,
+  }
+}
+
+
+/**
+ * One comparison result, with two columns that differ in the way the screen is for.
+ *
+ * `proposed` cuts smaller: more chunks, more of them decided by the size limit. That is
+ * the shape of the answer the Compare view exists to show, so a factory that made both
+ * columns identical would let a broken table pass.
+ */
+export function makeChunkingPreview(
+  overrides: Partial<ChunkingPreviewResponse> = {},
+): ChunkingPreviewResponse {
+  const chunk = (index: number, text: string) => ({
+    index,
+    text,
+    section: null,
+    token_count: 40 - index,
+    embedded_text: null,
+    score: index === 0 ? 0.71 : 0.32,
+  })
+  return {
+    document_id: 'd1',
+    source_name: 'handbook.md',
+    media_type: 'text/markdown',
+    format_kind: 'markdown',
+    query: 'what does the travel policy cover?',
+    candidates: [
+      {
+        label: 'current',
+        strategy: 'recursive',
+        distribution: {
+          chunks: 2,
+          min_tokens: 30,
+          median_tokens: 38,
+          p95_tokens: 40,
+          max_tokens: 40,
+          at_ceiling: 1,
+          mid_sentence: 0,
+        },
+        chunks: [chunk(0, 'Expenses are reimbursed within thirty days.'), chunk(1, 'Receipts go through the portal.')],
+        total_chunks: 2,
+        embedded_texts: 2,
+        best: 0,
+      },
+      {
+        label: 'proposed',
+        strategy: 'recursive',
+        distribution: {
+          chunks: 5,
+          min_tokens: 8,
+          median_tokens: 14,
+          p95_tokens: 20,
+          max_tokens: 20,
+          at_ceiling: 4,
+          mid_sentence: 3,
+        },
+        chunks: [chunk(0, 'Expenses are reimbursed'), chunk(1, 'within thirty days.')],
+        total_chunks: 5,
+        embedded_texts: 5,
+        best: 1,
+      },
+    ],
     ...overrides,
   }
 }

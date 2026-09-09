@@ -9,6 +9,7 @@ import { AppRoutes, makeQueryClient } from '@/App'
 import { AuthProvider } from '@/auth/AuthContext'
 import { ToastProvider } from '@/components/Toast'
 import {
+  makeChunkingPreview,
   makeConnector,
   makeDocument,
   makeDocumentChunk,
@@ -25,6 +26,7 @@ type ServerOptions = {
   hits?: ReturnType<typeof makeSearchHit>[]
   chunks?: ReturnType<typeof makeDocumentChunk>[]
   resync?: { added: number; updated: number; deleted: number; unchanged: number; skipped: number }
+  preview?: ReturnType<typeof makeChunkingPreview>
   saveError?: { status: number; code: string; message: string; param?: string }
 }
 
@@ -69,6 +71,12 @@ function fakeServer(options: ServerOptions = {}) {
       return Promise.resolve(
         json({ hits: options.hits ?? [makeSearchHit()], embedding_model: 'hash-bow' }),
       )
+    }
+    if (path.endsWith('/chunking/preview') && method === 'POST') {
+      return Promise.resolve(json(options.preview ?? makeChunkingPreview()))
+    }
+    if (path.endsWith('/reindex') && method === 'POST' && path.includes('/connectors/')) {
+      return Promise.resolve(json({ documents: 1 }))
     }
     if (path.endsWith('/resync') && method === 'POST') {
       return Promise.resolve(
@@ -662,5 +670,93 @@ describe('the dashboard card', () => {
     renderAt('/', fakeServer({ connectors: [makeConnector({ counts: { indexed: 3 } })] }))
 
     expect(await screen.findByText('Manage content →')).toBeInTheDocument()
+  })
+})
+
+
+describe('chunking comparison', () => {
+  it('runs the settings on screen against one document and shows both columns', async () => {
+    // The demoable half of task 20. Without it the release is three more words in a
+    // dropdown, and every user picks by name.
+    const server = fakeServer()
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+    await screen.findByRole('heading', { name: /product docs/i })
+
+    await user.click(await screen.findByRole('button', { name: /^compare$/i }))
+    // The document list has to have arrived, or the button is disabled and the click is a
+    // no-op that would make this test fail somewhere much less informative.
+    await screen.findByRole('option', { name: 'handbook.md' })
+    await user.click(await screen.findByRole('button', { name: /run comparison/i }))
+
+    expect(await screen.findByText('Boundaries mid-sentence')).toBeInTheDocument()
+    expect(await screen.findByText('Cut by the size limit')).toBeInTheDocument()
+    expect(await screen.findByText('Embedding calls per ingestion')).toBeInTheDocument()
+    // Two columns with different answers, which is the whole point of putting them side
+    // by side: the proposed cut is five chunks where the current one is two.
+    expect(await screen.findByRole('columnheader', { name: /proposed/i })).toBeInTheDocument()
+  })
+
+  it('sends the unsaved form as the candidate, so what is compared is the pending change', async () => {
+    const server = fakeServer()
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+    await screen.findByRole('heading', { name: /product docs/i })
+
+    const size = screen.getByLabelText(/chunk size/i)
+    await user.clear(size)
+    await user.type(size, '400')
+    await user.click(await screen.findByRole('button', { name: /^compare$/i }))
+    await screen.findByRole('option', { name: 'handbook.md' })
+    await user.click(await screen.findByRole('button', { name: /run comparison/i }))
+
+    await waitFor(() => {
+      const preview = server.requests.find((request) => request.path.endsWith('/chunking/preview'))
+      expect(preview).toBeDefined()
+      const candidates = preview!.body.candidates as Record<string, unknown>[]
+      expect(candidates[0]!.chunk_size).toBe(400)
+    })
+  })
+
+  it('reindexes only the formats the change invalidated', async () => {
+    // The payoff of per-format overrides: adding one for code re-runs the code files and
+    // leaves a thousand PDFs where they are.
+    const connector = makeConnector({ reindex_required: true, reindex_formats: ['code'] })
+    const server = fakeServer({ connectors: [connector] })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: /reindex the code documents/i }))
+
+    await waitFor(() => {
+      const call = server.requests.find(
+        (request) => request.path.endsWith('/reindex') && request.method === 'POST',
+      )
+      expect(call?.body.formats).toEqual(['code'])
+    })
+  })
+})
+
+describe('the chunk inspector under sentence_window', () => {
+  it('marks the sentence that was embedded inside the window it returns', async () => {
+    // Two strings with different jobs. Without the mark, a chunk that does not contain the
+    // words somebody searched for looks like a bug rather than like the strategy working.
+    const server = fakeServer({
+      chunks: [
+        makeDocumentChunk({
+          text: 'Before it. The sentence that matched. After it.',
+          embedded_text: 'The sentence that matched.',
+          chunk_strategy: 'sentence_window',
+        }),
+      ],
+    })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: /chunks/i }))
+
+    const marked = await screen.findByText('The sentence that matched.')
+    expect(marked.tagName).toBe('MARK')
+    expect(await screen.findByText(/what was embedded/i)).toBeInTheDocument()
   })
 })

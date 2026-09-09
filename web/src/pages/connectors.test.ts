@@ -2,11 +2,17 @@ import { describe, expect, it } from 'vitest'
 
 import { makeConnector } from '@/test/factories'
 import {
+  FORMAT_KINDS,
   chunkingBody,
   chunkingChanged,
   chunkingForm,
   chunkingProblem,
   chunkingWarning,
+  comparisonRows,
+  formatResolutions,
+  reindexScope,
+  strategyCost,
+  strategyFields,
   documentTone,
   explanationFor,
   formatBytes,
@@ -271,5 +277,111 @@ describe('explanationFor', () => {
     // reason added on the server must not blank the explanation out.
     expect(explanationFor({ reason: 'something_new' })).toBeNull()
     expect(explanationFor({ reason: null })).toBeNull()
+  })
+})
+
+
+describe('strategy fields', () => {
+  it('hides overlap under sentence_window, where the window is the overlap', () => {
+    // Offering it would put the same sentence in four chunks instead of three, and
+    // nothing on the screen would explain why.
+    expect(strategyFields('sentence_window').overlap).toBe(false)
+    expect(strategyFields('sentence_window').window).toBe(true)
+    expect(strategyFields('recursive').overlap).toBe(true)
+  })
+
+  it('shows the breakpoint only for the strategy that uses one', () => {
+    expect(strategyFields('semantic').breakpoint).toBe(true)
+    expect(strategyFields('code').breakpoint).toBe(false)
+  })
+})
+
+describe('strategyCost', () => {
+  it('warns about semantic where the choice is made, and about nothing else', () => {
+    // A trade-off whose consequence arrives months later is one nobody connects to the
+    // dropdown that caused it.
+    expect(strategyCost('semantic')).toContain('re-cut')
+    expect(strategyCost('recursive')).toBeNull()
+  })
+})
+
+describe('formatResolutions', () => {
+  it('reads what each format resolves to off the server rather than recomputing it', () => {
+    const connector = makeConnector()
+    const code = { ...connector.chunking, strategy: 'code' as const }
+    const resolved = formatResolutions({
+      ...connector,
+      chunking: { ...connector.chunking, overrides: { code: { strategy: 'code' } } },
+      effective_chunking: { ...connector.effective_chunking, code },
+    })
+
+    const row = resolved.find((entry) => entry.kind === 'code')
+    expect(row?.strategy).toBe('code')
+    expect(row?.overridden).toBe(true)
+    expect(resolved.find((entry) => entry.kind === 'pdf')?.overridden).toBe(false)
+  })
+
+  it('lists every format, not only the overridden ones', () => {
+    // A table that showed only the overrides would hide the fact that everything else
+    // inherits, which is the question somebody opens it to answer.
+    expect(formatResolutions(makeConnector())).toHaveLength(FORMAT_KINDS.length)
+  })
+})
+
+describe('reindexScope', () => {
+  it('names the formats when only some of them moved', () => {
+    // "Reindex the code files" is an offer somebody accepts; "reindex everything" on a
+    // corpus of ten thousand PDFs is one they postpone indefinitely.
+    const connector = makeConnector({ reindex_formats: ['code'] })
+
+    expect(reindexScope(connector)).toBe('the Code documents')
+  })
+
+  it('says every document when the connector-wide settings moved', () => {
+    expect(reindexScope(makeConnector({ reindex_formats: [] }))).toBe('every document')
+  })
+})
+
+describe('comparisonRows', () => {
+  const candidate = (label: string, patch: Record<string, number> = {}) => ({
+    label,
+    strategy: 'recursive',
+    total_chunks: 4,
+    embedded_texts: 4,
+    best: null,
+    chunks: [],
+    distribution: {
+      chunks: 4,
+      min_tokens: 10,
+      median_tokens: 40,
+      p95_tokens: 60,
+      max_tokens: 60,
+      at_ceiling: 3,
+      mid_sentence: 1,
+      ...patch,
+    },
+  })
+
+  it('puts one column per candidate on every row', () => {
+    const rows = comparisonRows([candidate('current'), candidate('proposed')])
+
+    expect(rows.every((row) => row.values.length === 2)).toBe(true)
+  })
+
+  it('reports the two numbers that make a strategy look like what it is', () => {
+    // How often the size limit decided the boundary, and how often a boundary landed
+    // mid-sentence. Without those, two chunkings are just two walls of text.
+    const rows = comparisonRows([candidate('current')])
+
+    expect(rows.map((row) => row.label)).toContain('Cut by the size limit')
+    expect(rows.map((row) => row.label)).toContain('Boundaries mid-sentence')
+  })
+
+  it('shows what one ingestion costs beside what it produces', () => {
+    // A comparison that showed quality and hid cost would push every reader toward the
+    // most expensive option.
+    const rows = comparisonRows([candidate('current')])
+
+    expect(rows.map((row) => row.label)).toContain('Embedding calls per ingestion')
   })
 })

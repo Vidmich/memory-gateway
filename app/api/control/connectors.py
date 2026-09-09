@@ -30,12 +30,15 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from app.api.control.deps import CurrentActor, get_connector_service, require_capability
 from app.schemas.common import Page
 from app.schemas.connector import (
+    ChunkingPreviewRequest,
+    ChunkingPreviewResponse,
     ConnectorCreateRequest,
     ConnectorResponse,
     ConnectorUpdateRequest,
     DocumentChunk,
     DocumentChunksResponse,
     DocumentResponse,
+    ReindexRequest,
     ReindexSummary,
     ResyncResponse,
     SearchHit,
@@ -231,19 +234,54 @@ async def document_chunks(
     )
 
 
+@router.post("/connectors/{connector_id}/chunking/preview", dependencies=[_reads])
+async def preview_chunking(
+    connector_id: uuid.UUID,
+    body: ChunkingPreviewRequest,
+    actor: CurrentActor,
+    service: _Service,
+) -> ChunkingPreviewResponse:
+    """**Compare**: run candidate chunking configurations over one document.
+
+    A read, and behind the read capability, because it changes nothing — but it is the one
+    read in this router that *spends money*, at the embedding provider, on every call. Hence
+    the document-size ceiling in the service and the cap on candidates in the schema. The
+    connector in the path is checked rather than decorative: the baseline every candidate is
+    compared against is that connector's effective configuration for this document's format.
+    """
+    return ChunkingPreviewResponse.of(
+        await service.preview_chunking(
+            actor,
+            connector_id,
+            body.document_id,
+            candidates=body.candidates,
+            query=body.query,
+        )
+    )
+
+
 @router.post("/connectors/{connector_id}/reindex", dependencies=[_writes])
 async def reindex_connector(
-    connector_id: uuid.UUID, actor: CurrentActor, service: _Service
+    connector_id: uuid.UUID,
+    actor: CurrentActor,
+    service: _Service,
+    body: ReindexRequest | None = None,
 ) -> ReindexSummary:
-    """Re-run ingestion for every document, which is how a chunking change is applied.
+    """Re-run ingestion for this connector's documents, which is how a chunking change is
+    applied.
 
     Not the same operation as ``POST /platform/reindex``, despite the name they share. That
     one re-embeds chunks that are still correct under a new model; this one exists because a
     changed ``chunk_size`` makes the chunks themselves wrong, and only running the pipeline
     again fixes that. The connector detail screen offers it exactly when ``reindex_required``
-    comes back set.
+    comes back set, and passes ``reindex_formats`` straight back as ``formats`` — so adding
+    a per-format override re-runs the files it applies to and leaves the rest indexed.
     """
-    return ReindexSummary(documents=await service.reindex_connector(actor, connector_id))
+    return ReindexSummary(
+        documents=await service.reindex_connector(
+            actor, connector_id, formats=body.formats if body is not None else None
+        )
+    )
 
 
 @router.post("/documents/{document_id}/reindex", dependencies=[_writes])

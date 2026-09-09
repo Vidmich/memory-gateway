@@ -126,6 +126,13 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ScopedEndpoint("POST", f"/api/v1/connectors/{FOREIGN_CONNECTOR}/reindex"),
     ScopedEndpoint(
         "POST",
+        f"/api/v1/connectors/{FOREIGN_CONNECTOR}/chunking/preview",
+        {"document_id": "00000000-0000-4000-8000-000000000001"},
+        note="the chunking comparison reads a document's bytes and embeds them, so a "
+        "foreign connector here would spend money on another tenant's corpus",
+    ),
+    ScopedEndpoint(
+        "POST",
         f"/api/v1/connectors/{FOREIGN_CONNECTOR}/search",
         {"query": "salary"},
         note="the debug search returns chunk *text*, so this is the connector row with "

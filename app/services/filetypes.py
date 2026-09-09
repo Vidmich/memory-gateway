@@ -232,12 +232,51 @@ FORMAT_LABELS: Mapping[str, str] = {
 }
 
 
+#: Every value :func:`format_label` can return, which makes it the closed set a per-format
+#: chunking override may be keyed by. Sorted for a stable order in an error message and in
+#: the UI; ``other`` last because it is the fallback rather than a format anybody picks.
+FORMAT_KINDS: tuple[str, ...] = (
+    *sorted(set(FORMAT_LABELS.values()) | {"code"}),
+    "other",
+)
+
+
 def format_label(media_type: str) -> str:
-    """A bounded label for the extraction metrics. Never the raw media type."""
+    """A bounded label for the extraction metrics, and the key a chunking override uses.
+
+    Never the raw media type — see :data:`FORMAT_LABELS`. That it serves both purposes is
+    deliberate: a second extension list for chunking is how a file comes to be classified
+    as code by one part of the pipeline and as text by another.
+    """
     found = FORMAT_LABELS.get(media_type)
     if found is not None:
         return found
     return "code" if media_type in TEXT_MEDIA_TYPES else "other"
+
+
+#: Media type to language, for the ``code`` chunking strategy. Deliberately short: the
+#: strategy claims structural splitting, and a claim is only worth making for a language
+#: something here can actually parse. Everything else classified as ``code`` still chunks
+#: — recursively — which is a worse cut and never a failed document.
+CODE_LANGUAGES: Mapping[str, str] = {
+    "text/x-python": "python",
+    "text/javascript": "javascript",
+    "text/x-jsx": "javascript",
+    "text/x-typescript": "typescript",
+    "text/x-tsx": "typescript",
+    "text/x-go": "go",
+}
+
+#: The sentence the connector screen shows next to the ``code`` strategy. Written out
+#: rather than generated from the mapping above so it reads as English, and kept honest by
+#: ``tests/test_chunking_code.py``: "code-aware" is not a claim anybody can check, and
+#: "code-aware for Python, JavaScript, TypeScript and Go" is.
+CODE_LANGUAGE_NAMES = ("Python", "JavaScript", "TypeScript", "Go")
+
+
+def language_of(media_type: str) -> str | None:
+    """The language the ``code`` strategy can split structurally, or ``None``."""
+    return CODE_LANGUAGES.get(media_type)
 
 
 def describe(media_type: str) -> str:
@@ -259,9 +298,12 @@ def describe(media_type: str) -> str:
 
 
 __all__ = [
+    "CODE_LANGUAGES",
+    "CODE_LANGUAGE_NAMES",
     "DEFAULT_BINARY_TYPE",
     "DEFAULT_TEXT_TYPE",
     "DOCX",
+    "FORMAT_KINDS",
     "FORMAT_LABELS",
     "PDF",
     "PPTX",
@@ -274,6 +316,7 @@ __all__ = [
     "extension_of",
     "format_label",
     "is_text",
+    "language_of",
     "looks_like_text",
     "sniff",
 ]

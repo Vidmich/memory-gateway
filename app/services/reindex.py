@@ -26,6 +26,17 @@ can rank — a dimension that was accepted and a distance metric that was not wh
 expects. Both are cheap, both fail closed, and failing leaves the old collection serving,
 which is the entire point of building beside it.
 
+**One kind of connector cannot be re-embedded and has to be recut.** Task 20's
+``semantic`` strategy decides its boundaries by embedding the document's sentences, so for
+a connector on it the *chunks themselves* are a product of the old model. Re-embedding
+their stored text would faithfully reproduce the old model's opinion about where the
+topics change — the full cost of a reindex, buying nothing. Those connectors go back to
+object storage instead: extracted again, cut again with the new model deciding the
+boundaries, and written into the same target collection beside the copied points. It is
+strictly more expensive, so the estimate counts them separately and says so; and a
+deployment whose reindexer has no ingestion pipeline (the control-plane process builds one
+to estimate, the worker to run) simply reports them and copies nothing differently.
+
 **Points written during the copy are caught up, not raced.** Ingestion carries on while a
 reindex runs, so the source grows underneath the scroll. After the first pass the copy runs
 again from the beginning until the two counts agree or a bounded number of attempts is
@@ -43,12 +54,14 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Protocol
 
 from app.core.errors import Conflict, NotFound
 from app.core.tenancy import Actor
+from app.schemas.connector_config import ChunkingConfig, depends_on_embedding_model
 from app.schemas.platform import EmbeddingChoice, PlatformSettingsPatch, ReindexEstimate
 from app.services.embeddings import Embedder
-from app.services.maintenance_store import MaintenanceStore
+from app.services.maintenance_store import ConnectorChunking, MaintenanceStore
 from app.services.platform_settings import PlatformSettingsService
 from app.services.reindex_store import (
     EMBEDDING,
@@ -89,6 +102,32 @@ PAGE_PAUSE_SECONDS = 0.05
 #: How close the counts have to be before the swap. Exact: an off-by-one here is a chunk
 #: that will never be retrieved again, and there is no reason to accept one.
 COUNT_TOLERANCE = 0
+
+
+class Recutter(Protocol):
+    """Re-extract and re-chunk one document under a given model, writing nothing.
+
+    A port with one implementation — :meth:`app.services.ingestion.IngestionPipeline.recut`
+    — and it is a port rather than a direct dependency for a reason with teeth: this module
+    is built in the API process to *estimate* a reindex, and the API process has no reason
+    to hold an extraction subprocess pool. ``None`` there means the estimate still counts
+    what a recut would cost and the run, which happens in the worker, is the only thing
+    that needs to be able to do one.
+    """
+
+    async def recut(
+        self, *, organization_id: uuid.UUID, document_id: uuid.UUID, embedder: Embedder
+    ) -> list[ChunkPoint]: ...
+
+
+class MissingRecutter(RuntimeError):
+    """A run reached a connector that has to be recut and has nothing to recut with.
+
+    Loud, and it fails the target rather than falling through to a plain copy. A silent
+    fallback would re-embed a semantic connector's old boundaries, report success, and
+    leave a collection whose chunk boundaries came from a model that is no longer in use —
+    with nothing anywhere saying so.
+    """
 
 
 class ReindexInProgress(Conflict):
@@ -144,6 +183,7 @@ class Reindexer:
         maintenance: MaintenanceStore,
         settings: PlatformSettingsService,
         embedder_for: Callable[[EmbeddingChoice], Embedder],
+        recutter: Recutter | None = None,
         batch_size: int = COPY_BATCH,
         pause_seconds: float = PAGE_PAUSE_SECONDS,
     ) -> None:
@@ -152,6 +192,7 @@ class Reindexer:
         self._maintenance = maintenance
         self._settings = settings
         self._embedder_for = embedder_for
+        self._recutter = recutter
         self._batch = batch_size
         self._pause = pause_seconds
 
@@ -185,6 +226,7 @@ class Reindexer:
                     characters += len(str(point.payload.get("text", "")))
                     sampled += 1
 
+        recut = await self._recut_scope(organization_id)
         mean = characters / sampled if sampled else 0.0
         return ReindexEstimate(
             collections=sorted(collections),
@@ -194,7 +236,28 @@ class Reindexer:
             from_model=current.embedding.name,
             to_model=target.name,
             to_dimension=target.dimension,
+            recut_connectors=len(recut),
+            recut_documents=sum(row.indexed_documents for row in recut.values()),
         )
+
+    async def _recut_scope(
+        self, organization_id: uuid.UUID | None
+    ) -> dict[uuid.UUID, ConnectorChunking]:
+        """Connectors whose chunk boundaries came out of the embedding model.
+
+        Read from the connector rows rather than from the chunk payloads, because the
+        question is what the *next* ingestion would do — a connector switched to
+        ``semantic`` yesterday and not yet reindexed still has to be recut, and its stored
+        chunks say nothing about that.
+        """
+        async with self._maintenance.begin() as transaction:
+            rows = await transaction.connector_chunkings()
+        return {
+            row.connector_id: row
+            for row in rows
+            if (organization_id is None or row.organization_id == organization_id)
+            and depends_on_embedding_model(ChunkingConfig.load(row.chunking))
+        }
 
     async def _scope(self, organization_id: uuid.UUID | None) -> list[uuid.UUID]:
         if organization_id is not None:
@@ -365,12 +428,20 @@ class Reindexer:
             await transaction.save_target(target.id, status=EMBEDDING)
             await transaction.commit()
 
-        await self._copy(target, source=live, embedder=embedder)
+        recut = await self._recut_scope(organization_id)
+        if recut and self._recutter is None:
+            raise MissingRecutter(
+                f"{len(recut)} connector(s) here chunk with the embedding model and have to "
+                "be recut, and this process was built without an ingestion pipeline"
+            )
+        # The recut runs first, so its points are in place before the count that decides
+        # whether the copy caught up — otherwise the first catch-up pass would always fire.
+        produced = await self._recut(target, embedder=embedder, connectors=set(recut))
+        skipped = await self._copy(target, source=live, embedder=embedder, skip=set(recut))
 
         for _ in range(MAX_CATCH_UP):
-            if await index.count_points(target.collection) >= (
-                await index.count_points(live) - COUNT_TOLERANCE
-            ):
+            expected = await index.count_points(live) - skipped + produced
+            if await index.count_points(target.collection) >= expected - COUNT_TOLERANCE:
                 break
             # Points arrived while the scroll was running. Copying from the beginning
             # again is correct and cheap enough: the upserts are keyed by deterministic
@@ -378,7 +449,9 @@ class Reindexer:
             async with self._store.begin() as transaction:
                 await transaction.save_target(target.id, clear_cursor=True)
                 await transaction.commit()
-            await self._copy(replace(target, cursor=None), source=live, embedder=embedder)
+            skipped = await self._copy(
+                replace(target, cursor=None), source=live, embedder=embedder, skip=set(recut)
+            )
 
         # The count, not the running total: a catch-up pass rewrites points the first pass
         # already wrote, and a sum of what was *sent* would report more than exists.
@@ -386,7 +459,11 @@ class Reindexer:
         async with self._store.begin() as transaction:
             await transaction.save_target(target.id, status=VERIFYING, done_points=done)
             await transaction.commit()
-        await self._verify(target, source=live, embedder=embedder)
+        await self._verify(
+            target,
+            expected=await index.count_points(live) - skipped + produced,
+            embedder=embedder,
+        )
 
         await index.promote(organization_id, target.collection)
         async with self._store.begin() as transaction:
@@ -402,8 +479,20 @@ class Reindexer:
             },
         )
 
-    async def _copy(self, target: TargetView, *, source: str, embedder: Embedder) -> int:
+    async def _copy(
+        self,
+        target: TargetView,
+        *,
+        source: str,
+        embedder: Embedder,
+        skip: set[uuid.UUID] | None = None,
+    ) -> int:
         """Scroll the source, embed each page, upsert it, save the cursor. Resumable.
+
+        Returns how many points it *left behind* — the ones belonging to a connector being
+        recut. That number, not the number copied, is what the count check downstream
+        needs: the recut writes its own points, and there is no reason for the two to agree
+        in count, because deciding the boundaries differently is the entire point of it.
 
         The cursor is saved *after* the upsert lands, so a crash costs one repeated page
         rather than a silently skipped one — the same ordering, and the same reasoning, as
@@ -412,28 +501,90 @@ class Reindexer:
         index = await self._backends.admin_for(target.organization_id)
         cursor = target.cursor
         done = target.done_points
+        left = 0
         while True:
             page = await index.scroll(source, cursor=cursor, limit=self._batch)
-            if page.points:
-                await index.upsert_into(target.collection, await _embed(page.points, embedder))
-                done += len(page.points)
+            wanted = [point for point in page.points if not _belongs_to(point, skip)]
+            left += len(page.points) - len(wanted)
+            if wanted:
+                await index.upsert_into(target.collection, await _embed(wanted, embedder))
+                done += len(wanted)
                 async with self._store.begin() as transaction:
                     await transaction.save_target(target.id, done_points=done, cursor=page.cursor)
                     await transaction.commit()
             cursor = page.cursor
             if cursor is None:
-                return done
+                return left
             if self._pause:
                 await asyncio.sleep(self._pause)
 
-    async def _verify(self, target: TargetView, *, source: str, embedder: Embedder) -> None:
-        """Counts, then a search. Raising here leaves the old collection live."""
+    async def _recut(
+        self, target: TargetView, *, embedder: Embedder, connectors: set[uuid.UUID]
+    ) -> int:
+        """Rebuild each recut connector's documents from object storage into the target.
+
+        A document that will not read or will not extract is **skipped and counted**, not
+        raised on. It is one file of a corpus, the old collection still holds whatever it
+        had for it, and failing a whole tenant's reindex because somebody deleted an object
+        would be a far worse trade. What it costs stays honest: the number returned is what
+        was actually produced, so the verification compares against reality rather than
+        against an intention.
+        """
+        if not connectors or self._recutter is None:
+            return 0
         index = await self._backends.admin_for(target.organization_id)
-        expected = await index.count_points(source)
+        produced = 0
+        missed = 0
+        for connector_id in sorted(connectors):
+            async with self._maintenance.begin() as transaction:
+                documents = await transaction.indexed_documents(connector_id)
+            for document_id in documents:
+                try:
+                    points = await self._recutter.recut(
+                        organization_id=target.organization_id,
+                        document_id=document_id,
+                        embedder=embedder,
+                    )
+                except Exception:
+                    missed += 1
+                    logger.warning(
+                        "a document could not be recut; the rest of the reindex continues",
+                        exc_info=True,
+                        extra={
+                            "organization_id": str(target.organization_id),
+                            "document_id": str(document_id),
+                        },
+                    )
+                    continue
+                if points:
+                    await index.upsert_into(target.collection, points)
+                    produced += len(points)
+                if self._pause:
+                    await asyncio.sleep(self._pause)
+        logger.info(
+            "recut connectors rebuilt from object storage",
+            extra={
+                "organization_id": str(target.organization_id),
+                "connectors": len(connectors),
+                "points": produced,
+                "documents_skipped": missed,
+            },
+        )
+        return produced
+
+    async def _verify(self, target: TargetView, *, expected: int, embedder: Embedder) -> None:
+        """Counts, then a search. Raising here leaves the old collection live.
+
+        ``expected`` is passed in rather than read off the source, because with a recut in
+        the run the source's own count is no longer the right number: some of its points
+        were deliberately not copied, and what replaced them is a different quantity of
+        chunks by design.
+        """
+        index = await self._backends.admin_for(target.organization_id)
         actual = await index.count_points(target.collection)
         if actual < expected - COUNT_TOLERANCE:
             raise RuntimeError(
-                f"{target.collection} holds {actual} points and {source} holds {expected}"
+                f"{target.collection} holds {actual} points and {expected} were expected"
             )
         if not expected:
             return
@@ -476,6 +627,23 @@ class Reindexer:
         )
 
 
+def _belongs_to(point: ChunkPoint, connectors: set[uuid.UUID] | None) -> bool:
+    """Whether a stored point came from one of these connectors.
+
+    A payload with no readable ``connector_id`` answers ``False`` and is therefore copied.
+    Copying a point that should have been recut leaves one document cut by the old model;
+    dropping one that should have been copied loses it outright. The first is recoverable
+    with a resync and the second is not.
+    """
+    if not connectors:
+        return False
+    raw = point.payload.get("connector_id")
+    try:
+        return uuid.UUID(str(raw)) in connectors
+    except (TypeError, ValueError):
+        return False
+
+
 async def _embed(points: Sequence[ChunkPoint], embedder: Embedder) -> list[ChunkPoint]:
     texts = [str(point.payload.get("text", "")) for point in points]
     vectors = await embedder.embed(texts)
@@ -487,18 +655,29 @@ async def _embed(points: Sequence[ChunkPoint], embedder: Embedder) -> list[Chunk
 
 def estimated_cost_lines(estimate: ReindexEstimate) -> list[str]:
     """The estimate as sentences, for a confirmation dialog and for a log line."""
-    return [
+    lines = [
         f"{estimate.organizations} collection(s): {', '.join(estimate.collections) or 'none'}",
         f"{estimate.points} chunks, about {estimate.tokens} tokens to embed",
         f"{estimate.from_model or 'unset'} to {estimate.to_model} "
         f"({estimate.to_dimension} dimensions)",
     ]
+    if estimate.recut_connectors:
+        # A different *kind* of cost, not a bigger one, which is why it gets its own line:
+        # it re-reads object storage and extracts again, so it is what explains a run that
+        # takes far longer than its chunk count suggests.
+        lines.append(
+            f"{estimate.recut_connectors} connector(s) chunk with the embedding model and "
+            f"will be recut from object storage: {estimate.recut_documents} document(s)"
+        )
+    return lines
 
 
 __all__ = [
     "CHARS_PER_TOKEN",
     "MAX_CATCH_UP",
+    "MissingRecutter",
     "Progress",
+    "Recutter",
     "ReindexInProgress",
     "Reindexer",
     "estimated_cost_lines",

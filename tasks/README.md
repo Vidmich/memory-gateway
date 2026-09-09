@@ -41,6 +41,13 @@ Size guide: **S** ≈ 1–2 days · **M** ≈ 3–5 days · **L** ≈ 1–2 week
 | [17](17-retention-reindex-platform-settings.md) | Retention, reindex & platform settings | M | Data lifecycle is enforced, not just documented |
 | [18](18-production-deployment-hardening.md) | Production deployment & hardening | L | Runs on Kubernetes within the latency budget |
 
+### Post-v1
+
+| # | Task | Size | What becomes demonstrable |
+|---|---|---|---|
+| [19](19-pluggable-vector-backends.md) | Pluggable vector backends: Chroma alongside Qdrant | L | Two organizations on two vector stores, in one deployment |
+| [20](20-chunking-strategies.md) | Chunking strategies: semantic, sentence-window & code-aware | L | Compare strategies on your own documents, then pick one |
+
 ## Dependency graph
 
 ```
@@ -61,6 +68,8 @@ Size guide: **S** ≈ 1–2 days · **M** ≈ 3–5 days · **L** ≈ 1–2 week
      │               ├─ 15 audit log
      │               └─ 16 anthropic adapter
      └─ 17 retention / reindex ── 18 production deployment
+         │                         └─ 19 pluggable vector backends (post-v1)
+         └─ 20 chunking strategies (post-v1)
 ```
 
 ## Milestones
@@ -87,3 +96,12 @@ Size guide: **S** ≈ 1–2 days · **M** ≈ 3–5 days · **L** ≈ 1–2 week
   reordered against business priority.
 - **Tool-call passthrough is not in this plan** (SPEC §16.1). It is the first post-v1 task.
   Task 02 must reject `tools` with an explicit 400 so the gap fails loudly.
+- **Task 19 is post-v1 and nothing depends on it.** It splits cleanly in two: the first half
+  removes Qdrant's fingerprints from a port that is supposed to be vendor-neutral and is worth
+  doing on its own; the second half adds Chroma behind it. It comes after 18 because
+  per-backend readiness, metrics and backup all have to fit what 18 built, and after 17 because
+  moving an organization between backends reuses the reindex machinery rather than repeating it.
+- **Task 20 comes after 17 for one specific reason.** Semantic chunking makes the embedding
+  model part of the *chunking* configuration, so a platform embedding change stops being a
+  re-embed and becomes a recut for those connectors. That is a change to the reindexer, and it
+  can only be written against a reindexer that exists. 19 and 20 are independent of each other.

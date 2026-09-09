@@ -25,6 +25,7 @@ responder reading source code at three in the morning.
 | When | Runbook |
 |---|---|
 | Qdrant is down or slow | [qdrant-outage.md](qdrant-outage.md) |
+| A vector-backend migration is stuck | [vector-backend-migration.md](vector-backend-migration.md) |
 | Rotating `ENCRYPTION_MASTER_KEY` or a provider credential | [credential-rotation.md](credential-rotation.md) |
 | An organization was scheduled for deletion by mistake | [restore-deleted-organization.md](restore-deleted-organization.md) |
 | Restoring from backup | [backup-restore.md](backup-restore.md) |

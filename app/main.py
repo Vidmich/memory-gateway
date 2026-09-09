@@ -52,7 +52,6 @@ from app.services.distillation_service import DistillationService
 from app.services.end_user_resolver import EndUserResolver, RequestCounters
 from app.services.end_user_store import PostgresEndUserStore
 from app.services.end_users import EndUserService
-from app.services.fact_vectors import QdrantFactVectorStore
 from app.services.facts import FactRecaller
 from app.services.gateway_probe import ProxyGatewayProbe
 from app.services.gateway_resolver import (
@@ -85,6 +84,7 @@ from app.workers.runtime import (
     build_platform,
     build_platform_settings,
     build_queue,
+    build_vector_backends,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,10 +169,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Ingestion. Built here, in the API process, because two of its operations are
         # synchronous — deleting a document and reconciling a connector — and the worker
         # builds the same objects from the same function, so the two cannot drift.
+        # Which backend each organization's vectors are on. Built before ingestion
+        # because every store below routes through it.
+        vector_backends = await build_vector_backends(clients, settings)
+        app.state.vector_backends = vector_backends
         ingestion = build_ingestion(
             clients,
             settings,
             queue=build_queue(clients.jobs),
+            backends=vector_backends,
             metrics=metrics.extraction,
             embedding=platform_settings.snapshot.embedding,
         )
@@ -181,7 +186,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # *before* the log flusher because the flusher holds its trigger: a transcript that
         # has just been committed is the event that arms a distillation pass.
         distillation = build_distillation(
-            clients, settings, ingestion=ingestion, metrics=metrics.distillation
+            clients,
+            settings,
+            ingestion=ingestion,
+            backends=vector_backends,
+            metrics=metrics.distillation,
         )
         app.state.distillation = distillation
 
@@ -194,6 +203,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ingestion=ingestion,
             distillation=distillation,
             platform_settings=platform_settings,
+            backends=vector_backends,
             queue=ingestion.queue,
             metrics=metrics.maintenance,
         )
@@ -236,7 +246,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # own resolver in front — identity is not memory, so a gateway that has memory
         # switched off still attributes its traffic on the end-users screen.
         end_user_store = PostgresEndUserStore(clients.session_factory)
-        fact_vectors = QdrantFactVectorStore(clients.qdrant)
+        # The same routing store distillation writes through, so recall reads exactly
+        # what a pass wrote — including for an organization on the other backend.
+        fact_vectors = distillation.vectors
         counters = RequestCounters(end_user_store)
         counters.start()
         app.state.end_user_counters = counters
@@ -394,6 +406,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Before the clients, because a child process holds nothing of theirs but is
             # a process: leaving it behind on a rolling restart leaks one per replica.
             await ingestion.aclose()
+            # Only the clients this registry created itself; the Qdrant one belongs to
+            # `clients` and is closed below.
+            await vector_backends.aclose()
             await clients.aclose()
             # Last, and after the log flush: the spans from the final seconds before a
             # deploy are the ones somebody reads when the deploy is what broke.

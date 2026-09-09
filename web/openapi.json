@@ -6318,6 +6318,147 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "VectorBackendsResponse": {
+        "description": "What this deployment offers, and where everybody is.\n\n``enabled`` is read-only on purpose and there is no field here for a URL. A backend's\naddress is deployment topology, configured in the environment; a settings screen able\nto point one somewhere new would put a server address a tenant's data flows to behind\na form, which is the surface task 18 closed for upstream models.",
+        "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/VectorBindingResponse"
+            },
+            "title": "Bindings",
+            "type": "array"
+          },
+          "default": {
+            "title": "Default",
+            "type": "string"
+          },
+          "enabled": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Enabled",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "default",
+          "bindings"
+        ],
+        "title": "VectorBackendsResponse",
+        "type": "object"
+      },
+      "VectorBindingResponse": {
+        "description": "Where one organization's vectors are, and whether they are moving.",
+        "properties": {
+          "backend": {
+            "title": "Backend",
+            "type": "string"
+          },
+          "collection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
+          }
+        },
+        "required": [
+          "organization_id",
+          "backend",
+          "status"
+        ],
+        "title": "VectorBindingResponse",
+        "type": "object"
+      },
+      "VectorMigrationRequest": {
+        "description": "Move one organization's vectors to another backend.\n\n``dry_run`` returns the plan and starts nothing, which is what the confirmation dialog\ncalls \u2014 so the numbers an operator agrees to are the ones this endpoint counted.",
+        "properties": {
+          "backend": {
+            "title": "Backend",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "backend"
+        ],
+        "title": "VectorMigrationRequest",
+        "type": "object"
+      },
+      "VectorMigrationResponse": {
+        "description": "What a migration would move, or has begun moving.\n\nPoints and facts rather than a cost estimate, which is the difference from a reindex:\ndocument chunks are copied rather than re-embedded, so the number that matters is how\nlong it takes rather than what it costs.",
+        "properties": {
+          "facts": {
+            "title": "Facts",
+            "type": "integer"
+          },
+          "organization_id": {
+            "format": "uuid",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "points": {
+            "title": "Points",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "started": {
+            "title": "Started",
+            "type": "boolean"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "target_collection": {
+            "title": "Target Collection",
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "source",
+          "target",
+          "target_collection",
+          "points",
+          "facts",
+          "started"
+        ],
+        "title": "VectorMigrationResponse",
+        "type": "object"
       }
     }
   },
@@ -10729,6 +10870,95 @@
         ]
       }
     },
+    "/api/v1/platform/organizations/{organization_id}/vector-backend": {
+      "delete": {
+        "description": "Abandon a migration in flight and remove what it has built.\n\nNothing about reads changes, because nothing about reads ever changed.",
+        "operationId": "cancel_vector_migration_api_v1_platform_organizations__organization_id__vector_backend_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Vector Migration",
+        "tags": [
+          "platform"
+        ]
+      },
+      "post": {
+        "description": "Move one organization's vectors to another backend.\n\nAccepted rather than OK: the copy is a job, and the response describes what will be\nmoved. Reads keep going to the current backend until the copy is verified and\npromoted, so this endpoint changes nothing a request can observe.",
+        "operationId": "migrate_vector_backend_api_v1_platform_organizations__organization_id__vector_backend_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organization_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Organization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VectorMigrationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VectorMigrationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Migrate Vector Backend",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
     "/api/v1/platform/reindex": {
       "post": {
         "description": "Rebuild collections under the current embedding model.\n\n``dry_run`` returns the estimate and starts nothing \u2014 which is what the confirmation\ndialog calls, so the cost an operator agrees to is the cost this endpoint counted\nrather than a number the browser worked out for itself.",
@@ -10879,6 +11109,28 @@
           }
         },
         "summary": "Update Settings",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/api/v1/platform/vector-backends": {
+      "get": {
+        "description": "Which backends this deployment can talk to, and where every organization is.\n\nRead-only, and there is no companion PATCH for the connection details. A backend's\naddress is deployment topology and lives in the environment; the one thing here that\n*is* policy \u2014 the default for new organizations \u2014 is a platform setting.",
+        "operationId": "read_vector_backends_api_v1_platform_vector_backends_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VectorBackendsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Vector Backends",
         "tags": [
           "platform"
         ]

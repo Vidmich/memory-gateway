@@ -18,8 +18,10 @@ from app.services.job_queue import ARQ_FUNCTION
 from app.services.jobs import (
     DELETE_CONNECTOR,
     DISTIL_MEMORY,
+    DROP_MIGRATION_SOURCE,
     INGEST_DOCUMENT,
     JOB_NAMES,
+    MIGRATE_VECTORS,
     REINDEX,
 )
 from app.workers.main import WorkerSettings, run_gateway_job
@@ -61,7 +63,7 @@ def test_there_is_a_handler_for_every_job_this_build_can_enqueue() -> None:
     """The other half of the same failure: an enqueue with no handler dead-letters, which
     is loud but useless.
 
-    Driven against a *fully wired* worker — ingestion, conversation memory and task 17's
+    Driven against a *fully wired* worker — ingestion, conversation memory and the
     platform bundle — because that is the deployment every name in ``JOB_NAMES`` is
     enqueued by. A worker missing one of those registers fewer handlers on purpose; the
     two tests below are the ones that say so.
@@ -72,7 +74,14 @@ def test_there_is_a_handler_for_every_job_this_build_can_enqueue() -> None:
 
     handlers = build_handlers(ingestion, _distillation_of()[0], _platform_of(platform))
     assert set(handlers) == set(JOB_NAMES)
-    assert set(JOB_NAMES) == {INGEST_DOCUMENT, DELETE_CONNECTOR, DISTIL_MEMORY, REINDEX}
+    assert set(JOB_NAMES) == {
+        INGEST_DOCUMENT,
+        DELETE_CONNECTOR,
+        DISTIL_MEMORY,
+        REINDEX,
+        MIGRATE_VECTORS,
+        DROP_MIGRATION_SOURCE,
+    }
 
 
 def test_a_worker_without_conversation_memory_registers_two_handlers() -> None:
@@ -245,11 +254,12 @@ def _platform_of(fixture: PlatformFixture) -> Platform:
     return Platform(
         settings=fixture.platform_settings,
         store=fixture.store,
-        index=fixture.index,
+        backends=fixture.backends,
         partitions=fixture.partitions,
         retention=fixture.retention,
         sweeper=fixture.sweeper,
         reindexer=fixture.reindexer,
+        migrator=fixture.migrator,
         eraser=fixture.eraser,
         service=fixture.service,
     )

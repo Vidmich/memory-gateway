@@ -422,6 +422,60 @@ def test_every_example_renders(example: Path) -> None:
 
 
 @helm_required
+def test_a_default_backend_with_no_address_refuses_to_render() -> None:
+    """Task 19's guard, and the reason it is a render failure rather than a comment.
+
+    A default naming a backend the pods cannot reach is a deployment where every newly
+    created organization silently has no index — retrieval returns nothing, ``fail_open``
+    hides it, and the first report is a customer saying the answers got worse.
+    """
+    result = helm(
+        "template",
+        "release",
+        str(CHART),
+        *MINIMUM,
+        "--set",
+        "config.defaultVectorBackend=chroma",
+    )
+
+    assert result.returncode != 0
+    assert "chromaUrl" in result.stderr
+
+
+@helm_required
+def test_configuring_chroma_puts_all_three_of_its_settings_in_the_configmap() -> None:
+    """All three or none. A URL without its tenant and database would connect to whatever
+    the client's defaults happen to be, which is a different Chroma than the operator
+    configured and holds none of this deployment's collections."""
+    result = helm(
+        "template",
+        "release",
+        str(CHART),
+        *MINIMUM,
+        "--set",
+        "config.chromaUrl=http://chroma:8000",
+    )
+
+    assert result.returncode == 0, result.stderr
+    [configmap] = [
+        doc for doc in yaml.safe_load_all(result.stdout) if doc and doc["kind"] == "ConfigMap"
+    ]
+    assert {"CHROMA_URL", "CHROMA_TENANT", "CHROMA_DATABASE"} <= set(configmap["data"])
+
+
+@helm_required
+def test_a_chart_with_no_chroma_url_sets_none_of_its_variables() -> None:
+    """A Qdrant-only deployment must not carry an empty ``CHROMA_URL``: the application
+    treats an empty string as unset, but a variable that is present and empty is one
+    somebody later fills in without noticing the extra is not installed."""
+    result = helm("template", "release", str(CHART), *MINIMUM)
+
+    assert result.returncode == 0, result.stderr
+    rendered = result.stdout
+    assert "CHROMA_URL" not in rendered
+
+
+@helm_required
 def test_a_short_grace_period_refuses_to_render() -> None:
     """The invariant, enforced where getting it wrong is a failed `helm template` rather
     than a support ticket two weeks later."""

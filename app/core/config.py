@@ -46,9 +46,29 @@ class Settings(BaseSettings):
     # -- redis -------------------------------------------------------------
     redis_url: str
 
-    # -- qdrant ------------------------------------------------------------
+    # -- vector backends ---------------------------------------------------
+    #: Task 19. Qdrant is required and is the default backend; Chroma is optional and
+    #: configured only where a deployment offers it. Which backend an *organization* uses
+    #: is a per-tenant binding, not an environment variable — see
+    #: :mod:`app.services.vector_backends`. What lives here is the connection detail,
+    #: which is operator configuration and must never be tenant input: a URL a tenant can
+    #: choose is a request this server makes on their behalf to an address they picked,
+    #: which is the surface task 18 closed for upstream models.
     qdrant_url: str
     qdrant_api_key: str | None = None
+    chroma_url: str | None = None
+    #: Chroma's own multi-tenancy, which this system does not use as a tenant boundary —
+    #: collection names carry the organization id (SPEC §5.3) and that is the boundary.
+    #: Exposed so a deployment sharing a Chroma server with something else can keep its
+    #: collections out of the way.
+    chroma_tenant: str = "default_tenant"
+    chroma_database: str = "default_database"
+    #: Where an organization with no binding starts. Policy rather than topology, which is
+    #: why it is the one part of this that a superadmin can change without a deploy; this
+    #: value is the bootstrap, and a row in ``platform_settings`` overrides it (task 17's
+    #: precedence). Changing it moves nobody: an organization's binding is written on first
+    #: use and the row decides from then on.
+    default_vector_backend: Literal["qdrant", "chroma"] = "qdrant"
 
     # -- object storage ----------------------------------------------------
     s3_endpoint: str
@@ -285,6 +305,27 @@ class Settings(BaseSettings):
         if not value.startswith(("http://", "https://")):
             raise ValueError("must be an http:// or https:// URL")
         return value.rstrip("/")
+
+    @field_validator("chroma_url")
+    @classmethod
+    def _optional_http_url(cls, value: str | None) -> str | None:
+        """Same rule, but absence is allowed: a deployment that offers only Qdrant leaves
+        this unset, and an empty string means unset rather than a URL that is empty."""
+        if not value:
+            return None
+        return cls._require_http_url(value)
+
+    @model_validator(mode="after")
+    def _default_backend_is_configured(self) -> Settings:
+        """A default naming a backend this deployment cannot reach is a deployment where
+        every newly created organization silently has no index. It costs one comparison to
+        refuse at startup instead."""
+        if self.default_vector_backend == "chroma" and not self.chroma_url:
+            raise ValueError(
+                "DEFAULT_VECTOR_BACKEND=chroma requires CHROMA_URL to be set, or every "
+                "new organization is bound to a backend this deployment cannot reach"
+            )
+        return self
 
     @model_validator(mode="after")
     def _real_embeddings_in_production(self) -> Settings:

@@ -93,7 +93,7 @@ async def test_ensure_collection_creates_the_alias_not_a_bare_collection(
 
     await platform.vectors.ensure_collection(organization, dimension=DIMENSION)
 
-    assert platform.vectors.aliases[collection_for(organization)] == versioned(organization, 1)
+    assert platform.vectors.live(organization) == versioned(organization, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@ async def test_the_alias_moves_and_searches_follow_it(
     run = await platform.reindexer.start(actor)
     await platform.reindexer.run(run.id)
 
-    assert platform.vectors.aliases[collection_for(organization)] == versioned(organization, 2)
+    assert platform.vectors.live(organization) == versioned(organization, 2)
     vector = (await platform.embedder.embed(["invoices"]))[0]
     assert await platform.vectors.search(organization, vector, limit=3)
 
@@ -277,7 +277,7 @@ async def test_a_failed_target_leaves_the_old_collection_serving(
     finished = await platform.reindexer.run(run.id)
 
     assert finished.status == FAILED
-    assert platform.vectors.aliases[collection_for(organization)] == versioned(organization, 1)
+    assert platform.vectors.live(organization) == versioned(organization, 1)
     vector = (await platform.embedder.embed(["invoices"]))[0]
     assert await platform.vectors.search(organization, vector, limit=3)
 
@@ -304,7 +304,7 @@ async def test_a_short_copy_is_caught_by_the_count_and_never_swaps(
     finished = await platform.reindexer.run(run.id)
 
     assert finished.status == FAILED
-    assert platform.vectors.aliases[collection_for(organization)] == versioned(organization, 1)
+    assert platform.vectors.live(organization) == versioned(organization, 1)
 
 
 async def test_a_second_reindex_for_the_same_scope_is_refused(

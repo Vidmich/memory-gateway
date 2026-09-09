@@ -1,8 +1,14 @@
-"""The vector index, behind a port.
+"""The document index, behind a port.
 
-One Qdrant collection per organization, ``org_{org_id}_docs`` (SPEC §9.4). A collection
-per tenant rather than one collection with an ``org_id`` filter, and the reason is the
-same one that makes SPEC §5.3 a hard rule: a filter that is *forgotten* returns another
+**A port with no vendor in it.** Since task 19 there are two real backends —
+:mod:`app.services.vector_qdrant` and :mod:`app.services.vector_chroma` — and this module
+imports neither. What is left here is the vocabulary they both have to satisfy: the
+collection naming, the deterministic point ids, the protocol, and a brute-force
+implementation for tests.
+
+One collection per organization, ``org_{org_id}_docs`` (SPEC §9.4). A collection per
+tenant rather than one collection with an ``org_id`` filter, and the reason is the same
+one that makes SPEC §5.3 a hard rule: a filter that is *forgotten* returns another
 customer's documents, whereas a collection that is not named cannot be read at all. It
 also makes offboarding a drop rather than a delete-by-filter over a live index.
 
@@ -17,9 +23,10 @@ the file. So re-ingestion **deletes by ``document_id`` first**, then upserts. Bo
 are needed; either alone is a bug that only shows up after an edit.
 
 :class:`MemoryVectorStore` implements the same protocol with brute-force cosine, and
-``tests/vector_store_contract.py`` runs one set of assertions against both. The Qdrant
-half of that run needs a real server — payload filters and delete-by-filter are precisely
-where a hand-written double would agree with itself and disagree with Qdrant.
+``tests/vector_store_contract.py`` runs one set of assertions against all three. The two
+server-backed runs need real servers — payload filters, delete-by-filter and the meaning
+of ``limit`` under a score floor are precisely where a hand-written double agrees with
+itself and disagrees with everything else.
 """
 
 from __future__ import annotations
@@ -127,10 +134,12 @@ class VectorStore(Protocol):
         there is no collection yet.
 
         Retrieval asks so it can refuse to search an index built by a different embedding
-        model. Without it a changed ``EMBEDDING_DIMENSION`` is a silent failure: Qdrant
-        rejects a mismatched query vector with a message about dimensions, which under
-        ``fail_open`` becomes "the model answered without its documents" on every request
-        and nothing anywhere says why.
+        model. Without it a changed ``EMBEDDING_DIMENSION`` is a silent failure: a backend
+        rejects the mismatched query vector with some message about dimensions, which
+        under ``fail_open`` becomes "the model answered without its documents" on every
+        request and nothing anywhere says why. A backend that infers its width from the
+        first insert has to record it somewhere it can read back, because answering
+        ``None`` here when a collection exists is the same silent failure.
         """
         ...
 
@@ -142,7 +151,22 @@ class VectorStore(Protocol):
         connector_ids: Sequence[uuid.UUID] = (),
         limit: int = DEFAULT_SEARCH_LIMIT,
         min_score: float = 0.0,
-    ) -> list[Match]: ...
+    ) -> list[Match]:
+        """The nearest chunks, best first.
+
+        Two things a backend must mean by this, both pinned by the contract suite because
+        the natural implementation of each differs per vendor:
+
+        ``score`` is **cosine similarity in [-1, 1], higher is better** — not a distance.
+        A backend that returns distances converts here. Getting that backwards does not
+        raise; it returns the worst matches, confidently ranked, and the only symptom is
+        that answers get vaguer.
+
+        ``limit`` bounds the results *after* ``min_score``, so it means "this many chunks
+        above the floor" rather than "this many candidates, some of which are discarded".
+        A backend that cannot push a threshold down has to over-fetch to honour it.
+        """
+        ...
 
     async def chunks(
         self, organization_id: uuid.UUID, document_id: uuid.UUID, *, limit: int = 500
@@ -166,278 +190,6 @@ class VectorStore(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Qdrant
-# ---------------------------------------------------------------------------
-
-
-class QdrantVectorStore:
-    """The production implementation, over the client `/readyz` already probes."""
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-        #: Collections this process has already ensured. A cache of a *creation*, not of
-        #: data: the worst case for a stale entry is an upsert against a collection
-        #: somebody deleted, which fails loudly and is retried.
-        self._ensured: set[str] = set()
-        #: Vector width per collection — see :meth:`dimension`.
-        self._widths: dict[str, int] = {}
-
-    async def ensure_collection(self, organization_id: uuid.UUID, *, dimension: int) -> None:
-        """Create the tenant's first collection and its alias, if there is neither.
-
-        Since task 17 the name every other method uses is an *alias*, so this creates
-        ``org_{id}_docs_v1`` and points ``org_{id}_docs`` at it. A tenant that already has
-        a collection under the alias name — indexed before this task — is left exactly as
-        it is: promoting it costs a gap in retrieval, and the only thing worth paying that
-        for is a reindex, which does it deliberately. See
-        :mod:`app.services.vector_index`.
-        """
-        from app.services.vector_index import FIRST_VERSION, versioned
-
-        name = collection_for(organization_id)
-        if name in self._ensured:
-            return
-        if not await self._present(name):
-            physical = versioned(organization_id, FIRST_VERSION)
-            await self._create(physical, dimension=dimension)
-            await self._point_alias(name, physical)
-            logger.info(
-                "created vector collection",
-                extra={"collection": physical, "alias": name, "dimension": dimension},
-            )
-        self._ensured.add(name)
-
-    async def _create(self, collection: str, *, dimension: int) -> None:
-        from qdrant_client import models
-
-        await self._client.create_collection(
-            collection_name=collection,
-            vectors_config=models.VectorParams(
-                size=dimension,
-                # Cosine, per SPEC §9.4. Embeddings are direction, not magnitude; dot
-                # product would rank long chunks above relevant ones.
-                distance=models.Distance.COSINE,
-            ),
-        )
-        for path in INDEXED_PAYLOAD_FIELDS:
-            await self._client.create_payload_index(
-                collection_name=collection,
-                field_name=path,
-                field_schema=models.PayloadSchemaType.KEYWORD,
-            )
-
-    async def _point_alias(self, alias: str, collection: str) -> None:
-        from qdrant_client import models
-
-        await self._client.update_collection_aliases(
-            change_aliases_operations=[
-                models.CreateAliasOperation(
-                    create_alias=models.CreateAlias(collection_name=collection, alias_name=alias)
-                )
-            ]
-        )
-
-    async def _present(self, name: str) -> bool:
-        """Whether ``name`` resolves to anything — a collection, or an alias for one.
-
-        Every read below guards on this rather than on ``collection_exists`` alone.
-        Qdrant's existence check answers about *collections*, so a tenant whose data sits
-        behind an alias would otherwise read as "nothing indexed" and every search would
-        quietly return no documents.
-        """
-        if await self._client.collection_exists(name):
-            return True
-        try:
-            described = await self._client.get_aliases()
-        except Exception:
-            logger.warning("could not list qdrant aliases", exc_info=True)
-            return False
-        return any(
-            getattr(entry, "alias_name", None) == name
-            for entry in getattr(described, "aliases", ()) or ()
-        )
-
-    async def upsert(self, organization_id: uuid.UUID, points: Sequence[ChunkPoint]) -> None:
-        from qdrant_client import models
-
-        if not points:
-            return
-        await self._client.upsert(
-            collection_name=collection_for(organization_id),
-            points=[
-                models.PointStruct(id=point.id, vector=point.vector, payload=point.payload)
-                for point in points
-            ],
-            # The next step marks the document `indexed`, and doing that before the write
-            # has landed would tell a customer their file is searchable when it is not.
-            wait=True,
-        )
-
-    async def delete_document(self, organization_id: uuid.UUID, document_id: uuid.UUID) -> None:
-        await self._delete_by(organization_id, "document_id", str(document_id))
-
-    async def delete_connector(self, organization_id: uuid.UUID, connector_id: uuid.UUID) -> None:
-        await self._delete_by(organization_id, "connector_id", str(connector_id))
-
-    async def _delete_by(self, organization_id: uuid.UUID, key: str, value: str) -> None:
-        from qdrant_client import models
-
-        name = collection_for(organization_id)
-        if not await self._present(name):
-            # Nothing was ever indexed for this tenant. A delete asks for an end state,
-            # and that end state already holds.
-            return
-        await self._client.delete(
-            collection_name=name,
-            points_selector=models.FilterSelector(filter=_equals(key, value)),
-            wait=True,
-        )
-
-    async def drop(self, organization_id: uuid.UUID) -> None:
-        from app.services.vector_index import QdrantVectorIndexAdmin
-
-        name = collection_for(organization_id)
-        self._ensured.discard(name)
-        self._widths.pop(name, None)
-        # Through the admin so the *collection* behind the alias goes, not just the
-        # alias: deleting an alias leaves the vectors in place, which for an
-        # offboarding is the one outcome that must not happen.
-        live = await QdrantVectorIndexAdmin(self._client).live_collection(organization_id)
-        if live is not None:
-            await self._client.delete_collection(live)
-
-    async def dimension(self, organization_id: uuid.UUID) -> int | None:
-        """One round trip per collection per process, then a dictionary lookup.
-
-        Cached because it is read on the request path and a collection's width cannot
-        change without the collection being recreated — which happens through
-        :meth:`drop`, in this process for a delete and in the worker for a reindex. The
-        stale case is therefore a *worker* recreating a collection this process has
-        already seen, and it costs one request's retrieval before the resulting error
-        clears the entry.
-        """
-        name = collection_for(organization_id)
-        if (cached := self._widths.get(name)) is not None:
-            return cached
-        if not await self._present(name):
-            return None
-        info = await self._client.get_collection(name)
-        size = vector_size(info)
-        if size is not None:
-            self._widths[name] = size
-        return size
-
-    async def search(
-        self,
-        organization_id: uuid.UUID,
-        vector: Sequence[float],
-        *,
-        connector_ids: Sequence[uuid.UUID] = (),
-        limit: int = DEFAULT_SEARCH_LIMIT,
-        min_score: float = 0.0,
-    ) -> list[Match]:
-        from qdrant_client import models
-
-        name = collection_for(organization_id)
-        if not await self._present(name):
-            return []
-
-        query_filter = None
-        if connector_ids:
-            query_filter = models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="connector_id",
-                        match=models.MatchAny(any=[str(value) for value in connector_ids]),
-                    )
-                ]
-            )
-
-        found = await self._client.query_points(
-            collection_name=name,
-            query=list(vector),
-            query_filter=query_filter,
-            limit=limit,
-            # Pushed down rather than filtered afterwards, so `limit` means "this many
-            # results above the threshold" instead of "this many candidates, some of
-            # which will be thrown away".
-            score_threshold=min_score or None,
-            with_payload=True,
-        )
-        return [
-            Match(id=str(point.id), score=float(point.score), payload=dict(point.payload or {}))
-            for point in found.points
-        ]
-
-    async def chunks(
-        self, organization_id: uuid.UUID, document_id: uuid.UUID, *, limit: int = 500
-    ) -> list[Stored]:
-        name = collection_for(organization_id)
-        if not await self._present(name):
-            return []
-        # `scroll`, not `query_points`: this is a filtered read of everything matching,
-        # with no vector to score against. Ordering is done here rather than pushed down
-        # because Qdrant orders a scroll by point id, and the ids are hashes.
-        points, _ = await self._client.scroll(
-            collection_name=name,
-            scroll_filter=_equals("document_id", str(document_id)),
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
-        )
-        found = [Stored(id=str(point.id), payload=dict(point.payload or {})) for point in points]
-        found.sort(key=lambda chunk: chunk.index)
-        return found
-
-    async def count(
-        self,
-        organization_id: uuid.UUID,
-        *,
-        connector_id: uuid.UUID | None = None,
-        document_id: uuid.UUID | None = None,
-    ) -> int:
-        name = collection_for(organization_id)
-        if not await self._present(name):
-            return 0
-        query_filter = None
-        if document_id is not None:
-            query_filter = _equals("document_id", str(document_id))
-        elif connector_id is not None:
-            query_filter = _equals("connector_id", str(connector_id))
-        result = await self._client.count(
-            collection_name=name, count_filter=query_filter, exact=True
-        )
-        return int(result.count)
-
-
-def vector_size(info: Any) -> int | None:
-    """The width out of a Qdrant ``CollectionInfo``, whichever shape it is in.
-
-    A collection can be configured with a single unnamed vector or a mapping of named
-    ones. This build only ever creates the first, but reading the second rather than
-    raising means a collection somebody made by hand reports a width instead of breaking
-    every request through the gateway that reads it.
-    """
-    params = getattr(getattr(info, "config", None), "params", None)
-    vectors = getattr(params, "vectors", None)
-    if vectors is None:
-        return None
-    if isinstance(vectors, dict):
-        sizes = {getattr(value, "size", None) for value in vectors.values()}
-        return next(iter(sizes)) if len(sizes) == 1 else None
-    size = getattr(vectors, "size", None)
-    return int(size) if size is not None else None
-
-
-def _equals(key: str, value: str) -> Any:
-    from qdrant_client import models
-
-    return models.Filter(
-        must=[models.FieldCondition(key=key, match=models.MatchValue(value=value))]
-    )
-
-
-# ---------------------------------------------------------------------------
 # memory
 # ---------------------------------------------------------------------------
 
@@ -446,32 +198,36 @@ def _equals(key: str, value: str) -> Any:
 class MemoryVectorStore:
     """Brute-force cosine over a dict. Exact, which is what a test wants.
 
-    Since task 17 it models the alias indirection too: ``collections`` is keyed by the
-    *physical* name and ``aliases`` maps the name callers use onto it. Without that a
-    reindex would pass here — two dictionary keys, swapped — and fail against Qdrant,
-    where the swap is the only part that is hard.
+    It models the *indirection* a reindex needs, without modelling anybody's version of
+    it: ``collections`` is keyed by the physical name and ``live_collections`` maps the
+    name callers use onto whichever one is live. Task 17 wrote this as an emulation of
+    Qdrant's aliases, which was one vendor's mechanism leaking into the double; the
+    behaviour is unchanged and the name now says what the port says. Without the
+    indirection at all, a reindex would pass here — two dictionary keys, swapped — and
+    fail against every real backend, where the swap is the only part that is hard.
     """
 
     collections: dict[str, dict[str, ChunkPoint]] = field(default_factory=dict)
     dimensions: dict[str, int] = field(default_factory=dict)
-    #: Alias name to collection name. Populated by ``ensure_collection`` and by a swap.
-    aliases: dict[str, str] = field(default_factory=dict)
+    #: Logical name to the physical collection currently serving it. Populated by
+    #: ``ensure_collection`` and by a promotion.
+    live_collections: dict[str, str] = field(default_factory=dict)
 
     def live(self, organization_id: uuid.UUID) -> str:
-        """The collection the tenant's alias resolves to right now.
+        """The collection this tenant's reads resolve to right now.
 
-        Falls back to the alias name itself, which is both the pre-alias shape and what
-        makes a store somebody filled in by hand behave the way it always did.
+        Falls back to the logical name itself, which is both the pre-indirection shape
+        and what makes a store somebody filled in by hand behave the way it always did.
         """
-        alias = collection_for(organization_id)
-        return self.aliases.get(alias, alias)
+        logical = collection_for(organization_id)
+        return self.live_collections.get(logical, logical)
 
     async def ensure_collection(self, organization_id: uuid.UUID, *, dimension: int) -> None:
-        alias = collection_for(organization_id)
-        name = self.aliases.get(alias)
+        logical = collection_for(organization_id)
+        name = self.live_collections.get(logical)
         if name is None:
-            name = alias if alias in self.collections else f"{alias}_v1"
-            self.aliases[alias] = name
+            name = logical if logical in self.collections else f"{logical}_v1"
+            self.live_collections[logical] = name
         self.collections.setdefault(name, {})
         self.dimensions[name] = dimension
 
@@ -482,8 +238,9 @@ class MemoryVectorStore:
         expected = self.dimensions[name]
         for point in points:
             if len(point.vector) != expected:
-                # Qdrant refuses this too. Accepting it here would let a dimension bug
-                # pass every test and fail only in production.
+                # Every real backend refuses this, one way or another. Accepting it
+                # here would let a dimension bug pass every test and fail only in
+                # production.
                 raise ValueError(
                     f"vector has {len(point.vector)} dimensions, collection expects {expected}"
                 )
@@ -506,7 +263,7 @@ class MemoryVectorStore:
         name = self.live(organization_id)
         self.collections.pop(name, None)
         self.dimensions.pop(name, None)
-        self.aliases.pop(collection_for(organization_id), None)
+        self.live_collections.pop(collection_for(organization_id), None)
 
     async def dimension(self, organization_id: uuid.UUID) -> int | None:
         return self.dimensions.get(self.live(organization_id))
@@ -580,11 +337,9 @@ __all__ = [
     "ChunkPoint",
     "Match",
     "MemoryVectorStore",
-    "QdrantVectorStore",
     "Stored",
     "VectorStore",
     "collection_for",
     "cosine",
     "point_id",
-    "vector_size",
 ]

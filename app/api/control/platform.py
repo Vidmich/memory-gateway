@@ -38,13 +38,23 @@ from app.schemas.platform import (
     RetentionCeilingsResponse,
     SweepRequest,
     SweepResponse,
+    VectorBackendsResponse,
+    VectorBindingResponse,
+    VectorMigrationRequest,
+    VectorMigrationResponse,
 )
 from app.services.maintenance import Runway, SweepReport
 from app.services.maintenance_store import RunState
 from app.services.permissions import Capability
-from app.services.platform_service import MaintenanceView, PlatformService, SettingsResult
+from app.services.platform_service import (
+    MaintenanceView,
+    PlatformService,
+    SettingsResult,
+    VectorBackendsView,
+)
 from app.services.reindex import progress_of
 from app.services.reindex_store import RunView
+from app.services.vector_migration import MigrationPlan
 
 router = APIRouter(prefix="/platform", tags=["platform"])
 
@@ -167,6 +177,66 @@ async def read_reindex(run_id: uuid.UUID, service: _Service) -> ReindexRunRespon
 
 
 # ---------------------------------------------------------------------------
+# vector backends
+# ---------------------------------------------------------------------------
+
+
+@router.get("/vector-backends", dependencies=[_administers])
+async def read_vector_backends(service: _Service) -> VectorBackendsResponse:
+    """Which backends this deployment can talk to, and where every organization is.
+
+    Read-only, and there is no companion PATCH for the connection details. A backend's
+    address is deployment topology and lives in the environment; the one thing here that
+    *is* policy — the default for new organizations — is a platform setting.
+    """
+    return _backends_of(await service.vector_backends())
+
+
+@router.post(
+    "/organizations/{organization_id}/vector-backend",
+    dependencies=[_administers],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def migrate_vector_backend(
+    organization_id: uuid.UUID,
+    actor: CurrentActor,
+    service: _Service,
+    body: VectorMigrationRequest,
+) -> VectorMigrationResponse:
+    """Move one organization's vectors to another backend.
+
+    Accepted rather than OK: the copy is a job, and the response describes what will be
+    moved. Reads keep going to the current backend until the copy is verified and
+    promoted, so this endpoint changes nothing a request can observe.
+    """
+    if body.dry_run:
+        return _plan_of(
+            await service.plan_vector_migration(organization_id, target=body.backend),
+            started=False,
+        )
+    return _plan_of(
+        await service.start_vector_migration(actor, organization_id, target=body.backend),
+        started=True,
+    )
+
+
+@router.delete(
+    "/organizations/{organization_id}/vector-backend",
+    dependencies=[_administers],
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def cancel_vector_migration(
+    organization_id: uuid.UUID, actor: CurrentActor, service: _Service
+) -> Response:
+    """Abandon a migration in flight and remove what it has built.
+
+    Nothing about reads changes, because nothing about reads ever changed.
+    """
+    await service.cancel_vector_migration(actor, organization_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
 # erasure
 # ---------------------------------------------------------------------------
 
@@ -231,6 +301,35 @@ async def purge_due(
 # ---------------------------------------------------------------------------
 # rendering
 # ---------------------------------------------------------------------------
+
+
+def _backends_of(view: VectorBackendsView) -> VectorBackendsResponse:
+    return VectorBackendsResponse(
+        enabled=list(view.enabled),
+        default=view.default,
+        bindings=[
+            VectorBindingResponse(
+                organization_id=binding.organization_id,
+                backend=binding.backend,
+                status=binding.status,
+                target=binding.target,
+                collection=binding.collection,
+            )
+            for binding in view.bindings
+        ],
+    )
+
+
+def _plan_of(plan: MigrationPlan, *, started: bool) -> VectorMigrationResponse:
+    return VectorMigrationResponse(
+        organization_id=plan.organization_id,
+        source=plan.source,
+        target=plan.target,
+        target_collection=plan.target_collection,
+        points=plan.points,
+        facts=plan.facts,
+        started=started,
+    )
 
 
 def _settings_of(result: SettingsResult) -> PlatformSettingsResponse:

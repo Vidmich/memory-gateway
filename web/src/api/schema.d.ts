@@ -1387,6 +1387,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/platform/organizations/{organization_id}/vector-backend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Migrate Vector Backend
+         * @description Move one organization's vectors to another backend.
+         *
+         *     Accepted rather than OK: the copy is a job, and the response describes what will be
+         *     moved. Reads keep going to the current backend until the copy is verified and
+         *     promoted, so this endpoint changes nothing a request can observe.
+         */
+        post: operations["migrate_vector_backend_api_v1_platform_organizations__organization_id__vector_backend_post"];
+        /**
+         * Cancel Vector Migration
+         * @description Abandon a migration in flight and remove what it has built.
+         *
+         *     Nothing about reads changes, because nothing about reads ever changed.
+         */
+        delete: operations["cancel_vector_migration_api_v1_platform_organizations__organization_id__vector_backend_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/platform/reindex": {
         parameters: {
             query?: never;
@@ -1458,6 +1488,30 @@ export interface paths {
          *     setting lands when the aliases swap.
          */
         patch: operations["update_settings_api_v1_platform_settings_patch"];
+        trace?: never;
+    };
+    "/api/v1/platform/vector-backends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Vector Backends
+         * @description Which backends this deployment can talk to, and where every organization is.
+         *
+         *     Read-only, and there is no companion PATCH for the connection details. A backend's
+         *     address is deployment topology and lives in the environment; the one thing here that
+         *     *is* policy — the default for new organizations — is a platform setting.
+         */
+        get: operations["read_vector_backends_api_v1_platform_vector_backends_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/retention-ceilings": {
@@ -4191,6 +4245,85 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * VectorBackendsResponse
+         * @description What this deployment offers, and where everybody is.
+         *
+         *     ``enabled`` is read-only on purpose and there is no field here for a URL. A backend's
+         *     address is deployment topology, configured in the environment; a settings screen able
+         *     to point one somewhere new would put a server address a tenant's data flows to behind
+         *     a form, which is the surface task 18 closed for upstream models.
+         */
+        VectorBackendsResponse: {
+            /** Bindings */
+            bindings: components["schemas"]["VectorBindingResponse"][];
+            /** Default */
+            default: string;
+            /** Enabled */
+            enabled: string[];
+        };
+        /**
+         * VectorBindingResponse
+         * @description Where one organization's vectors are, and whether they are moving.
+         */
+        VectorBindingResponse: {
+            /** Backend */
+            backend: string;
+            /** Collection */
+            collection?: string | null;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Status */
+            status: string;
+            /** Target */
+            target?: string | null;
+        };
+        /**
+         * VectorMigrationRequest
+         * @description Move one organization's vectors to another backend.
+         *
+         *     ``dry_run`` returns the plan and starts nothing, which is what the confirmation dialog
+         *     calls — so the numbers an operator agrees to are the ones this endpoint counted.
+         */
+        VectorMigrationRequest: {
+            /** Backend */
+            backend: string;
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
+        };
+        /**
+         * VectorMigrationResponse
+         * @description What a migration would move, or has begun moving.
+         *
+         *     Points and facts rather than a cost estimate, which is the difference from a reindex:
+         *     document chunks are copied rather than re-embedded, so the number that matters is how
+         *     long it takes rather than what it costs.
+         */
+        VectorMigrationResponse: {
+            /** Facts */
+            facts: number;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Points */
+            points: number;
+            /** Source */
+            source: string;
+            /** Started */
+            started: boolean;
+            /** Target */
+            target: string;
+            /** Target Collection */
+            target_collection: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -6668,6 +6801,70 @@ export interface operations {
             };
         };
     };
+    migrate_vector_backend_api_v1_platform_organizations__organization_id__vector_backend_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VectorMigrationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VectorMigrationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_vector_migration_api_v1_platform_organizations__organization_id__vector_backend_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     start_reindex_api_v1_platform_reindex_post: {
         parameters: {
             query?: never;
@@ -6781,6 +6978,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_vector_backends_api_v1_platform_vector_backends_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VectorBackendsResponse"];
                 };
             };
         };

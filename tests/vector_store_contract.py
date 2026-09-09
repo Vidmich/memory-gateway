@@ -13,6 +13,7 @@ readable rather than approximately true.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 
@@ -33,6 +34,21 @@ def axis(index: int) -> list[float]:
     """A one-hot vector. Cosine similarity to itself is 1 and to any other axis is 0, so
     every ranking assertion below is exact."""
     return [1.0 if position == index else 0.0 for position in range(DIMENSION)]
+
+
+def at_similarity(score: float, *, spread: int) -> list[float]:
+    """A unit vector whose cosine similarity to ``axis(0)`` is exactly ``score``.
+
+    Weight ``score`` on axis 0 and the rest on axis ``spread``, which keeps the vector
+    normalised and makes every score in a fixture something the test states rather than
+    something it discovers. The one-hot vectors above can only express 1 and 0, and the
+    checks that separate a real push-down from a filter applied afterwards need the
+    scores of two groups to interleave.
+    """
+    vector = [0.0] * DIMENSION
+    vector[0] = score
+    vector[spread] = math.sqrt(max(0.0, 1.0 - score * score))
+    return vector
 
 
 def make_point(
@@ -463,3 +479,113 @@ async def upserting_nothing_is_not_an_error(store: VectorStore, org: uuid.UUID) 
 
 
 __all__ = ["CHECKS", "DIMENSION", "axis", "make_point", "seed"]
+
+
+@check
+async def the_score_is_a_similarity_and_not_a_distance(store: VectorStore, org: uuid.UUID) -> None:
+    """The conversion every backend that speaks in distances has to get right.
+
+    It is worth its own check because getting it backwards does not raise: the results
+    come back ranked confidently in exactly the wrong order, and the only symptom is that
+    retrieved context stops being relevant. Cosine *distance* would report 0 for the
+    identical chunk and 1 for the orthogonal one — both assertions below invert.
+    """
+    document, connector = uuid.uuid4(), uuid.uuid4()
+    await seed(
+        store,
+        org,
+        [
+            make_point(
+                document_id=document,
+                connector_id=connector,
+                organization_id=org,
+                index=0,
+                vector_index=0,
+                text="same",
+            ),
+            make_point(
+                document_id=document,
+                connector_id=connector,
+                organization_id=org,
+                index=1,
+                vector_index=1,
+                text="orthogonal",
+            ),
+        ],
+    )
+
+    matches = {match.text: match.score for match in await store.search(org, axis(0), limit=5)}
+
+    assert matches["same"] > 0.99
+    assert abs(matches["orthogonal"]) < 0.01
+
+
+@check
+async def the_limit_counts_results_after_the_connector_filter(
+    store: VectorStore, org: uuid.UUID
+) -> None:
+    """``limit`` means "this many chunks the caller asked for", not "this many candidates,
+    some of which are then discarded".
+
+    The scores interleave deliberately. A backend that takes the global top ``limit`` and
+    filters afterwards sees ``other`` at 0.95 and 0.85 occupying two of its three slots
+    and returns one result; a backend that pushes the filter down returns three. Both
+    implementations pass every other check in this file.
+    """
+    wanted, other = uuid.uuid4(), uuid.uuid4()
+    points = [
+        ChunkPoint(
+            id=point_id(uuid.uuid4(), 0),
+            vector=at_similarity(score, spread=spread),
+            payload={"connector_id": str(connector), "document_id": str(uuid.uuid4()), "text": tag},
+        )
+        for spread, (connector, score, tag) in enumerate(
+            [
+                (other, 0.95, "other"),
+                (wanted, 0.90, "wanted"),
+                (other, 0.85, "other"),
+                (wanted, 0.80, "wanted"),
+                (other, 0.75, "other"),
+                (wanted, 0.70, "wanted"),
+                (other, 0.65, "other"),
+            ],
+            start=1,
+        )
+    ]
+    await seed(store, org, points)
+
+    matches = await store.search(org, axis(0), connector_ids=[wanted], limit=3)
+
+    assert [match.text for match in matches] == ["wanted", "wanted", "wanted"]
+
+
+@check
+async def the_floor_and_the_filter_apply_together(store: VectorStore, org: uuid.UUID) -> None:
+    """Both narrowings at once, which is what task 10 actually issues on every request.
+
+    ``doc_min_score`` and the gateway's connector list arrive together, and a backend that
+    honours either one alone still answers plausibly — with another connector's chunks, or
+    with chunks nobody would call relevant.
+    """
+    wanted, other = uuid.uuid4(), uuid.uuid4()
+    points = [
+        ChunkPoint(
+            id=point_id(uuid.uuid4(), 0),
+            vector=at_similarity(score, spread=spread),
+            payload={"connector_id": str(connector), "document_id": str(uuid.uuid4()), "text": tag},
+        )
+        for spread, (connector, score, tag) in enumerate(
+            [
+                (other, 0.95, "other strong"),
+                (wanted, 0.90, "wanted strong"),
+                (wanted, 0.20, "wanted weak"),
+                (other, 0.10, "other weak"),
+            ],
+            start=1,
+        )
+    ]
+    await seed(store, org, points)
+
+    matches = await store.search(org, axis(0), connector_ids=[wanted], min_score=0.5, limit=10)
+
+    assert [match.text for match in matches] == ["wanted strong"]

@@ -103,7 +103,7 @@ Organization 1─* AuditEvent
 | **API service** (FastAPI, ASGI) | Serves three route groups: the OpenAI-compatible proxy (`/g/{slug}/v1/*`), the admin/control API (`/api/v1/*`), and static SPA assets. Stateless. |
 | **Worker** (Celery or arq on Redis) | Async jobs: document ingestion, embedding, reindexing, transcript distillation, log retention pruning, rate-limit rollups. Stateless. |
 | **Postgres** | Source of truth for orgs, users, models, connectors, gateways, keys, document metadata, request logs, transcripts, audit events. |
-| **Qdrant** | Vector store. Per-organization collections for document chunks and memory facts. |
+| **Vector store** | Per-organization collections for document chunks and memory facts. **Qdrant by default; Chroma optional** (task 19), chosen per organization from the set the deployment configures. |
 | **S3-compatible object store** | Raw uploaded files for managed file-drop connectors. MinIO in dev, S3/GCS in prod. |
 | **Redis** | Job queue broker, rate-limit token buckets, short-lived caches (gateway config, resolved keys). |
 | **Web UI** (React + TypeScript SPA) | Login, configuration, monitoring. Talks only to the control API. |
@@ -164,8 +164,12 @@ client
 
 - Every control-API query is scoped by `organization_id` derived from the session, never from
   a client-supplied parameter. Enforced in a repository base class, not per-endpoint.
-- Qdrant collections are named `org_{org_id}_docs` and `org_{org_id}_memory`; every search
-  additionally carries an `org_id` payload filter as defense in depth.
+- Vector collections are named `org_{org_id}_docs` and `org_{org_id}_memory`; every search
+  additionally carries an `org_id` payload filter as defense in depth. The naming is a
+  property of the port, not of any one backend, and holds for every backend.
+- A vector backend's **address is deployment configuration** and never tenant input. An
+  organization is bound to a backend *by name*, chosen from the set the deployment enabled;
+  no API or screen accepts a connection string. Same rule as §5.4's upstream URLs.
 - Object storage keys are prefixed `orgs/{org_id}/connectors/{connector_id}/...`.
 - A gateway may reference only global models and models owned by its own organization.
   Credentials for global models are never exposed to org users in any API response.
@@ -421,13 +425,22 @@ source_uri, page_or_section, chunk_index, ingested_at, content_hash`.
 ### 9.4 Embeddings
 
 A **single embedding model is a platform-level setting**, configured by superadmins (provider,
-model id, dimension). Rationale: a Qdrant collection's vectors must all come from one model, and
+model id, dimension). Rationale: a collection's vectors must all come from one model, and
 mixing models across a tenant silently degrades retrieval.
 
 - Changing the platform embedding model requires an explicit **reindex** operation, which
-  rebuilds collections in the background and swaps aliases atomically — no retrieval downtime.
+  rebuilds collections in the background and makes the new one live atomically — no retrieval
+  downtime.
 - The active embedding model and dimension are recorded on each collection's metadata and on
   every document row, so drift is detectable.
+
+**Backends (task 19).** Qdrant is the default; Chroma is optional. Which one an organization
+uses is a per-tenant binding, and both backends satisfy the same port — cosine similarity in
+`[-1, 1]` where higher is better, `limit` counted after any score floor, and a promotion that a
+concurrent reader never observes as "no collection". How a backend makes a promotion atomic is
+its own business: Qdrant uses an alias, Chroma a pointer this deployment keeps. Moving an
+organization between backends is an operation that copies, verifies, promotes and then drops the
+source after a grace period — the same procedure as a reindex, without the re-embedding.
 
 ### 9.5 Ingestion status model
 

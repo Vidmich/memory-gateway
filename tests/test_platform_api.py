@@ -33,6 +33,7 @@ ROUTES = [
     ("POST", f"{API}/platform/maintenance/retention", {}),
     ("POST", f"{API}/platform/maintenance/sweep", {"apply": False}),
     ("POST", f"{API}/platform/reindex", {"dry_run": True}),
+    ("GET", f"{API}/platform/vector-backends", None),
 ]
 
 
@@ -307,3 +308,67 @@ async def test_the_destructive_organization_pass_needs_the_word(
 
     assert response.status_code == 422
     assert response.json()["error"]["param"] == "confirm"
+
+
+# ---------------------------------------------------------------------------
+# vector backends
+# ---------------------------------------------------------------------------
+
+
+async def test_the_enabled_backends_are_reported_and_no_url_is(
+    directory: DirectoryHarness,
+) -> None:
+    """The whole reason an organization may name a backend is that naming one cannot reach
+    a URL. If a connection detail ever appeared in this payload, a superadmin screen would
+    be one form away from pointing a tenant's data at an arbitrary address."""
+    response = await directory.as_user(
+        directory.world.superadmin, "GET", f"{API}/platform/vector-backends"
+    )
+
+    body = response.json()
+    assert body["enabled"] == ["qdrant"]
+    assert body["default"] == "qdrant"
+    assert set(body) == {"enabled", "default", "bindings"}
+    assert "url" not in response.text.lower().replace("qdrant_url", "")
+
+
+async def test_migrating_to_a_backend_that_is_not_enabled_is_a_422(
+    directory: DirectoryHarness,
+) -> None:
+    """And the message names what is available, because the caller is a person choosing
+    from a list rather than a program that guessed."""
+    response = await directory.as_user(
+        directory.world.superadmin,
+        "POST",
+        f"{API}/platform/organizations/{directory.world.acme.id}/vector-backend",
+        json_body={"backend": "pinecone", "dry_run": True},
+    )
+
+    assert response.status_code == 422, response.text
+    assert "qdrant" in response.text
+
+
+async def test_migrating_to_where_it_already_is_is_refused(directory: DirectoryHarness) -> None:
+    response = await directory.as_user(
+        directory.world.superadmin,
+        "POST",
+        f"{API}/platform/organizations/{directory.world.acme.id}/vector-backend",
+        json_body={"backend": "qdrant", "dry_run": True},
+    )
+
+    assert response.status_code == 422, response.text
+
+
+async def test_an_organization_admin_may_not_move_their_own_vectors(
+    directory: DirectoryHarness,
+) -> None:
+    """It is a platform decision: it depends on which backends the *deployment* has, and on
+    operational properties a tenant cannot see."""
+    response = await directory.as_user(
+        directory.world.acme_admin,
+        "POST",
+        f"{API}/platform/organizations/{directory.world.acme.id}/vector-backend",
+        json_body={"backend": "chroma"},
+    )
+
+    assert response.status_code == 403, response.text

@@ -350,13 +350,21 @@ async def run_backfill(
     from app.core.clients import Clients
     from app.core.tenancy import TenantScope
     from app.services.distillation_store import SUCCEEDED
-    from app.workers.runtime import build_distillation, build_ingestion, build_queue
+    from app.workers.runtime import (
+        build_distillation,
+        build_ingestion,
+        build_queue,
+        build_vector_backends,
+    )
 
     settings = get_settings()
     clients = Clients.create(settings)
     try:
-        ingestion = build_ingestion(clients, settings, queue=build_queue(clients.jobs))
-        distillation = build_distillation(clients, settings, ingestion=ingestion)
+        backends = await build_vector_backends(clients, settings)
+        ingestion = build_ingestion(
+            clients, settings, queue=build_queue(clients.jobs), backends=backends
+        )
+        distillation = build_distillation(clients, settings, ingestion=ingestion, backends=backends)
         scope = (
             TenantScope.of_organization(organization_id)
             if organization_id is not None

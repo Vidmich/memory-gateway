@@ -34,7 +34,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from app.services.vector_store import Match, cosine, vector_size
+from app.services.vector_store import Match, cosine
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 MEMORY_COLLECTION_TEMPLATE = "org_{organization_id}_memory"
 
 #: Equality filters used on every read and every delete.
-INDEXED_PAYLOAD_FIELDS = ("end_user_id",)
+MEMORY_INDEXED_PAYLOAD_FIELDS = ("end_user_id",)
 
 DEFAULT_SEARCH_LIMIT = 16
 
@@ -141,170 +141,6 @@ class FactVectorStore(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Qdrant
-# ---------------------------------------------------------------------------
-
-
-class QdrantFactVectorStore:
-    def __init__(self, client: Any) -> None:
-        self._client = client
-        self._ensured: set[str] = set()
-        self._widths: dict[str, int] = {}
-
-    async def ensure_collection(self, organization_id: uuid.UUID, *, dimension: int) -> None:
-        from qdrant_client import models
-
-        name = memory_collection_for(organization_id)
-        if name in self._ensured:
-            return
-        if not await self._client.collection_exists(name):
-            await self._client.create_collection(
-                collection_name=name,
-                vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
-            )
-            for path in INDEXED_PAYLOAD_FIELDS:
-                await self._client.create_payload_index(
-                    collection_name=name,
-                    field_name=path,
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                )
-            logger.info(
-                "created memory collection", extra={"collection": name, "dimension": dimension}
-            )
-        self._ensured.add(name)
-
-    async def upsert(self, organization_id: uuid.UUID, points: Sequence[FactPoint]) -> None:
-        from qdrant_client import models
-
-        if not points:
-            return
-        await self._client.upsert(
-            collection_name=memory_collection_for(organization_id),
-            points=[
-                models.PointStruct(id=point.id, vector=point.vector, payload=point.payload)
-                for point in points
-            ],
-            # The control plane returns the created fact to a browser that will list it
-            # again immediately; an unacknowledged write would show a fact that recall
-            # cannot yet find.
-            wait=True,
-        )
-
-    async def delete(self, organization_id: uuid.UUID, fact_ids: Sequence[uuid.UUID]) -> None:
-        from qdrant_client import models
-
-        if not fact_ids:
-            return
-        name = memory_collection_for(organization_id)
-        if not await self._client.collection_exists(name):
-            return
-        await self._client.delete(
-            collection_name=name,
-            points_selector=models.PointIdsList(points=[str(value) for value in fact_ids]),
-            wait=True,
-        )
-
-    async def delete_end_user(self, organization_id: uuid.UUID, end_user_id: uuid.UUID) -> None:
-        from qdrant_client import models
-
-        name = memory_collection_for(organization_id)
-        if not await self._client.collection_exists(name):
-            return
-        await self._client.delete(
-            collection_name=name,
-            points_selector=models.FilterSelector(filter=_for_end_user(end_user_id)),
-            wait=True,
-        )
-
-    async def drop(self, organization_id: uuid.UUID) -> None:
-        name = memory_collection_for(organization_id)
-        self._ensured.discard(name)
-        self._widths.pop(name, None)
-        if await self._client.collection_exists(name):
-            await self._client.delete_collection(name)
-
-    async def ids(self, organization_id: uuid.UUID) -> set[str]:
-        name = memory_collection_for(organization_id)
-        if not await self._client.collection_exists(name):
-            return set()
-        found: set[str] = set()
-        offset: Any = None
-        while True:
-            points, offset = await self._client.scroll(
-                collection_name=name,
-                offset=offset,
-                limit=SCROLL_BATCH,
-                with_payload=False,
-                with_vectors=False,
-            )
-            found.update(str(point.id) for point in points)
-            if offset is None:
-                return found
-
-    async def dimension(self, organization_id: uuid.UUID) -> int | None:
-        name = memory_collection_for(organization_id)
-        if (cached := self._widths.get(name)) is not None:
-            return cached
-        if not await self._client.collection_exists(name):
-            return None
-        info = await self._client.get_collection(name)
-        size = vector_size(info)
-        if size is not None:
-            self._widths[name] = size
-        return size
-
-    async def search(
-        self,
-        organization_id: uuid.UUID,
-        vector: Sequence[float],
-        *,
-        end_user_id: uuid.UUID,
-        limit: int = DEFAULT_SEARCH_LIMIT,
-        min_score: float = 0.0,
-    ) -> list[Match]:
-        name = memory_collection_for(organization_id)
-        if not await self._client.collection_exists(name):
-            return []
-        found = await self._client.query_points(
-            collection_name=name,
-            query=list(vector),
-            query_filter=_for_end_user(end_user_id),
-            limit=limit,
-            score_threshold=min_score or None,
-            with_payload=True,
-        )
-        return [
-            Match(id=str(point.id), score=float(point.score), payload=dict(point.payload or {}))
-            for point in found.points
-        ]
-
-    async def count(
-        self, organization_id: uuid.UUID, *, end_user_id: uuid.UUID | None = None
-    ) -> int:
-        name = memory_collection_for(organization_id)
-        if not await self._client.collection_exists(name):
-            return 0
-        result = await self._client.count(
-            collection_name=name,
-            count_filter=None if end_user_id is None else _for_end_user(end_user_id),
-            exact=True,
-        )
-        return int(result.count)
-
-
-def _for_end_user(end_user_id: uuid.UUID) -> Any:
-    from qdrant_client import models
-
-    return models.Filter(
-        must=[
-            models.FieldCondition(
-                key="end_user_id", match=models.MatchValue(value=str(end_user_id))
-            )
-        ]
-    )
-
-
-# ---------------------------------------------------------------------------
 # memory
 # ---------------------------------------------------------------------------
 
@@ -396,12 +232,11 @@ class MemoryFactVectorStore:
 
 __all__ = [
     "DEFAULT_SEARCH_LIMIT",
-    "INDEXED_PAYLOAD_FIELDS",
     "MEMORY_COLLECTION_TEMPLATE",
+    "MEMORY_INDEXED_PAYLOAD_FIELDS",
     "FactPoint",
     "FactVectorStore",
     "MemoryFactVectorStore",
-    "QdrantFactVectorStore",
     "fact_payload",
     "memory_collection_for",
 ]

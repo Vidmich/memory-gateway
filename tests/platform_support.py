@@ -25,6 +25,7 @@ from typing import Any
 from app.core.config import Settings, get_settings
 from app.schemas.platform import EmbeddingChoice
 from app.services.embeddings import Embedder, HashEmbedder
+from app.services.end_user_store import MemoryEndUserStore
 from app.services.erasure import OrganizationEraser
 from app.services.fact_vectors import FactPoint, MemoryFactVectorStore, fact_payload
 from app.services.jobs import JobRequest
@@ -37,7 +38,9 @@ from app.services.platform_settings import PlatformSettingsService
 from app.services.platform_store import MemoryPlatformSettingsStore
 from app.services.reindex import Reindexer
 from app.services.reindex_store import MemoryReindexStore
+from app.services.vector_backends import VectorBackends, single_backend
 from app.services.vector_index import MemoryVectorIndexAdmin
+from app.services.vector_migration import VectorMigrator
 from app.services.vector_store import ChunkPoint, MemoryVectorStore, point_id
 
 #: The width the fixture's embedder produces. Small; nothing here measures embedding
@@ -76,6 +79,7 @@ class PlatformFixture:
     store: MemoryMaintenanceStore
     vectors: MemoryVectorStore
     index: MemoryVectorIndexAdmin
+    backends: VectorBackends
     facts: MemoryFactVectorStore
     objects: MemoryObjectStore
     embedder: Embedder
@@ -85,6 +89,7 @@ class PlatformFixture:
     retention: RetentionJob
     sweeper: OrphanSweeper
     reindexer: Reindexer
+    migrator: VectorMigrator
     eraser: OrganizationEraser
     queue: RecordingQueue
     service: PlatformService
@@ -182,6 +187,10 @@ def build_platform(
     vectors = MemoryVectorStore()
     index = MemoryVectorIndexAdmin(vectors)
     facts = MemoryFactVectorStore()
+    # One backend, no database. The routing seam is exercised where it matters — in
+    # `tests/test_vector_backends.py` — and every other platform test is about retention,
+    # reindexing and sweeping rather than about where the vectors happen to live.
+    backends = single_backend(store=vectors, facts=facts, admin=index)
     objects = MemoryObjectStore()
     embed = embedder or HashEmbedder(dimension=DIMENSION, model="hash-bow")
     queue = RecordingQueue()
@@ -196,16 +205,21 @@ def build_platform(
     )
     partitions = PartitionManager(store)
     retention = RetentionJob(store, partitions=partitions, facts=facts, pause_seconds=pause_seconds)
-    sweeper = OrphanSweeper(store, vectors=vectors, index=index, facts=facts, objects=objects)
+    sweeper = OrphanSweeper(store, vectors=vectors, backends=backends, facts=facts, objects=objects)
     reindexer = Reindexer(
         MemoryReindexStore(database),
-        index=index,
+        backends=backends,
         maintenance=store,
         settings=platform_settings,
         embedder_for=lambda choice: _embedder_for(choice, embed),
         pause_seconds=0.0,
     )
-    eraser = OrganizationEraser(store, vectors=vectors, facts=facts, objects=objects)
+    migrator = VectorMigrator(
+        backends, end_users=MemoryEndUserStore(database), embedder=embed, queue=queue
+    )
+    eraser = OrganizationEraser(
+        store, vectors=vectors, facts=facts, objects=objects, backends=backends
+    )
 
     return PlatformFixture(
         db=database,
@@ -213,6 +227,7 @@ def build_platform(
         store=store,
         vectors=vectors,
         index=index,
+        backends=backends,
         facts=facts,
         objects=objects,
         embedder=embed,
@@ -222,6 +237,7 @@ def build_platform(
         retention=retention,
         sweeper=sweeper,
         reindexer=reindexer,
+        migrator=migrator,
         eraser=eraser,
         queue=queue,
         service=PlatformService(
@@ -232,6 +248,8 @@ def build_platform(
             reindexer=reindexer,
             eraser=eraser,
             store=store,
+            backends=backends,
+            migrator=migrator,
             queue=queue,
         ),
     )

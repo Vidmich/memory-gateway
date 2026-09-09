@@ -60,7 +60,7 @@ from app.services.maintenance_store import (
 )
 from app.services.object_store import ObjectStore
 from app.services.platform_settings import effective_retention
-from app.services.vector_index import VectorIndexAdmin
+from app.services.vector_backends import VectorBackends
 from app.services.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -555,7 +555,7 @@ class OrphanSweeper:
         store: MaintenanceStore,
         *,
         vectors: VectorStore,
-        index: VectorIndexAdmin,
+        backends: VectorBackends,
         facts: FactVectorStore,
         objects: ObjectStore,
         min_age_seconds: float = ORPHAN_MIN_AGE_SECONDS,
@@ -563,7 +563,7 @@ class OrphanSweeper:
     ) -> None:
         self._store = store
         self._vectors = vectors
-        self._index = index
+        self._backends = backends
         self._facts = facts
         self._objects = objects
         self._min_age = min_age_seconds
@@ -613,10 +613,11 @@ class OrphanSweeper:
     async def _chunks(
         self, organization_id: uuid.UUID, *, apply: bool, report: SweepReport
     ) -> list[OrphanSet]:
-        live = await self._index.live_collection(organization_id)
+        index = await self._backends.admin_for(organization_id)
+        live = await index.live_collection(organization_id)
         if live is None:
             return []
-        indexed = await self._index.documents_in(live)
+        indexed = await index.documents_in(live)
         async with self._store.begin() as transaction:
             known = await transaction.document_ids(organization_id)
         orphans = tuple(sorted(indexed - known))
@@ -624,7 +625,13 @@ class OrphanSweeper:
             for document_id in orphans:
                 await self._vectors.delete_document(organization_id, uuid.UUID(document_id))
             report.deleted += len(orphans)
-        return [OrphanSet(store="qdrant", kind="document_points", ids=orphans)]
+        return [
+            OrphanSet(
+                store=f"vectors:{await self._kind(organization_id)}",
+                kind="document_points",
+                ids=orphans,
+            )
+        ]
 
     async def _facts_of(
         self, organization_id: uuid.UUID, *, apply: bool, report: SweepReport
@@ -638,7 +645,22 @@ class OrphanSweeper:
         if orphans and apply:
             await self._facts.delete(organization_id, [uuid.UUID(value) for value in orphans])
             report.deleted += len(orphans)
-        return [OrphanSet(store="qdrant", kind="fact_points", ids=orphans)]
+        return [
+            OrphanSet(
+                store=f"vectors:{await self._kind(organization_id)}",
+                kind="fact_points",
+                ids=orphans,
+            )
+        ]
+
+    async def _kind(self, organization_id: uuid.UUID) -> str:
+        """Which backend this tenant's points were swept in.
+
+        In the report rather than left implicit, because "12 orphaned points" is a
+        different investigation depending on where they are — and an operator reading a
+        sweep across a platform with two backends needs to know which one to look at.
+        """
+        return await self._backends.kind_for(organization_id)
 
     async def _objects_of(
         self, organization_id: uuid.UUID, *, apply: bool, report: SweepReport, now: datetime

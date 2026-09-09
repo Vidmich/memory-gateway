@@ -506,6 +506,52 @@ because the key's reservation expires and races.
 queue separately from Redis, because a queue that cannot be written to leaves the API
 serving traffic and silently dropping ingestion.
 
+### Vector backends: Qdrant, or Chroma, per organization
+
+Qdrant is the default and is required. **Chroma is optional**, and which of them an
+organization's vectors live in is a per-tenant binding rather than a deployment-wide
+choice — so one platform can serve a customer on each.
+
+```bash
+uv sync --extra chroma        # the thin HTTP client, not the server package
+export CHROMA_URL=http://localhost:8001
+```
+
+Three things about this that are worth knowing before you use it.
+
+**A tenant names a backend; it never supplies an address.** The set of backends comes from
+the environment and nowhere else. An organization is placed on one *by name*, chosen from
+that set, and no API or screen accepts a connection string — a server address a tenant's
+data flows to must not be reachable through a form. Same rule the SSRF guard applies to
+`base_url`, one layer down.
+
+**Both backends satisfy the same contract, and it is a real one.**
+`tests/vector_store_contract.py` runs one set of assertions against the in-memory store,
+Qdrant, and Chroma. Two of those assertions exist because a second backend is where they
+started to matter: a `score` is a cosine *similarity* where higher is better (Chroma
+answers with distances, and getting the conversion backwards ranks the worst matches first,
+confidently, with no error), and `limit` counts results *after* any score floor and any
+connector filter — pinned with interleaved scores, so an implementation that filters after
+taking the top-k fails while passing every other check.
+
+**Moving a tenant is an operation, not a config change.** It copies, verifies, promotes, and
+drops the source after a grace period — the same shape as a reindex, without the
+re-embedding, because the model and the width are unchanged. Reads stay on the source until
+the promotion, so a migration that stalls costs disk and nothing else:
+
+```bash
+curl -X POST "$GW/api/v1/platform/organizations/$ORG/vector-backend"   -H "Authorization: Bearer $SUPERADMIN" -d '{"backend": "chroma", "dry_run": true}'
+```
+
+Memory facts are **rebuilt** rather than copied, from `memory_facts`. That asymmetry is
+deliberate: a document chunk exists only in the vector store, whereas a fact's row is the
+record and the vector is an index over it — so the cheapest *correct* move differs per kind.
+
+`/readyz` reports each backend separately and stays ready while one of them is healthy:
+taking the pod out of rotation for a backend half the tenants are not on would remove
+capacity from the ones who are fine and help the others not at all. See
+[docs/runbooks/vector-backend-migration.md](docs/runbooks/vector-backend-migration.md).
+
 ### Embeddings
 
 One model for the whole platform (SPEC §9.4) — a collection's vectors must all come from
@@ -1032,10 +1078,16 @@ being honoured.
 
 ### Reindex: a new embedding model, with no gap in retrieval
 
-Every tenant's collection is behind an **alias**. Reads use `org_{id}_docs`; the collection
-behind it carries a version, `org_{id}_docs_v3`. The indirection exists before anything needs
-it, on an index that is usually empty, precisely because retrofitting it costs a gap in
-retrieval and the moment you want it is an urgent migration.
+Every tenant's collection is behind an indirection. Reads use `org_{id}_docs`; the
+collection behind it carries a version, `org_{id}_docs_v3`. The indirection exists before
+anything needs it, on an index that is usually empty, precisely because retrofitting it
+costs a gap in retrieval and the moment you want it is an urgent migration.
+
+*How* a backend makes the swap atomic is its own business — Qdrant uses an alias, Chroma a
+pointer this deployment keeps. The port asks "which collection is live" and "make this one
+live", and deliberately does not ask for an alias: a port method named after one vendor's
+feature is how the next implementation ends up emulating that feature instead of satisfying
+the contract.
 
 Changing the model on **Platform → Settings** does not save a setting. It starts a run:
 

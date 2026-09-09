@@ -26,6 +26,7 @@ from app.core.metrics import build_metrics
 from app.core.tracing import configure_tracing, shutdown_tracing
 from app.services.job_queue import ARQ_FUNCTION, ARQ_HEAVY_QUEUE_KEY, ArqJobQueue, from_payload
 from app.services.jobs import JobRunner
+from app.services.vector_backends import VectorBackends
 from app.workers.runtime import (
     Ingestion,
     Platform,
@@ -35,6 +36,7 @@ from app.workers.runtime import (
     build_platform,
     build_platform_settings,
     build_runner,
+    build_vector_backends,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,17 +79,20 @@ async def startup(context: dict[str, Any]) -> None:
     platform_settings = build_platform_settings(clients, settings)
     await platform_settings.warm()
     platform_settings.start()
+    backends = await build_vector_backends(clients, settings)
+    context["vector_backends"] = backends
     ingestion = build_ingestion(
         clients,
         settings,
         queue=queue,
+        backends=backends,
         metrics=metrics.extraction,
         embedding=platform_settings.snapshot.embedding,
     )
     # Conversation memory's write half. Built here as well as in the API, from the same
     # function, so the pass a worker runs and the pass "Distil now" runs are the same pass.
     distillation = build_distillation(
-        clients, settings, ingestion=ingestion, metrics=metrics.distillation
+        clients, settings, ingestion=ingestion, backends=backends, metrics=metrics.distillation
     )
 
     platform = build_platform(
@@ -96,6 +101,7 @@ async def startup(context: dict[str, Any]) -> None:
         ingestion=ingestion,
         distillation=distillation,
         platform_settings=platform_settings,
+        backends=backends,
         queue=queue,
         metrics=metrics.maintenance,
     )
@@ -152,6 +158,9 @@ async def shutdown(context: dict[str, Any]) -> None:
         # The extraction subprocesses are children of this process. A worker that exits
         # without stopping them leaves them behind on every restart.
         await ingestion.aclose()
+    backends: VectorBackends | None = context.get("vector_backends")
+    if backends is not None:
+        await backends.aclose()
     clients: Clients | None = context.get("clients")
     if clients is not None:
         await clients.aclose()

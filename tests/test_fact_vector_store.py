@@ -19,9 +19,9 @@ from app.core.config import get_settings
 from app.services.fact_vectors import (
     FactVectorStore,
     MemoryFactVectorStore,
-    QdrantFactVectorStore,
     memory_collection_for,
 )
+from app.services.vector_qdrant import QdrantFactVectorStore
 from tests.fact_vector_store_contract import CHECKS
 
 

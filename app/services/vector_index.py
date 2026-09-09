@@ -1,27 +1,32 @@
 """Collection *names*, and the operations a reindex needs on top of the ordinary port.
 
-Everything that reads or writes vectors addresses one name per tenant —
-``org_{org_id}_docs``. Since task 17 that name is an **alias**, and the collection behind
-it carries a version: ``org_{org_id}_docs_v1``, ``_v2``, and so on. Nothing outside this
-module and :mod:`app.services.reindex` needs to know that, which is the point.
+Everything that reads or writes vectors addresses one **logical name** per tenant —
+``org_{org_id}_docs`` — and the collection actually serving it carries a version:
+``org_{org_id}_docs_v1``, ``_v2``, and so on. Nothing outside this module and
+:mod:`app.services.reindex` needs to know that, which is the point.
 
 **Why the indirection exists before anything needs it.** A reindex builds a whole new
-collection with a new vector width and then makes it live. Without an alias, "make it
-live" is delete-then-rename, and Qdrant has no rename — so it is delete-then-rebuild,
-during which every search returns nothing. With an alias it is one atomic operation. The
-alias is introduced now, on an index that is usually empty, precisely because retrofitting
+collection with a new vector width and then makes it live. Without the indirection,
+"make it live" is delete-then-rename, and no backend here has an atomic cross-collection
+rename — so it is delete-then-rebuild, during which every search returns nothing. It was
+introduced in task 17, on an index that was usually empty, precisely because retrofitting
 it costs a gap in retrieval and the moment you want it is an urgent embedding-model
 migration. That is the wrong time to be discovering this.
 
-**The one non-atomic moment is the first promotion, and it is one-way.** A collection
-created before this module existed is literally named ``org_{id}_docs``, and Qdrant will
-not let an alias take a name a collection already holds. Promoting it means dropping the
-old collection and then creating the alias — two operations with a gap between them.
-Every *subsequent* swap is alias-to-alias and atomic. So the gap happens once, on an index
-that has just been rebuilt beside the live one, and it is measured in milliseconds rather
-than in the length of a re-embedding run.
+**How a backend answers ``live_collection`` and ``promote`` is its own business.** Task 17
+wrote both in terms of Qdrant aliases, because Qdrant was the only backend and its alias
+is genuinely the right mechanism there — one atomic operation. Chroma has no aliases, and
+resolves the same question from a row this deployment keeps. The port asks *which
+collection is live* and *make this one live*; it does not ask for an alias, and a port
+method named after one vendor's feature is how the next implementation ends up emulating
+that feature instead of satisfying the contract.
 
-**Reads go through the alias name; the admin operations address collections directly.**
+Each backend also owns its own non-atomic edge, and must document it where it lives. For
+Qdrant it is the first promotion of a pre-alias collection, which cannot be aliased over
+and so is dropped first — once, on an index that has just been rebuilt beside the live
+one, measured in milliseconds rather than in the length of a re-embedding run.
+
+**Reads go through the logical name; the admin operations address collections directly.**
 That split is deliberate. A search must follow whatever is live right now, while a reindex
 must be able to write into a collection that is *not* live and read from one that is.
 """
@@ -32,15 +37,16 @@ import logging
 import re
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import Protocol
 
 from app.services.vector_store import ChunkPoint, Match, MemoryVectorStore, collection_for
 
 logger = logging.getLogger(__name__)
 
-#: Where a fresh tenant's first collection starts. Version 0 is reserved for "a collection
-#: named like the alias", which is what a pre-task-17 tenant has.
+#: Where a fresh tenant's first collection starts. Version 0 is reserved for "a
+#: collection named exactly like the logical name", which is what a tenant indexed
+#: before task 17 has.
 FIRST_VERSION = 1
 
 _VERSION = re.compile(r"_v(\d+)$")
@@ -51,15 +57,15 @@ _VERSION = re.compile(r"_v(\d+)$")
 COPY_BATCH = 256
 
 
-def alias_for(organization_id: uuid.UUID) -> str:
+def logical_for(organization_id: uuid.UUID) -> str:
     """The name everything reads through. Identical to
-    :func:`~app.services.vector_store.collection_for` — an alias is not a new naming
-    scheme, it is an extra level under the same name."""
+    :func:`~app.services.vector_store.collection_for` — the indirection is not a new
+    naming scheme, it is an extra level under the same name."""
     return collection_for(organization_id)
 
 
 def versioned(organization_id: uuid.UUID, version: int) -> str:
-    return f"{alias_for(organization_id)}_v{version}"
+    return f"{logical_for(organization_id)}_v{version}"
 
 
 def version_of(collection: str) -> int:
@@ -75,6 +81,55 @@ def version_of(collection: str) -> int:
 def successor(organization_id: uuid.UUID, current: str | None) -> str:
     """The collection a reindex should build next for this tenant."""
     return versioned(organization_id, version_of(current or "") + 1)
+
+
+class LiveCollections(Protocol):
+    """Where a backend that cannot answer "which collection is live" keeps the answer.
+
+    Qdrant needs none of this: an alias *is* the pointer, it is stored beside the data,
+    and moving it is one atomic operation. Chroma has no equivalent, so the pointer has to
+    live somewhere this deployment controls — a row, in practice — and the alternatives
+    are worse in ways worth recording:
+
+    * **Rename the collections.** Two renames with a gap between them, during which the
+      logical name resolves to nothing and every search returns empty. That is exactly the
+      outage the indirection exists to prevent.
+    * **A marker in each collection's own metadata.** Resolution becomes "list every
+      collection on the server and scan", which is a full listing on the retrieval path
+      and grows with the number of tenants rather than staying constant.
+
+    The cost of a row is that a promotion is visible to other replicas only when they next
+    read it, so an implementation that caches must bound that staleness — and the
+    degradation is benign: a replica reading a stale pointer searches the *previous*
+    collection, which still exists until the grace period expires and still holds valid
+    results. Neither is ever "no collection".
+    """
+
+    async def resolve(self, organization_id: uuid.UUID) -> str | None:
+        """The collection this tenant's reads go to, or ``None`` if there is no pointer."""
+        ...
+
+    async def point(self, organization_id: uuid.UUID, collection: str) -> None: ...
+
+    async def forget(self, organization_id: uuid.UUID) -> None:
+        """Drop the pointer. Offboarding — the collection itself is deleted separately."""
+        ...
+
+
+@dataclass
+class InMemoryLiveCollections:
+    """A dict. What the contract suite runs against, and what a single-process test uses."""
+
+    pointers: dict[uuid.UUID, str] = field(default_factory=dict)
+
+    async def resolve(self, organization_id: uuid.UUID) -> str | None:
+        return self.pointers.get(organization_id)
+
+    async def point(self, organization_id: uuid.UUID, collection: str) -> None:
+        self.pointers[organization_id] = collection
+
+    async def forget(self, organization_id: uuid.UUID) -> None:
+        self.pointers.pop(organization_id, None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +152,8 @@ class VectorIndexAdmin(Protocol):
     """
 
     async def live_collection(self, organization_id: uuid.UUID) -> str | None:
-        """What the alias currently points at, or the legacy collection, or ``None``."""
+        """The collection this tenant's reads currently resolve to, or ``None`` when
+        nothing has been indexed. How the backend knows is the backend's business."""
         ...
 
     async def create_collection(self, collection: str, *, dimension: int) -> None: ...
@@ -108,12 +164,22 @@ class VectorIndexAdmin(Protocol):
 
     async def count_points(self, collection: str) -> int: ...
 
-    async def scroll(self, collection: str, *, cursor: str | None, limit: int) -> Page:
-        """A page of points **with their payloads and no vectors**.
+    async def scroll(
+        self, collection: str, *, cursor: str | None, limit: int, with_vectors: bool = False
+    ) -> Page:
+        """A page of points with their payloads, and their vectors only if asked.
 
-        No vectors on purpose: a reindex re-embeds from the payload text, so pulling the
+        Default off, because a **reindex** re-embeds from the payload text: pulling the
         old vectors down would be the largest part of the transfer and every byte of it
-        would be discarded.
+        would be discarded. A **migration between backends** is the opposite case — same
+        model, same width, so the vectors are exactly what is being moved and
+        re-embedding them would be an expense with no effect.
+
+        ``cursor`` is opaque and belongs to the backend that issued it: a point id for
+        one, an offset for another. The consequence of the second kind is worth stating
+        rather than discovering — paging by offset over a collection being written to can
+        skip or repeat a point, which is why the count check at the end of a copy is
+        load-bearing rather than belt-and-braces.
         """
         ...
 
@@ -122,15 +188,18 @@ class VectorIndexAdmin(Protocol):
     async def search_in(
         self, collection: str, vector: Sequence[float], *, limit: int = 5
     ) -> list[Match]:
-        """The sample search a reindex runs before it swaps. Against the *new* collection
-        by name, because it is not live yet and therefore has no alias to search."""
+        """The sample search a reindex runs before it promotes. Against the *new*
+        collection by name, because it is not live yet and the ordinary port can only
+        reach what is."""
         ...
 
-    async def swap_alias(self, organization_id: uuid.UUID, collection: str) -> None:
-        """Point the tenant's alias at ``collection``.
+    async def promote(self, organization_id: uuid.UUID, collection: str) -> None:
+        """Make ``collection`` the one this tenant's reads resolve to.
 
-        Atomic when an alias already exists. See the module docstring for the one case
-        that is not — a legacy collection holding the alias name.
+        Must be atomic from a reader's point of view: a search running throughout sees
+        the old collection or the new one and never neither. Each backend documents its
+        own exception where it implements this, and there is exactly one — Qdrant's first
+        promotion of a collection created before aliases existed.
         """
         ...
 
@@ -150,159 +219,6 @@ class VectorIndexAdmin(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# qdrant
-# ---------------------------------------------------------------------------
-
-
-class QdrantVectorIndexAdmin:
-    """The production implementation, over the same client the store uses."""
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    async def live_collection(self, organization_id: uuid.UUID) -> str | None:
-        alias = alias_for(organization_id)
-        found = await self._alias_target(alias)
-        if found is not None:
-            return found
-        # No alias. Either a legacy collection under the alias name, or nothing indexed.
-        return alias if await self._client.collection_exists(alias) else None
-
-    async def _alias_target(self, alias: str) -> str | None:
-        try:
-            described = await self._client.get_aliases()
-        except Exception:
-            # An older server, or a transient failure. Treated as "no alias", which
-            # degrades to the legacy path rather than to an exception on a read.
-            logger.warning("could not list qdrant aliases", exc_info=True)
-            return None
-        for entry in getattr(described, "aliases", ()) or ():
-            if getattr(entry, "alias_name", None) == alias:
-                name: str = entry.collection_name
-                return name
-        return None
-
-    async def create_collection(self, collection: str, *, dimension: int) -> None:
-        from qdrant_client import models
-
-        from app.services.vector_store import INDEXED_PAYLOAD_FIELDS
-
-        if await self._client.collection_exists(collection):
-            # A resumed reindex finds the collection it created before it was killed.
-            # Reusing it is what makes resumption cheap: the points already copied are
-            # still there, and the upserts that follow are keyed by the same ids.
-            return
-        await self._client.create_collection(
-            collection_name=collection,
-            vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
-        )
-        for path in INDEXED_PAYLOAD_FIELDS:
-            await self._client.create_payload_index(
-                collection_name=collection,
-                field_name=path,
-                field_schema=models.PayloadSchemaType.KEYWORD,
-            )
-
-    async def drop_collection(self, collection: str) -> None:
-        if await self._client.collection_exists(collection):
-            await self._client.delete_collection(collection)
-
-    async def collection_dimension(self, collection: str) -> int | None:
-        from app.services.vector_store import vector_size
-
-        if not await self._client.collection_exists(collection):
-            return None
-        return vector_size(await self._client.get_collection(collection))
-
-    async def count_points(self, collection: str) -> int:
-        if not await self._client.collection_exists(collection):
-            return 0
-        result = await self._client.count(collection_name=collection, exact=True)
-        return int(result.count)
-
-    async def scroll(self, collection: str, *, cursor: str | None, limit: int) -> Page:
-        if not await self._client.collection_exists(collection):
-            return Page(points=(), cursor=None)
-        points, offset = await self._client.scroll(
-            collection_name=collection,
-            offset=cursor,
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
-        )
-        return Page(
-            points=tuple(
-                ChunkPoint(id=str(point.id), vector=[], payload=dict(point.payload or {}))
-                for point in points
-            ),
-            cursor=str(offset) if offset is not None else None,
-        )
-
-    async def upsert_into(self, collection: str, points: Sequence[ChunkPoint]) -> None:
-        from qdrant_client import models
-
-        if not points:
-            return
-        await self._client.upsert(
-            collection_name=collection,
-            points=[
-                models.PointStruct(id=point.id, vector=point.vector, payload=point.payload)
-                for point in points
-            ],
-            wait=True,
-        )
-
-    async def search_in(
-        self, collection: str, vector: Sequence[float], *, limit: int = 5
-    ) -> list[Match]:
-        found = await self._client.query_points(
-            collection_name=collection, query=list(vector), limit=limit, with_payload=True
-        )
-        return [
-            Match(id=str(point.id), score=float(point.score), payload=dict(point.payload or {}))
-            for point in found.points
-        ]
-
-    async def swap_alias(self, organization_id: uuid.UUID, collection: str) -> None:
-        from qdrant_client import models
-
-        alias = alias_for(organization_id)
-        if await self._alias_target(alias) is None and await self._client.collection_exists(alias):
-            # The one-way promotion described in the module docstring. Dropping first is
-            # unavoidable: Qdrant refuses an alias whose name a collection already holds.
-            logger.info(
-                "promoting a pre-alias collection; searches are unavailable for the "
-                "duration of the swap",
-                extra={"collection": alias},
-            )
-            await self._client.delete_collection(alias)
-        await self._client.update_collection_aliases(
-            change_aliases_operations=[
-                models.CreateAliasOperation(
-                    create_alias=models.CreateAlias(collection_name=collection, alias_name=alias)
-                )
-            ]
-        )
-
-    async def list_collections(self) -> list[str]:
-        described = await self._client.get_collections()
-        return sorted(entry.name for entry in getattr(described, "collections", ()) or ())
-
-    async def documents_in(self, collection: str) -> set[str]:
-        found: set[str] = set()
-        cursor: str | None = None
-        while True:
-            page = await self.scroll(collection, cursor=cursor, limit=COPY_BATCH)
-            for point in page.points:
-                value = point.payload.get("document_id")
-                if value is not None:
-                    found.add(str(value))
-            cursor = page.cursor
-            if cursor is None:
-                return found
-
-
-# ---------------------------------------------------------------------------
 # memory
 # ---------------------------------------------------------------------------
 
@@ -312,8 +228,8 @@ class MemoryVectorIndexAdmin:
     """The same operations over a :class:`~app.services.vector_store.MemoryVectorStore`.
 
     Shares the store's dictionaries rather than copying them, which is what makes a test
-    able to assert that a search through the *alias* returns what the reindex wrote into
-    the *new collection* — the property the whole indirection exists for.
+    able to assert that a search through the *logical name* returns what the reindex wrote
+    into the *new collection* — the property the whole indirection exists for.
     """
 
     store: MemoryVectorStore
@@ -336,7 +252,9 @@ class MemoryVectorIndexAdmin:
     async def count_points(self, collection: str) -> int:
         return len(self.store.collections.get(collection, {}))
 
-    async def scroll(self, collection: str, *, cursor: str | None, limit: int) -> Page:
+    async def scroll(
+        self, collection: str, *, cursor: str | None, limit: int, with_vectors: bool = False
+    ) -> Page:
         points = self.store.collections.get(collection, {})
         # Sorted so paging is stable, the way a real scroll's ordering by point id is.
         ordered = [points[key] for key in sorted(points)]
@@ -345,7 +263,12 @@ class MemoryVectorIndexAdmin:
         following = start + len(window)
         return Page(
             points=tuple(
-                ChunkPoint(id=point.id, vector=[], payload=dict(point.payload)) for point in window
+                ChunkPoint(
+                    id=point.id,
+                    vector=list(point.vector) if with_vectors else [],
+                    payload=dict(point.payload),
+                )
+                for point in window
             ),
             cursor=window[-1].id if following < len(ordered) and window else None,
         )
@@ -355,10 +278,10 @@ class MemoryVectorIndexAdmin:
         expected = self.store.dimensions.get(collection)
         for point in points:
             if expected is not None and len(point.vector) != expected:
-                # Qdrant refuses this, so the double has to as well: a reindex that wrote
-                # old-width vectors into the new collection is exactly the bug the
-                # verification step exists to catch, and a permissive double would let it
-                # reach the swap.
+                # Every real backend refuses this, so the double has to as well: a
+                # reindex that wrote old-width vectors into the new collection is exactly
+                # the bug the verification step exists to catch, and a permissive double
+                # would let it reach the promotion.
                 raise ValueError(
                     f"vector has {len(point.vector)} dimensions, "
                     f"collection {collection} expects {expected}"
@@ -378,8 +301,8 @@ class MemoryVectorIndexAdmin:
         scored.sort(key=lambda match: (-match.score, match.id))
         return scored[:limit]
 
-    async def swap_alias(self, organization_id: uuid.UUID, collection: str) -> None:
-        self.store.aliases[alias_for(organization_id)] = collection
+    async def promote(self, organization_id: uuid.UUID, collection: str) -> None:
+        self.store.live_collections[logical_for(organization_id)] = collection
 
     async def list_collections(self) -> list[str]:
         return sorted(self.store.collections)
@@ -405,11 +328,12 @@ def _index_after(ordered: Sequence[str], cursor: str) -> int:
 __all__ = [
     "COPY_BATCH",
     "FIRST_VERSION",
+    "InMemoryLiveCollections",
+    "LiveCollections",
     "MemoryVectorIndexAdmin",
     "Page",
-    "QdrantVectorIndexAdmin",
     "VectorIndexAdmin",
-    "alias_for",
+    "logical_for",
     "successor",
     "version_of",
     "versioned",

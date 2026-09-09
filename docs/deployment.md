@@ -110,6 +110,51 @@ Changing the model **after** there is data is a reindex, not a restart: **Platfo
 Settings** starts a rebuild beside the live collections and swaps the aliases when it is
 done. Retrieval keeps working throughout. See the README's "Reindex" section.
 
+## Vector backends
+
+Qdrant is required and is the default. Chroma is optional: set `config.chromaUrl` (and
+install this package with the `chroma` extra) and it becomes a second backend an operator
+may place organizations on, **one tenant at a time**.
+
+```yaml
+config:
+  qdrantUrl: http://qdrant:6333
+  chromaUrl: http://chroma:8000     # optional
+  defaultVectorBackend: qdrant      # where a new organization starts
+```
+
+**Which backend a tenant uses is a binding, not a URL.** An organization is placed on a
+backend *by name*, chosen from the set this deployment configured; nothing tenant-facing
+ever carries an address. That is the same rule the SSRF guard applies to upstream models,
+one layer down, and it is why there is no field for a connection string on any screen.
+
+**Choosing between them.** Chroma is the right answer for a single-box deployment, an
+evaluation that should not begin by provisioning a cluster, or a team that has already
+standardized on it. What it gives up, honestly:
+
+| | Qdrant | Chroma |
+|---|---|---|
+| Atomic swap of the live collection | Alias, server-side | A pointer row this deployment keeps |
+| Score threshold pushed down | Yes | No — the gateway over-fetches and filters |
+| Snapshot tooling for backup | Built in | A persistent volume; see the backup runbook |
+| Operational envelope at scale | Sharding, replication | Single node |
+
+The corpus size at which the answer becomes Qdrant is **not measured here**; see the
+"Not verified" note in the task file. Treat Chroma as the small-deployment option until
+somebody has run the load suite against it.
+
+**Moving a tenant between backends** is an operation, not a config change:
+
+```bash
+curl -X POST "$GW/api/v1/platform/organizations/$ORG/vector-backend"   -H "Authorization: Bearer $SUPERADMIN"   -d '{"backend": "chroma", "dry_run": true}'   # what would move
+```
+
+Drop `dry_run` to start it. The copy runs in the worker; **reads keep going to the current
+backend until it is verified and promoted**, so a migration that stalls or fails costs disk
+and nothing else. The source is dropped 15 minutes after the promotion — long enough for
+every replica to have re-read the binding, which they cache for 15 seconds. `DELETE` on the
+same path cancels one in flight.
+
 ## Sizing
 
 Start here and correct from the load test rather than from intuition:
@@ -192,3 +237,10 @@ Settings that are **operator policy** rather than deployment topology — retent
 rate-limit ceilings, storage caps, the distillation default, the embedding model — live in
 the database since task 17 and are edited on **Platform → Settings**, with an audit trail.
 The environment values are the bootstrap a fresh database starts from.
+
+Vector backends split along the same line and it is worth being explicit about which half
+is which. A backend's **address** is topology and stays in the environment; there is no
+API or screen that can change one, because a server address a tenant's data flows to must
+not be reachable through a form. A tenant's **binding** and the default for new
+organizations are policy, and both are changed through the platform API with an audit
+trail.

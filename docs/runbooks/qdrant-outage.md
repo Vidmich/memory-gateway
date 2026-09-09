@@ -3,6 +3,12 @@
 Not an alert — the effect depends on each gateway's own policy, so there is no single
 threshold worth paging on. What follows is what happens and what to do about it.
 
+Since task 19 a deployment can have a second backend, and this outage then affects **only
+the organizations bound to Qdrant**. `/readyz` reports each backend separately and does not
+fail while one of them is healthy: taking the pod out of rotation would remove capacity
+from the tenants who are fine and do nothing for the ones who are not. `GET
+/api/v1/platform/vector-backends` lists who is where.
+
 ## What each gateway does
 
 Retrieval failure is per gateway, set by `on_retrieval_error` in the Memory section:

@@ -21,6 +21,15 @@ data:
   {{- end }}
 
   QDRANT_URL: {{ required "config.qdrantUrl is required." .Values.config.qdrantUrl | quote }}
+  {{- if .Values.config.chromaUrl }}
+  CHROMA_URL: {{ .Values.config.chromaUrl | quote }}
+  CHROMA_TENANT: {{ .Values.config.chromaTenant | quote }}
+  CHROMA_DATABASE: {{ .Values.config.chromaDatabase | quote }}
+  {{- end }}
+  {{- if and (eq .Values.config.defaultVectorBackend "chroma") (not .Values.config.chromaUrl) }}
+  {{- fail "config.defaultVectorBackend is 'chroma' but config.chromaUrl is empty: every new organization would be bound to a backend these pods cannot reach." }}
+  {{- end }}
+  DEFAULT_VECTOR_BACKEND: {{ .Values.config.defaultVectorBackend | quote }}
   S3_ENDPOINT: {{ required "config.s3Endpoint is required." .Values.config.s3Endpoint | quote }}
   S3_BUCKET: {{ required "config.s3Bucket is required." .Values.config.s3Bucket | quote }}
   S3_REGION: {{ .Values.config.s3Region | quote }}

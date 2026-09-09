@@ -48,7 +48,9 @@ async def readyz(request: Request, response: Response) -> dict[str, Any]:
         return {"status": "draining"}
 
     results = await run_readiness_checks(
-        clients, timeout_seconds=settings.readiness_timeout_seconds
+        clients,
+        backends=getattr(request.app.state, "vector_backends", None),
+        timeout_seconds=settings.readiness_timeout_seconds,
     )
     body: dict[str, Any] = {name: result["status"] for name, result in results.items()}
 

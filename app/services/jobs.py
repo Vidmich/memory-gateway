@@ -352,15 +352,29 @@ INGEST_DOCUMENT = "ingest_document"
 DELETE_CONNECTOR = "delete_connector"
 DISTIL_MEMORY = "distil_memory"
 REINDEX = "reindex"
+#: Task 19. Two, not one, because the second runs *after* a grace period: the drop of a
+#: migrated-from collection is deferred so that replicas holding a cached binding are not
+#: still reading it. Splitting them is what lets the delay live in the queue rather than in
+#: a worker holding a slot open for a quarter of an hour.
+MIGRATE_VECTORS = "migrate_vectors"
+DROP_MIGRATION_SOURCE = "drop_migration_source"
 
-#: Every job this build knows how to run. Four: one file's extraction and embedding, a
-#: connector's whole teardown, one conversation's distillation, and task 17's reindex —
-#: all unbounded work that a request must not wait on. Resync is not here: SPEC §9.1 has
+#: Every job this build knows how to run: one file's extraction and embedding, a
+#: connector's whole teardown, one conversation's distillation, task 17's reindex, and
+#: task 19's backend migration and its deferred cleanup — all unbounded work that a
+#: request must not wait on. Resync is not here: SPEC §9.1 has
 #: it return a summary, which a job cannot do, and what it does synchronously is a listing
 #: plus row writes. The *scheduled* jobs are not here either: retention, partitions and the
 #: orphan sweep are cron entries on the worker rather than enqueued work, because nothing
 #: requests them and there is nothing to deduplicate them against.
-JOB_NAMES = (INGEST_DOCUMENT, DELETE_CONNECTOR, DISTIL_MEMORY, REINDEX)
+JOB_NAMES = (
+    INGEST_DOCUMENT,
+    DELETE_CONNECTOR,
+    DISTIL_MEMORY,
+    REINDEX,
+    MIGRATE_VECTORS,
+    DROP_MIGRATION_SOURCE,
+)
 
 
 def ingest_key(document_id: uuid.UUID, content_hash: str | None) -> str:
@@ -433,10 +447,12 @@ def delete_key(connector_id: uuid.UUID) -> str:
 __all__ = [
     "DELETE_CONNECTOR",
     "DISTIL_MEMORY",
+    "DROP_MIGRATION_SOURCE",
     "HEAVY_EXTENSIONS",
     "HEAVY_QUEUE",
     "INGEST_DOCUMENT",
     "JOB_NAMES",
+    "MIGRATE_VECTORS",
     "REINDEX",
     "DeadLetter",
     "DeadLetterSink",

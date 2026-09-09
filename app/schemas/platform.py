@@ -399,6 +399,62 @@ class OrganizationDeletionRequest(BaseModel):
     grace_days: Annotated[int, Field(ge=0, le=90)] = 7
 
 
+class VectorBindingResponse(BaseModel):
+    """Where one organization's vectors are, and whether they are moving."""
+
+    organization_id: uuid.UUID
+    backend: str
+    status: str
+    #: Only set while a migration is in flight, and only then is it meaningful: reads go to
+    #: ``backend`` throughout, which is the whole zero-downtime property.
+    target: str | None = None
+    #: The live physical collection, for a backend that cannot answer that about itself.
+    #: Null for Qdrant, whose alias is authoritative.
+    collection: str | None = None
+
+
+class VectorBackendsResponse(BaseModel):
+    """What this deployment offers, and where everybody is.
+
+    ``enabled`` is read-only on purpose and there is no field here for a URL. A backend's
+    address is deployment topology, configured in the environment; a settings screen able
+    to point one somewhere new would put a server address a tenant's data flows to behind
+    a form, which is the surface task 18 closed for upstream models.
+    """
+
+    enabled: list[str]
+    default: str
+    bindings: list[VectorBindingResponse]
+
+
+class VectorMigrationRequest(BaseModel):
+    """Move one organization's vectors to another backend.
+
+    ``dry_run`` returns the plan and starts nothing, which is what the confirmation dialog
+    calls — so the numbers an operator agrees to are the ones this endpoint counted.
+    """
+
+    backend: str
+    dry_run: bool = False
+
+
+class VectorMigrationResponse(BaseModel):
+    """What a migration would move, or has begun moving.
+
+    Points and facts rather than a cost estimate, which is the difference from a reindex:
+    document chunks are copied rather than re-embedded, so the number that matters is how
+    long it takes rather than what it costs.
+    """
+
+    organization_id: uuid.UUID
+    source: str
+    target: str
+    target_collection: str
+    points: int
+    facts: int
+    started: bool
+
+
 # Declared after the models it refers to, because ``PlatformSettingsResponse`` names
 # ``ReindexRunResponse`` and Python has read neither by the time the first class body runs.
 PlatformSettingsResponse.model_rebuild()
@@ -429,4 +485,8 @@ __all__ = [
     "StorageCaps",
     "SweepRequest",
     "SweepResponse",
+    "VectorBackendsResponse",
+    "VectorBindingResponse",
+    "VectorMigrationRequest",
+    "VectorMigrationResponse",
 ]

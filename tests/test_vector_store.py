@@ -19,7 +19,8 @@ import httpx
 import pytest
 
 from app.core.config import get_settings
-from app.services.vector_store import MemoryVectorStore, QdrantVectorStore, VectorStore
+from app.services.vector_qdrant import QdrantVectorStore
+from app.services.vector_store import MemoryVectorStore, VectorStore
 from tests.vector_store_contract import CHECKS
 
 

@@ -213,7 +213,12 @@ async def test_a_purge_leaves_zero_rows_and_zero_points_across_every_store(
 
 
 async def test_the_report_names_each_store(platform: PlatformFixture, actor: Actor) -> None:
-    """The artefact you hand somebody who asks whether a deletion request was honoured."""
+    """The artefact you hand somebody who asks whether a deletion request was honoured.
+
+    Since task 19 the vector entry names the *backend*: a report that said "qdrant" for a
+    tenant whose vectors were in Chroma would be exactly the kind of document that is
+    worthless for the purpose it exists for.
+    """
     organization = await seed_tenant(platform)
     await platform.eraser.request(actor, organization.id, confirm="acme", grace_days=0)
 
@@ -221,7 +226,7 @@ async def test_the_report_names_each_store(platform: PlatformFixture, actor: Act
 
     assert {entry.store for entry in report.stores} == {
         "postgres",
-        "qdrant",
+        "vectors:qdrant",
         "object-store",
     }
     assert report.subject == "acme"

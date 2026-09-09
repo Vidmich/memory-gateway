@@ -47,7 +47,23 @@ config:
   # what same-origin should have.
   corsOrigins: []
 
+  # Task 19. Qdrant is required and is the default backend. Chroma is optional: set
+  # `chromaUrl` and it becomes a backend an operator may place an organization on, one
+  # tenant at a time, through the platform API.
+  #
+  # This is the only place either address is configured. An organization's binding names a
+  # backend from the enabled set; it never carries a URL, because a server address a
+  # tenant's data flows to must not be reachable through a form.
   qdrantUrl: ""
+  chromaUrl: ""
+  chromaTenant: default_tenant
+  chromaDatabase: default_database
+  # Where an organization with no binding starts. Rendering fails if this names a backend
+  # with no address configured — otherwise every newly created organization would be bound
+  # to a backend the pods cannot reach, and the first symptom would be retrieval silently
+  # returning nothing.
+  defaultVectorBackend: qdrant
+
   s3Endpoint: ""
   s3Bucket: ""
   s3Region: us-east-1

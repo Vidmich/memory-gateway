@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from app.core.errors import Validation
 from app.core.tenancy import Actor
@@ -30,6 +32,7 @@ from app.schemas.platform import (
     ReindexRequest,
     RetentionCeilings,
 )
+from app.services.audit import Attribution, Target
 from app.services.erasure import OrganizationEraser
 from app.services.jobs import REINDEX, JobQueue, JobRequest, reindex_key
 from app.services.maintenance import (
@@ -47,6 +50,9 @@ from app.services.maintenance_store import MaintenanceStore, RunState
 from app.services.platform_settings import PlatformSettingsService, PlatformView
 from app.services.reindex import Reindexer
 from app.services.reindex_store import RunView
+from app.services.vector_backends import VectorBackends
+from app.services.vector_binding_store import Binding
+from app.services.vector_migration import MigrationPlan, VectorMigrator
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +60,21 @@ logger = logging.getLogger(__name__)
 #: :mod:`app.services.jobs` so a screen that talks about it does not have to import the
 #: queue module to name it.
 REINDEX_JOB = REINDEX
+
+
+#: Audit actions for task 19. Two, not one: an operator reading the log needs "somebody
+#: moved a tenant" and "somebody changed their mind" to be different lines.
+VECTOR_BACKEND_MIGRATED = "vector_backend.migrate"
+VECTOR_MIGRATION_CANCELLED = "vector_backend.cancel"
+
+
+@dataclass(frozen=True, slots=True)
+class VectorBackendsView:
+    """What the platform offers and where everybody is."""
+
+    enabled: Sequence[str]
+    default: str
+    bindings: Sequence[Binding]
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +112,8 @@ class PlatformService:
         reindexer: Reindexer,
         eraser: OrganizationEraser,
         store: MaintenanceStore,
+        backends: VectorBackends | None = None,
+        migrator: VectorMigrator | None = None,
         queue: JobQueue | None = None,
     ) -> None:
         self._settings = settings
@@ -100,7 +123,87 @@ class PlatformService:
         self._reindexer = reindexer
         self._eraser = eraser
         self._store = store
+        self._backends = backends
+        self._migrator = migrator
         self._queue = queue
+
+    # -- vector backends -------------------------------------------------
+
+    async def vector_backends(self) -> VectorBackendsView:
+        """What this deployment offers, and where every organization currently is.
+
+        The enabled set comes from the environment and is not editable here — a vector
+        backend's address is deployment topology, and a settings screen that could point
+        one somewhere new would be the tenant-adjacent-URL problem one level up (see
+        :mod:`app.services.vector_backends`). What *is* editable is the default for new
+        organizations, which is policy.
+        """
+        registry = self._require_backends()
+        return VectorBackendsView(
+            enabled=registry.enabled(),
+            default=registry.default,
+            bindings=await registry.bindings.all(),
+        )
+
+    async def plan_vector_migration(
+        self, organization_id: uuid.UUID, *, target: str
+    ) -> MigrationPlan:
+        return await self._require_migrator().plan(organization_id, target=target)
+
+    async def start_vector_migration(
+        self, actor: Actor, organization_id: uuid.UUID, *, target: str
+    ) -> MigrationPlan:
+        plan = await self._require_migrator().start(organization_id, target=target)
+        await self._record(
+            actor,
+            VECTOR_BACKEND_MIGRATED,
+            organization_id=organization_id,
+            summary={"from": plan.source, "to": plan.target, "points": plan.points},
+        )
+        return plan
+
+    async def cancel_vector_migration(self, actor: Actor, organization_id: uuid.UUID) -> None:
+        await self._require_migrator().cancel(organization_id)
+        await self._record(
+            actor,
+            VECTOR_MIGRATION_CANCELLED,
+            organization_id=organization_id,
+            summary={},
+        )
+
+    def _require_backends(self) -> VectorBackends:
+        if self._backends is None:  # pragma: no cover - wiring error, not a request
+            raise RuntimeError("this platform service was built without a vector registry")
+        return self._backends
+
+    def _require_migrator(self) -> VectorMigrator:
+        if self._migrator is None:  # pragma: no cover - wiring error, not a request
+            raise RuntimeError("this platform service was built without a migrator")
+        return self._migrator
+
+    async def _record(
+        self,
+        actor: Actor,
+        action: str,
+        *,
+        organization_id: uuid.UUID,
+        summary: Mapping[str, Any],
+    ) -> None:
+        """One audit event, into the *platform's* log.
+
+        Not the customer's, for the reason task 15 already established for every other
+        operator action: a platform-wide decision recorded inside one tenant is both wrong
+        and, for every other tenant, invisible.
+        """
+        async with self._store.begin() as transaction:
+            transaction.audit(
+                Attribution.of(actor),
+                action,
+                target=Target(type="organization", id=organization_id, label=str(organization_id)),
+                organization_id=None,
+                summary=dict(summary),
+            )
+            await transaction.commit()
 
     # -- settings --------------------------------------------------------
 

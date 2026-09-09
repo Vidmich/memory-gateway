@@ -47,14 +47,16 @@ from app.services.end_user_store import EndUserStore, PostgresEndUserStore
 from app.services.erasure import OrganizationEraser
 from app.services.extraction import ExtractorRegistry, build_registry
 from app.services.extraction_pool import ExtractionPool
-from app.services.fact_vectors import FactVectorStore, QdrantFactVectorStore
+from app.services.fact_vectors import FactVectorStore
 from app.services.ingestion import IngestionPipeline, IngestionSettings
 from app.services.job_queue import ArqJobQueue
 from app.services.job_store import PostgresDeadLetters
 from app.services.jobs import (
     DELETE_CONNECTOR,
     DISTIL_MEMORY,
+    DROP_MIGRATION_SOURCE,
     INGEST_DOCUMENT,
+    MIGRATE_VECTORS,
     REINDEX,
     DeadLetterSink,
     JobQueue,
@@ -73,8 +75,15 @@ from app.services.reconciliation import Reconciler
 from app.services.reindex import Reindexer
 from app.services.reindex_store import PostgresReindexStore
 from app.services.tokenizer import Tokenizer, build_tokenizer
-from app.services.vector_index import QdrantVectorIndexAdmin, VectorIndexAdmin
-from app.services.vector_store import QdrantVectorStore, VectorStore
+from app.services.vector_backends import (
+    RoutingFactVectorStore,
+    RoutingVectorStore,
+    VectorBackends,
+    build_backends,
+)
+from app.services.vector_binding_store import PostgresVectorBindingStore
+from app.services.vector_migration import VectorMigrator
+from app.services.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +134,23 @@ def embedding_settings(
     )
 
 
+async def build_vector_backends(clients: Clients, settings: Settings) -> VectorBackends:
+    """Every configured vector backend, bound to the table that says who is on which.
+
+    Asynchronous, and therefore built before the synchronous bundles rather than inside
+    one of them: Chroma's client is created with ``await``, and a deployment that does not
+    configure Chroma must not import the package at all.
+
+    The Qdrant client comes from :class:`~app.core.clients.Clients` — which closes it — so
+    this registry owns only the clients it created itself.
+    """
+    return await build_backends(
+        settings,
+        qdrant_client=clients.qdrant,
+        bindings=PostgresVectorBindingStore(clients.session_factory),
+    )
+
+
 def ingestion_settings(settings: Settings) -> IngestionSettings:
     return IngestionSettings(
         max_file_bytes=settings.upload_max_file_bytes,
@@ -138,13 +164,17 @@ def build_ingestion(
     settings: Settings,
     *,
     queue: JobQueue,
+    backends: VectorBackends,
     metrics: ExtractionMetrics | None = None,
     embedding: EmbeddingChoice | None = None,
 ) -> Ingestion:
     limits = ingestion_settings(settings)
     store = PostgresConnectorStore(clients.session_factory)
     objects = S3ObjectStore(clients.storage, clients.bucket)
-    vectors = QdrantVectorStore(clients.qdrant)
+    # The routing store, not a backend's own: which one an organization is on is a
+    # per-tenant binding, and every port method already carries the organization id — so
+    # the pipeline below keeps the port it always had and never learns there are two.
+    vectors = RoutingVectorStore(backends)
     # `internal`, not `http`: the embedding endpoint is the operator's own and is
     # routinely on a private address, which the guarded pool exists to refuse.
     embedder = build_embedder(embedding_settings(settings, embedding), clients.internal)
@@ -218,6 +248,7 @@ def build_distillation(
     settings: Settings,
     *,
     ingestion: Ingestion,
+    backends: VectorBackends,
     metrics: DistillationMetrics | None = None,
 ) -> Distillation:
     """Everything conversation memory needs to write itself.
@@ -228,7 +259,7 @@ def build_distillation(
     holding both.
     """
     end_users = PostgresEndUserStore(clients.session_factory)
-    fact_vectors = QdrantFactVectorStore(clients.qdrant)
+    fact_vectors = RoutingFactVectorStore(backends)
     debouncer = RedisDebouncer(clients.redis)
     models = CatalogModelResolver(
         PostgresCatalogStore(clients.session_factory),
@@ -282,11 +313,12 @@ class Platform:
 
     settings: PlatformSettingsService
     store: MaintenanceStore
-    index: VectorIndexAdmin
+    backends: VectorBackends
     partitions: PartitionManager
     retention: RetentionJob
     sweeper: OrphanSweeper
     reindexer: Reindexer
+    migrator: VectorMigrator
     eraser: OrganizationEraser
     service: PlatformService
 
@@ -310,11 +342,11 @@ def build_platform(
     ingestion: Ingestion,
     distillation: Distillation,
     platform_settings: PlatformSettingsService,
+    backends: VectorBackends,
     queue: JobQueue | None = None,
     metrics: MaintenanceMetrics | None = None,
 ) -> Platform:
     store = PostgresMaintenanceStore(clients.session_factory)
-    index = QdrantVectorIndexAdmin(clients.qdrant)
     partitions = PartitionManager(store, metrics=metrics)
     retention = RetentionJob(
         store,
@@ -327,14 +359,14 @@ def build_platform(
     sweeper = OrphanSweeper(
         store,
         vectors=ingestion.vectors,
-        index=index,
+        backends=backends,
         facts=distillation.vectors,
         objects=ingestion.objects,
         metrics=metrics,
     )
     reindexer = Reindexer(
         PostgresReindexStore(clients.session_factory),
-        index=index,
+        backends=backends,
         maintenance=store,
         settings=platform_settings,
         # A fresh embedder per run rather than the serving one: the whole point of a
@@ -343,20 +375,31 @@ def build_platform(
             embedding_settings(settings, choice), clients.internal
         ),
     )
+    migrator = VectorMigrator(
+        backends,
+        end_users=distillation.end_users,
+        # The serving embedder, not a fresh one: a migration re-embeds memory facts from
+        # their rows, and doing that with anything but the model the rest of the index was
+        # built with would leave one collection holding two models' vectors.
+        embedder=ingestion.embedder,
+        queue=queue,
+    )
     eraser = OrganizationEraser(
         store,
         vectors=ingestion.vectors,
         facts=distillation.vectors,
         objects=ingestion.objects,
+        backends=backends,
     )
     return Platform(
         settings=platform_settings,
         store=store,
-        index=index,
+        backends=backends,
         partitions=partitions,
         retention=retention,
         sweeper=sweeper,
         reindexer=reindexer,
+        migrator=migrator,
         eraser=eraser,
         service=PlatformService(
             settings=platform_settings,
@@ -366,6 +409,8 @@ def build_platform(
             reindexer=reindexer,
             eraser=eraser,
             store=store,
+            backends=backends,
+            migrator=migrator,
             queue=queue,
         ),
     )
@@ -417,7 +462,19 @@ def build_handlers(
         async def reindex(payload: Mapping[str, Any]) -> None:
             await platform.reindexer.run(uuid.UUID(str(payload["run_id"])))
 
+        async def migrate_vectors(payload: Mapping[str, Any]) -> None:
+            await platform.migrator.run(uuid.UUID(str(payload["organization_id"])))
+
+        async def drop_migration_source(payload: Mapping[str, Any]) -> None:
+            await platform.migrator.drop_source(
+                uuid.UUID(str(payload["organization_id"])),
+                backend=str(payload["backend"]),
+                collection=str(payload["collection"]),
+            )
+
         handlers[REINDEX] = reindex
+        handlers[MIGRATE_VECTORS] = migrate_vectors
+        handlers[DROP_MIGRATION_SOURCE] = drop_migration_source
 
     if distillation is None:
         return handlers

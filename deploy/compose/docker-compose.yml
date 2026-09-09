@@ -17,6 +17,11 @@ x-app-env: &app-env
   DATABASE_URL: postgresql+asyncpg://gateway:gateway@postgres:5432/gateway
   REDIS_URL: redis://redis:6379/0
   QDRANT_URL: http://qdrant:6333
+  # Task 19. Present so `docker compose --profile chroma up` gives a stack with both
+  # backends enabled and nothing else to configure. Harmless when the profile is off: the
+  # service is simply unreachable, which degrades to "that backend is unhealthy" on
+  # `/readyz` and affects only organizations bound to it.
+  CHROMA_URL: http://chroma:8000
   S3_ENDPOINT: http://minio:9000
   S3_BUCKET: memory-gateway
   S3_ACCESS_KEY_ID: minioadmin
@@ -167,6 +172,28 @@ services:
       retries: 10
     restart: unless-stopped
 
+  chroma:
+    image: chromadb/chroma:1.0.0
+    # A profile, not a default: a stack that only wants Qdrant should not run a second
+    # vector database. `docker compose --profile chroma up` turns it on.
+    profiles: ["chroma"]
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma-data:/data
+    environment:
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /data
+      ANONYMIZED_TELEMETRY: "FALSE"
+    healthcheck:
+      # Chroma's image has no curl either; its own client is on the path.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v2/heartbeat')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:v1.12.4
     ports:
@@ -246,5 +273,6 @@ volumes:
   postgres-data:
   redis-data:
   qdrant-data:
+  chroma-data:
   minio-data:
   web-node-modules:

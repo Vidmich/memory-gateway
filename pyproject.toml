@@ -56,9 +56,26 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
 
+[project.optional-dependencies]
+# Task 19. The thin HTTP client, not `chromadb` itself: the server package pulls
+# `onnxruntime` and a default embedding model, and this deployment embeds through
+# `app/services/embeddings.py` under a single platform-wide model (SPEC §9.4). An
+# extra rather than a dependency because a Qdrant-only deployment should not carry it —
+# `app/services/vector_chroma.py` is imported only when a backend of that kind is
+# configured, and the registry says which extra to install when it is not there.
+chroma = [
+    "chromadb-client>=1.0",
+]
+
 [dependency-groups]
 dev = [
     "ruff>=0.8",
+    # Also a dev dependency, deliberately. `tests/chroma_fake.py` exercises the
+    # translation layer — distances into scores, a score floor into an over-fetch,
+    # `where` operators — on every run, everywhere, and it raises the client library's
+    # own `NotFoundError` so that the module's handling of a missing collection is the
+    # real one rather than a shape invented for the test.
+    "chromadb-client>=1.0",
     "mypy>=1.13",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -167,6 +184,7 @@ markers = [
     "live: calls a real provider; skipped without that provider's API key",
     "s3: requires a reachable object store (MinIO)",
     "qdrant: requires a reachable Qdrant instance",
+    "chroma: requires a reachable Chroma instance",
 ]
 timeout = 30
 # "D:" means "default" — only applied when the variable is not already set,

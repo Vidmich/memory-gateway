@@ -26,6 +26,7 @@ from app.db.models.request_log import RequestLog, Transcript
 from app.db.models.session import UserSession
 from app.db.models.upstream_model import UpstreamModel
 from app.db.models.user import User
+from app.db.models.vectors import VectorBinding
 
 __all__ = [
     "ApiKey",
@@ -49,4 +50,5 @@ __all__ = [
     "UpstreamModel",
     "User",
     "UserSession",
+    "VectorBinding",
 ]

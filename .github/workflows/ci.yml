@@ -63,9 +63,26 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
+      # Task 19. Both vector backends, because the whole argument of
+      # `tests/vector_store_contract.py` is that a hand-written double agrees with itself:
+      # payload filters, delete-by-filter and what `limit` means under a score floor are
+      # exactly where an implementation and a server disagree. Those checks are marked and
+      # skip on a laptop; if they skipped here too they would never run anywhere.
+      qdrant:
+        image: qdrant/qdrant:v1.12.4
+        ports:
+          - 6333:6333
+
+      chroma:
+        image: chromadb/chroma:1.0.0
+        ports:
+          - 8001:8000
+
     env:
       DATABASE_URL: postgresql+asyncpg://gateway:gateway@localhost:5432/gateway
       REDIS_URL: redis://localhost:6379/0
+      QDRANT_URL: http://localhost:6333
+      CHROMA_URL: http://localhost:8001
       # Database-backed tests skip on a laptop with the stack down. In CI they must run,
       # so an unapplied migration fails the build instead of quietly disappearing.
       REQUIRE_DB_TESTS: "1"
@@ -77,7 +94,10 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync --all-groups
+      # `--extra chroma` so the client the Chroma backend needs is present. It is an
+      # optional extra for a deployment and a dev dependency for this repository, because
+      # `tests/chroma_fake.py` raises the library's own `NotFoundError`.
+      - run: uv sync --all-groups --extra chroma
 
       - name: pytest
         run: uv run pytest --cov --cov-report=term-missing

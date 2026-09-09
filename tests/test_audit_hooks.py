@@ -18,6 +18,8 @@ declared and then wired to a service method with no hook in it.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -28,6 +30,10 @@ from app.core.tenancy import TenantScope
 from app.db.models import AuditEvent
 from app.main import create_app
 from app.services.audit import Attribution
+from app.services.fact_vectors import MemoryFactVectorStore
+from app.services.vector_backends import Backend
+from app.services.vector_index import MemoryVectorIndexAdmin
+from app.services.vector_store import MemoryVectorStore
 from tests.auth_support import PASSWORD
 from tests.conftest import DirectoryHarness
 
@@ -39,6 +45,14 @@ API = "/api/v1"
 AUDITED: dict[tuple[str, str], str] = {
     ("POST", f"{API}/auth/password"): "user.password_change",
     ("POST", f"{API}/connectors"): "connector.create",
+    (
+        "POST",
+        f"{API}/platform/organizations/{{organization_id}}/vector-backend",
+    ): "vector_backend.migrate",
+    (
+        "DELETE",
+        f"{API}/platform/organizations/{{organization_id}}/vector-backend",
+    ): "vector_backend.cancel",
     ("PATCH", f"{API}/connectors/{{connector_id}}"): "connector.update",
     ("DELETE", f"{API}/connectors/{{connector_id}}"): "connector.delete",
     ("POST", f"{API}/connectors/{{connector_id}}/reindex"): "connector.reindex",
@@ -322,6 +336,29 @@ async def tour(directory: DirectoryHarness) -> list[str]:
         expect=(204,),
     )
 
+    # A vector-backend migration, started and called off (task 19). The registry the test
+    # app builds has one backend, because a laptop has one — so a second in-memory one is
+    # installed for these two steps. What is being driven is the audit hook, not Chroma;
+    # `tests/test_vector_migration.py` is where the migration itself is asserted.
+    with _two_backends(directory):
+        ok(
+            await directory.as_user(
+                superadmin,
+                "POST",
+                f"{API}/platform/organizations/{initech['id']}/vector-backend",
+                json_body={"backend": "chroma"},
+            ),
+            expect=(202,),
+        )
+        ok(
+            await directory.as_user(
+                superadmin,
+                "DELETE",
+                f"{API}/platform/organizations/{initech['id']}/vector-backend",
+            ),
+            expect=(204,),
+        )
+
     # -- the model catalog -------------------------------------------------
     model = ok(
         await directory.as_user(
@@ -465,6 +502,32 @@ async def tour(directory: DirectoryHarness) -> list[str]:
     )
     secrets.extend([PASSWORD, "a-different-correct-horse"])
     return secrets
+
+
+@contextmanager
+def _two_backends(directory: DirectoryHarness) -> Iterator[None]:
+    """Add a second, in-memory backend to the running app for the duration of a block.
+
+    Reaching into ``app.state`` rather than configuring one, because the alternative is a
+    Chroma server — and what these two steps assert is that the *route* records an event.
+    """
+    # `platform_service`, not `platform`: the harness overrides the service the routes
+    # resolve through, and the bundle the real lifespan left on the app is a different one.
+    service = directory.app.state.platform_service
+    registry = service._backends
+    spare = MemoryVectorStore()
+    added = Backend(
+        kind="chroma",
+        store=spare,
+        facts=MemoryFactVectorStore(),
+        admin=MemoryVectorIndexAdmin(spare),
+        pointer_backed=True,
+    )
+    registry._backends["chroma"] = added
+    try:
+        yield
+    finally:
+        registry._backends.pop("chroma", None)
 
 
 async def test_the_tour_records_every_declared_action(directory: DirectoryHarness) -> None:

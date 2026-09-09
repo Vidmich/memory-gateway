@@ -62,7 +62,8 @@ from app.services.reindex_store import (
     RunView,
     TargetView,
 )
-from app.services.vector_index import COPY_BATCH, VectorIndexAdmin, successor
+from app.services.vector_backends import VectorBackends
+from app.services.vector_index import COPY_BATCH, successor
 from app.services.vector_store import ChunkPoint
 
 logger = logging.getLogger(__name__)
@@ -139,7 +140,7 @@ class Reindexer:
         self,
         store: ReindexStore,
         *,
-        index: VectorIndexAdmin,
+        backends: VectorBackends,
         maintenance: MaintenanceStore,
         settings: PlatformSettingsService,
         embedder_for: Callable[[EmbeddingChoice], Embedder],
@@ -147,7 +148,7 @@ class Reindexer:
         pause_seconds: float = PAGE_PAUSE_SECONDS,
     ) -> None:
         self._store = store
-        self._index = index
+        self._backends = backends
         self._maintenance = maintenance
         self._settings = settings
         self._embedder_for = embedder_for
@@ -171,14 +172,15 @@ class Reindexer:
         characters = 0
         sampled = 0
         for identifier in organizations:
-            live = await self._index.live_collection(identifier)
+            index = await self._backends.admin_for(identifier)
+            live = await index.live_collection(identifier)
             if live is None:
                 continue
             collections.append(live)
-            held = await self._index.count_points(live)
+            held = await index.count_points(live)
             points += held
             if held and sampled < ESTIMATE_SAMPLE:
-                page = await self._index.scroll(live, cursor=None, limit=ESTIMATE_SAMPLE)
+                page = await index.scroll(live, cursor=None, limit=ESTIMATE_SAMPLE)
                 for point in page.points:
                     characters += len(str(point.payload.get("text", "")))
                     sampled += 1
@@ -260,7 +262,8 @@ class Reindexer:
                 started_by=actor.user_id if actor is not None else None,
             )
             for identifier in await self._scope(organization_id):
-                live = await self._index.live_collection(identifier)
+                index = await self._backends.admin_for(identifier)
+                live = await index.live_collection(identifier)
                 if live is None:
                     # Nothing indexed for this tenant. Skipped rather than given an empty
                     # target: a row reading "0 of 0, swapped" on the progress screen is
@@ -270,7 +273,7 @@ class Reindexer:
                     run.id,
                     organization_id=identifier,
                     collection=successor(identifier, live),
-                    total=await self._index.count_points(live),
+                    total=await index.count_points(live),
                 )
             await transaction.commit()
             started = await transaction.run(run.id)
@@ -346,7 +349,8 @@ class Reindexer:
 
     async def _rebuild(self, target: TargetView, *, embedder: Embedder, dimension: int) -> None:
         organization_id = target.organization_id
-        live = await self._index.live_collection(organization_id)
+        index = await self._backends.admin_for(organization_id)
+        live = await index.live_collection(organization_id)
         if live is None or live == target.collection:
             # Either nothing to copy, or a resumed run whose swap already happened. Both
             # are "already done" rather than an error — which is what makes calling this
@@ -356,7 +360,7 @@ class Reindexer:
                 await transaction.commit()
             return
 
-        await self._index.create_collection(target.collection, dimension=dimension)
+        await index.create_collection(target.collection, dimension=dimension)
         async with self._store.begin() as transaction:
             await transaction.save_target(target.id, status=EMBEDDING)
             await transaction.commit()
@@ -364,8 +368,8 @@ class Reindexer:
         await self._copy(target, source=live, embedder=embedder)
 
         for _ in range(MAX_CATCH_UP):
-            if await self._index.count_points(target.collection) >= (
-                await self._index.count_points(live) - COUNT_TOLERANCE
+            if await index.count_points(target.collection) >= (
+                await index.count_points(live) - COUNT_TOLERANCE
             ):
                 break
             # Points arrived while the scroll was running. Copying from the beginning
@@ -378,13 +382,13 @@ class Reindexer:
 
         # The count, not the running total: a catch-up pass rewrites points the first pass
         # already wrote, and a sum of what was *sent* would report more than exists.
-        done = await self._index.count_points(target.collection)
+        done = await index.count_points(target.collection)
         async with self._store.begin() as transaction:
             await transaction.save_target(target.id, status=VERIFYING, done_points=done)
             await transaction.commit()
         await self._verify(target, source=live, embedder=embedder)
 
-        await self._index.swap_alias(organization_id, target.collection)
+        await index.promote(organization_id, target.collection)
         async with self._store.begin() as transaction:
             await transaction.save_target(target.id, status=SWAPPED, done_points=done)
             await transaction.commit()
@@ -405,14 +409,13 @@ class Reindexer:
         rather than a silently skipped one — the same ordering, and the same reasoning, as
         ``distilled_at`` being set after the facts are written.
         """
+        index = await self._backends.admin_for(target.organization_id)
         cursor = target.cursor
         done = target.done_points
         while True:
-            page = await self._index.scroll(source, cursor=cursor, limit=self._batch)
+            page = await index.scroll(source, cursor=cursor, limit=self._batch)
             if page.points:
-                await self._index.upsert_into(
-                    target.collection, await _embed(page.points, embedder)
-                )
+                await index.upsert_into(target.collection, await _embed(page.points, embedder))
                 done += len(page.points)
                 async with self._store.begin() as transaction:
                     await transaction.save_target(target.id, done_points=done, cursor=page.cursor)
@@ -425,24 +428,25 @@ class Reindexer:
 
     async def _verify(self, target: TargetView, *, source: str, embedder: Embedder) -> None:
         """Counts, then a search. Raising here leaves the old collection live."""
-        expected = await self._index.count_points(source)
-        actual = await self._index.count_points(target.collection)
+        index = await self._backends.admin_for(target.organization_id)
+        expected = await index.count_points(source)
+        actual = await index.count_points(target.collection)
         if actual < expected - COUNT_TOLERANCE:
             raise RuntimeError(
                 f"{target.collection} holds {actual} points and {source} holds {expected}"
             )
         if not expected:
             return
-        width = await self._index.collection_dimension(target.collection)
+        width = await index.collection_dimension(target.collection)
         if width != embedder.dimension:
             raise RuntimeError(
                 f"{target.collection} was built with width {width}, "
                 f"the model produces {embedder.dimension}"
             )
-        page = await self._index.scroll(target.collection, cursor=None, limit=1)
+        page = await index.scroll(target.collection, cursor=None, limit=1)
         probe = str(page.points[0].payload.get("text", "")) if page.points else ""
         vector = (await embedder.embed([probe or "sample"]))[0]
-        found = await self._index.search_in(target.collection, vector, limit=1)
+        found = await index.search_in(target.collection, vector, limit=1)
         if not found:
             # A collection with points that answers no query at all is one nothing can
             # retrieve from. Better to fail here, with the old index still serving, than

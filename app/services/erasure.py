@@ -38,6 +38,7 @@ from app.services.audit import Attribution, Target
 from app.services.fact_vectors import FactVectorStore
 from app.services.maintenance_store import MaintenanceStore
 from app.services.object_store import ObjectStore
+from app.services.vector_backends import VectorBackends
 from app.services.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -101,11 +102,17 @@ class OrganizationEraser:
         vectors: VectorStore,
         facts: FactVectorStore,
         objects: ObjectStore,
+        backends: VectorBackends | None = None,
     ) -> None:
         self._store = store
         self._vectors = vectors
         self._facts = facts
         self._objects = objects
+        #: Only so the report can *name* the backends it cleared. The clearing itself goes
+        #: through the routing stores above, which drop from every backend — a tenant whose
+        #: migration was abandoned has data in two, and a report covering only the one being
+        #: read from is worthless for the purpose the report exists for.
+        self._backends = backends
 
     async def request(
         self,
@@ -223,10 +230,21 @@ class OrganizationEraser:
                     removed=sum(counts.values()),
                     remaining=remaining,
                 ),
-                Erased(store="qdrant", removed=0),
+                *(Erased(store=f"vectors:{kind}", removed=0) for kind in self._vector_stores()),
                 Erased(store="object-store", removed=objects),
             ],
         )
+
+    def _vector_stores(self) -> list[str]:
+        """The backends this report should account for.
+
+        Every configured one, not the tenant's binding: the purge drops from all of them,
+        and a report that named only where the data was *supposed* to be would be silent
+        about the case this is most needed for — a half-finished migration.
+        """
+        if self._backends is None:
+            return ["qdrant"]
+        return self._backends.enabled()
 
     async def _remaining(self, organization_id: uuid.UUID) -> int:
         """Rows the pass did not manage to remove.

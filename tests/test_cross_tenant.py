@@ -304,6 +304,11 @@ async def test_the_net_covers_every_scoped_route(directory: DirectoryHarness) ->
         "GET /api/v1/platform/reindex/{run_id}",
         "POST /api/v1/platform/organizations/{organization_id}/deletion",
         "DELETE /api/v1/platform/organizations/{organization_id}/deletion",
+        # Task 19's, for the same reason and one of its own: which vector backend a
+        # tenant is on depends on what the *deployment* has, which is not a fact an
+        # organization admin can see or should be able to change.
+        "POST /api/v1/platform/organizations/{organization_id}/vector-backend",
+        "DELETE /api/v1/platform/organizations/{organization_id}/vector-backend",
     }
 
     assert with_parameters - covered - exempt == set()

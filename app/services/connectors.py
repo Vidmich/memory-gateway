@@ -36,20 +36,13 @@ from typing import Any, Protocol
 from app.core.errors import Conflict, NotFound, Validation
 from app.core.ids import uuid7
 from app.core.tenancy import Actor
-from app.db.models import Connector, Document
+from app.db.models import Connector, Document, ReprocessingRun
 from app.db.models.connector import CONNECTOR_TYPES, TERMINAL_DOCUMENT_STATUSES
 from app.schemas.config import merge_config
-from app.schemas.connector_config import (
-    ChunkingConfig,
-    changed_formats,
-    effective,
-    fingerprint,
-)
+from app.schemas.connector_config import ChunkingConfig, changed_formats, effective
 from app.schemas.summarization import (
-    ContextIdentity,
     SummarizationConfig,
     adds_summary_chunk,
-    context_identity,
     prefixes_context,
 )
 from app.schemas.summarization import changed_formats as changed_summarization
@@ -63,10 +56,17 @@ from app.services.chunking_preview import (
     candidates_from,
 )
 from app.services.connector_source import storage_prefix
-from app.services.connector_store import ConnectorStore, ConnectorTransaction, DocumentDraft
+from app.services.connector_store import (
+    ConnectorStore,
+    ConnectorTransaction,
+    DocumentDraft,
+    ReprocessScope,
+    StaleCounts,
+)
 from app.services.distillation_models import ModelChoice
 from app.services.embeddings import Embedder
-from app.services.filetypes import FORMAT_KINDS, SNIFF_BYTES, format_label, sniff
+from app.services.filetypes import SNIFF_BYTES, format_label, sniff
+from app.services.index_fingerprint import Reason, reason_sentence, stale_reason
 from app.services.ingestion import IngestionPipeline, IngestionSettings, ResyncSummary
 from app.services.jobs import (
     DELETE_CONNECTOR,
@@ -81,7 +81,8 @@ from app.services.jobs import (
 )
 from app.services.object_store import ObjectStore, ObjectTooLarge
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
-from app.services.summarization import MANUAL, PROMPT_VERSION
+from app.services.reprocessing import Reprocessor
+from app.services.summarization import MANUAL
 from app.services.summarizer import SUMMARIZED
 from app.services.vector_store import Match, Stored, VectorStore
 
@@ -138,14 +139,20 @@ class ConnectorPatch:
 
 @dataclass(frozen=True, slots=True)
 class DocumentPage(Page[Document]):
-    """A page of documents plus which of them are stale (task 101).
+    """A page of documents plus *why* each stale one is stale (task 104).
 
-    The staleness is a *comparison* — the fingerprint on the row against the one ingestion
-    would write now — so it belongs with the listing that has both halves in hand, and not
-    on the row, which cannot know what "now" is.
+    The status itself is on the row now — ``index_status`` — because a stored fact is what
+    every screen can agree on. The reason is still a comparison, of the row's fingerprint
+    against the one ingestion would write now, so it belongs with the listing that has both
+    halves in hand. Rows that are current have no entry.
     """
 
-    stale: frozenset[uuid.UUID] = frozenset()
+    reasons: Mapping[uuid.UUID, Reason] = field(default_factory=dict)
+
+    @property
+    def stale(self) -> frozenset[uuid.UUID]:
+        """The rows the stored status calls stale."""
+        return frozenset(row.id for row in self.items if row.index_status == "stale")
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,15 +161,21 @@ class ConnectorView:
     #: Documents by status, for the list screen's health summary.
     counts: Mapping[str, int]
     total_bytes: int
-    #: True when the chunking settings changed and the stored chunks no longer match
-    #: them. Set by an update, so the UI can say "reindex to apply" at the moment the
-    #: change is made rather than in a banner that is always on.
+    #: Task 104. Documents by index status: how many are stale, being reprocessed, or
+    #: unrecorded. Stored on the rows, so this is a count rather than a comparison, and
+    #: it reads the same after a refresh, tomorrow, and from the list.
+    stale: StaleCounts = field(default_factory=StaleCounts)
+    #: True when any document is stale — derived and persistent, so the PATCH response
+    #: and the GET a minute later agree.
     reindex_required: bool = False
-    #: Which format kinds that change invalidated. Empty unless ``reindex_required``. A
-    #: set rather than a flag because a per-format override should reindex the code files
-    #: and leave the PDFs alone — see
-    #: :func:`~app.schemas.connector_config.changed_formats`.
+    #: The format kinds with stale documents. A set rather than a flag because a
+    #: per-format override should reprocess the code files and leave the PDFs alone.
     reindex_formats: frozenset[str] = frozenset()
+    #: What ingestion would write now for each format — the thing every document is
+    #: compared against. Filled on the detail read, not the list.
+    effective_fingerprints: Mapping[str, str] = field(default_factory=dict)
+    #: The reprocessing run in flight, if one is, for the header's progress bar.
+    reprocessing: ReprocessingRun | None = None
     #: Task 102. What the connector's summarization ``model_id`` resolves to through the
     #: whole chain — its own choice, the organization's default, the distillation model,
     #: the platform's — so the panel can show the fallback greyed rather than a blank.
@@ -228,6 +241,7 @@ class ConnectorService:
         pipeline: IngestionPipeline,
         queue: JobQueue,
         settings: IngestionSettings | None = None,
+        reprocessor: Reprocessor | None = None,
     ) -> None:
         self._store = store
         self._objects = objects
@@ -236,6 +250,10 @@ class ConnectorService:
         self._pipeline = pipeline
         self._queue = queue
         self._settings = settings or IngestionSettings()
+        #: Task 104. Marks documents stale on a save and runs the reprocess. ``None``
+        #: only in a build that has no runs, where a save still records the change and
+        #: the nightly reconciliation catches the statuses up.
+        self._reprocessor = reprocessor
 
     @property
     def embedding_model(self) -> str:
@@ -256,12 +274,15 @@ class ConnectorService:
             ids = [row.id for row in page.items]
             counts = await transaction.document_counts(ids)
             sizes = await transaction.document_bytes(ids)
+            stale = await transaction.index_status_counts(ids)
         return Page(
             items=tuple(
                 ConnectorView(
                     connector=row,
                     counts=dict(counts.get(row.id, {})),
                     total_bytes=sizes.get(row.id, 0),
+                    stale=stale.get(row.id, StaleCounts()),
+                    reindex_required=stale.get(row.id, StaleCounts()).stale > 0,
                 )
                 for row in page.items
             ),
@@ -271,13 +292,37 @@ class ConnectorService:
     async def get_connector(self, actor: Actor, connector_id: uuid.UUID) -> ConnectorView:
         async with self._store.begin(actor.scope) as transaction:
             connector = await self._require(transaction, connector_id)
-            counts = await transaction.document_counts([connector_id])
-            sizes = await transaction.document_bytes([connector_id])
+        return await self._detail(actor, connector)
+
+    async def _detail(self, actor: Actor, connector: Connector) -> ConnectorView:
+        """The detail view: counts, the stale summary, what every row is compared
+        against, and the run in flight. The same for a GET and for the PATCH that caused
+        the staleness, which is the whole point — the two agree because both read it."""
+        async with self._store.begin(actor.scope) as transaction:
+            counts = await transaction.document_counts([connector.id])
+            sizes = await transaction.document_bytes([connector.id])
+            stale = (await transaction.index_status_counts([connector.id])).get(
+                connector.id, StaleCounts()
+            )
+            formats = frozenset(
+                format_label(mime or "")
+                for mime in await transaction.stale_mime_types(connector.id)
+            )
+        running = (
+            await self._reprocessor.running(actor, connector.id)
+            if self._reprocessor is not None
+            else None
+        )
         return ConnectorView(
             connector=connector,
-            counts=dict(counts.get(connector_id, {})),
-            total_bytes=sizes.get(connector_id, 0),
+            counts=dict(counts.get(connector.id, {})),
+            total_bytes=sizes.get(connector.id, 0),
             summary_model=await self._summary_model(connector),
+            stale=stale,
+            reindex_required=stale.stale > 0,
+            reindex_formats=formats,
+            effective_fingerprints=await self._pipeline.expected_fingerprints(connector),
+            reprocessing=running,
         )
 
     async def _summary_model(self, connector: Connector) -> ModelChoice | None:
@@ -290,6 +335,7 @@ class ConnectorService:
         connector_id: uuid.UUID,
         *,
         status: str | None = None,
+        index_status: str | None = None,
         cursor: str | None = None,
         limit: int | None = None,
     ) -> DocumentPage:
@@ -297,69 +343,61 @@ class ConnectorService:
         async with self._store.begin(actor.scope) as transaction:
             connector = await self._require(transaction, connector_id)
             rows = await transaction.documents(
-                connector_id, after=decode_cursor(cursor), limit=size, status=status
+                connector_id,
+                after=decode_cursor(cursor),
+                limit=size,
+                status=status,
+                index_status=index_status,
             )
         page = page_of(rows, limit=size, cursor_of=lambda row: row.id)
-        chunking = ChunkingConfig.load(connector.chunking)
-        contexts = await self._contexts(
-            connector.organization_id, SummarizationConfig.load(connector.summarization)
-        )
+        expected = await self._pipeline.expected_fingerprints(connector)
         return DocumentPage(
             items=page.items,
             next_cursor=page.next_cursor,
-            stale=frozenset(row.id for row in page.items if self._stale(chunking, contexts, row)),
+            reasons={
+                row.id: reason
+                for row in page.items
+                if (reason := self._reason(row, expected, connector)) is not None
+            },
         )
 
-    async def _contexts(
-        self, organization_id: uuid.UUID, summarization: SummarizationConfig
-    ) -> dict[str, ContextIdentity | None]:
-        """What the ``contextual`` half of the fingerprint is *now*, per format kind.
+    def _reason(
+        self, document: Document, expected: Mapping[str, str], connector: Connector
+    ) -> Reason | None:
+        """Why this row is stale, in words a person can act on (task 104).
 
-        Resolved once per listing rather than per row: the model lookup is a catalog read,
-        and a page of two hundred documents under one connector shares at most a handful
-        of distinct settings.
+        Only for rows the stored status says are stale, and for indexed rows with no
+        fingerprint at all — which are *unrecorded*, shown differently, and never counted
+        as stale, because a blank is not known to be wrong. A row the status calls current
+        gets no reason even if the comparison would find one: the status is the index and
+        the nightly reconciliation is what corrects it, not a listing.
         """
-        resolved: dict[uuid.UUID | None, uuid.UUID | None] = {}
-        contexts: dict[str, ContextIdentity | None] = {}
-        for kind in FORMAT_KINDS:
-            config = summarization_for(summarization, kind)
-            if not prefixes_context(config.mode):
-                contexts[kind] = None
-                continue
-            if config.model_id not in resolved:
-                choice = await self._pipeline.summary_model(organization_id, config.model_id)
-                resolved[config.model_id] = choice.id if choice else None
-            contexts[kind] = context_identity(
-                config, resolved[config.model_id], prompt_version=PROMPT_VERSION
-            )
-        return contexts
-
-    def _stale(
-        self,
-        chunking: ChunkingConfig,
-        contexts: Mapping[str, ContextIdentity | None],
-        document: Document,
-    ) -> bool:
-        """Whether this document's chunks were cut under a configuration that is no
-        longer the current one — the connector's settings, the embedding model where the
-        strategy depends on it, the tokenizer (task 101), or the contextual summarization
-        the vectors were built with (task 102).
-
-        Compared on the fingerprint the document recorded against the one ingestion would
-        write *now*, which is the same function with the same inputs. A row without a
-        fingerprint — indexed before task 20 recorded one — is not stale, it is unknown,
-        and a blank is the honest answer there.
-        """
-        if document.status != "indexed" or not document.chunk_fingerprint:
-            return False
         kind = format_label(document.mime_type or "")
-        current = fingerprint(
-            effective(chunking, kind),
-            embedding_model=self._embedder.model,
-            tokenizer=self._pipeline.tokenizer.name,
-            context=contexts.get(kind),
+        current = expected.get(kind, "")
+        if document.status == "indexed" and document.index_fingerprint is None:
+            code = "unrecorded"
+        elif document.index_status == "stale":
+            code = stale_reason(document.index_fingerprint, current) or "chunking"
+        else:
+            return None
+        return Reason(
+            code=code,
+            sentence=reason_sentence(
+                code,
+                was={
+                    "embedding_model": document.embedding_model,
+                    "tokenizer": document.tokenizer,
+                    "chunk_strategy": document.chunk_strategy,
+                },
+                now={
+                    "embedding_model": self._embedder.model,
+                    "tokenizer": self._pipeline.tokenizer.name,
+                    # The connector is passed in rather than read off the row: the
+                    # relationship would lazy-load, which an async session refuses.
+                    "chunk_strategy": _effective_strategy(connector, kind),
+                },
+            ),
         )
-        return document.chunk_fingerprint != current
 
     # -- writes ----------------------------------------------------------
 
@@ -463,24 +501,63 @@ class ConnectorService:
             )
             await transaction.commit()
 
-            counts = await transaction.document_counts([connector_id])
-            sizes = await transaction.document_bytes([connector_id])
-
         if changed:
+            # Task 104. The change is now a stored fact on every affected row, not a flag
+            # in this response: one UPDATE per format, comparing each row's fingerprint
+            # with what ingestion would write now — so reverting the setting un-marks
+            # them just as well.
+            marked = await self._mark_stale(actor, connector, sorted(changed))
             logger.info(
-                "connector chunking changed; existing chunks are now stale",
-                extra={"connector_id": str(connector_id), "formats": sorted(changed)},
+                "connector configuration changed; existing chunks are now stale",
+                extra={
+                    "connector_id": str(connector_id),
+                    "formats": sorted(changed),
+                    "documents": marked,
+                },
             )
-        return ConnectorView(
-            connector=connector,
-            counts=dict(counts.get(connector_id, {})),
-            total_bytes=sizes.get(connector_id, 0),
-            # Only meaningful when something is actually indexed. Telling somebody to
-            # reindex an empty connector is noise they will learn to ignore.
-            reindex_required=bool(changed) and bool(counts.get(connector_id)),
-            reindex_formats=changed,
-            summary_model=await self._summary_model(connector),
-        )
+        return await self._detail(actor, connector)
+
+    async def _mark_stale(self, actor: Actor, connector: Connector, kinds: Sequence[str]) -> int:
+        if self._reprocessor is not None:
+            return await self._reprocessor.mark_after_save(actor.scope, connector, kinds)
+        expected = await self._pipeline.expected_fingerprints(connector)
+        async with self._store.begin(actor.scope) as transaction:
+            marked = await transaction.reconcile_index_status(connector.id, expected, kinds=kinds)
+            await transaction.commit()
+        return marked
+
+    async def stale_preview(
+        self, actor: Actor, connector_id: uuid.UUID, patch: ConnectorPatch
+    ) -> dict[str, int]:
+        """How many indexed documents a save of ``patch`` would mark stale, per format —
+        what the form says *before* saving (task 104), fed by the same fingerprint diff
+        the save uses, so chunking, summarization and anything later get it for free."""
+        async with self._store.begin(actor.scope) as transaction:
+            connector = await self._require(transaction, connector_id)
+            before = ChunkingConfig.load(connector.chunking)
+            summarized_before = SummarizationConfig.load(connector.summarization)
+            chunking = (
+                merge_config(ChunkingConfig, connector.chunking, patch.chunking, field="chunking")
+                if patch.chunking is not None
+                else connector.chunking
+            )
+            summarization = (
+                merge_config(
+                    SummarizationConfig,
+                    connector.summarization,
+                    patch.summarization,
+                    field="summarization",
+                )
+                if patch.summarization is not None
+                else connector.summarization
+            )
+            changed = changed_formats(
+                before, ChunkingConfig.load(chunking)
+            ) | changed_summarization(summarized_before, SummarizationConfig.load(summarization))
+            if not changed:
+                return {}
+            counts = await transaction.indexed_by_format(connector.id)
+        return {kind: counts[kind] for kind in sorted(changed) if counts.get(kind)}
 
     # -- summaries (task 102) ---------------------------------------------
 
@@ -759,12 +836,19 @@ class ConnectorService:
             document.error = None
             document.chunk_count = 0
             document.indexed_at = None
+            # Task 104. Being re-ingested is the third index status; and a document a run
+            # still owns keeps the run, so the run's counters settle when this finishes
+            # rather than waiting for a job that will never come.
+            document.index_status = "reprocessing"
+            payload = {
+                "organization_id": str(document.organization_id),
+                "document_id": str(document_id),
+            }
+            if document.reprocessing_run_id is not None:
+                payload["run_id"] = str(document.reprocessing_run_id)
             outbox.add(
                 INGEST_DOCUMENT,
-                {
-                    "organization_id": str(document.organization_id),
-                    "document_id": str(document_id),
-                },
+                payload,
                 # Deliberately *not* the content hash: a retry is a request to run again
                 # even though nothing about the file changed, and keying on the hash would
                 # make the button do nothing for an hour.
@@ -807,7 +891,19 @@ class ConnectorService:
         for as long as the enqueue takes — and a page that lands is a page whose documents
         are already on their way, which is the right partial outcome for a button somebody
         pressed by hand.
+
+        Since task 104 this is an alias: with a reprocessor wired, it starts a tracked
+        run over the named formats (or everything) and returns how many documents the run
+        claimed. The untracked path below stays for a build without runs.
         """
+        if self._reprocessor is not None:
+            scope = (
+                ReprocessScope(kind="formats", formats=frozenset(formats))
+                if formats
+                else ReprocessScope(kind="all")
+            )
+            started = await self._reprocessor.start(actor, connector_id, scope=scope)
+            return started.run.total if started.created else 0
         wanted = frozenset(formats) if formats is not None else None
         queued = 0
         after: uuid.UUID | None = None
@@ -1141,6 +1237,10 @@ class ConnectorService:
             # The same 404 whether it does not exist or belongs to another organization.
             raise NotFound("Connector not found.")
         return connector
+
+
+def _effective_strategy(connector: Connector, kind: str) -> str:
+    return effective(ChunkingConfig.load(connector.chunking), kind).strategy
 
 
 async def _rest_of(upload: UploadedFile, head: bytes) -> AsyncIterator[bytes]:

@@ -21,6 +21,7 @@ import {
   makeGatewayLimits,
   makeModel,
   makeRetrievalPreview,
+  makeStaleAlert,
   makeSummarizationHealth,
   makeSummary,
   makeUser,
@@ -48,6 +49,8 @@ type ServerOptions = {
     created_at: string
   }[]
   user?: ReturnType<typeof makeUser>
+  /** Task 104: what `GET /reprocessing/alerts` answers. */
+  stale?: ReturnType<typeof makeStaleAlert>[]
 }
 
 function fakeServer(options: ServerOptions = {}) {
@@ -82,6 +85,9 @@ function fakeServer(options: ServerOptions = {}) {
     if (path.startsWith('/api/v1/limits/pressure')) return Promise.resolve(json({ items: [] }))
     if (path === '/api/v1/validation/alerts') {
       return Promise.resolve(json({ items: options.alerts ?? [] }))
+    }
+    if (path.startsWith('/api/v1/reprocessing/alerts')) {
+      return Promise.resolve(json({ items: options.stale ?? [] }))
     }
     // -- audits
     if (path.endsWith('/audits') && method === 'GET') {
@@ -478,5 +484,20 @@ describe('the dashboard', () => {
       'Product docs: a re-embedded sample agrees with the index at 0.61 (embedding)',
     )
     expect(within(card).getByRole('link')).toHaveAttribute('href', '/connectors/c1')
+  })
+
+  it('lists connectors whose documents have been stale for over a day, with the age (task 104)', async () => {
+    renderAt('/', fakeServer({ stale: [makeStaleAlert()] }))
+
+    const card = await screen.findByTestId('stale-alerts')
+    expect(card).toHaveTextContent('Product docs: 1,184 documents stale for 29 h')
+    expect(within(card).getByRole('link')).toHaveAttribute('href', '/connectors/c1')
+  })
+
+  it('shows no stale card when nothing has been stale for a day', async () => {
+    renderAt('/', fakeServer())
+    await screen.findByText(/Requests/)
+
+    expect(screen.queryByTestId('stale-alerts')).not.toBeInTheDocument()
   })
 })

@@ -167,13 +167,11 @@ describe('the gateways list', () => {
     const { client } = fakeServer()
     renderAt(client, '/gateways')
 
-    expect(
-      await screen.findByText('https://localhost:8000/g/acme-support/v1'),
-    ).toBeInTheDocument()
+    expect(await screen.findByText('https://localhost:8000/g/acme-support/v1')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /copy/i }).length).toBeGreaterThan(0)
   })
 
-  it('shows the last day\'s request count from one grouped query', async () => {
+  it("shows the last day's request count from one grouped query", async () => {
     // One query for the page, not one per row — and a real zero for a gateway with no
     // traffic, which is a different answer from "not measured".
     const { client, requests } = fakeServer({
@@ -199,8 +197,24 @@ describe('the gateways list', () => {
         makeGateway({
           routing_mode: 'failover',
           targets: [
-            { id: 'mo1', name: 'acme-gpt', dialect: 'openai', enabled: true, organization_id: 'o1', priority: 0, weight: 100 },
-            { id: 'mo2', name: 'acme-mini', dialect: 'openai', enabled: false, organization_id: 'o1', priority: 1, weight: 100 },
+            {
+              id: 'mo1',
+              name: 'acme-gpt',
+              dialect: 'openai',
+              enabled: true,
+              organization_id: 'o1',
+              priority: 0,
+              weight: 100,
+            },
+            {
+              id: 'mo2',
+              name: 'acme-mini',
+              dialect: 'openai',
+              enabled: false,
+              organization_id: 'o1',
+              priority: 1,
+              weight: 100,
+            },
           ],
         }),
       ],
@@ -363,9 +377,7 @@ describe('the editor', () => {
     const { client } = fakeServer()
     renderAt(client, '/gateways/g1')
 
-    expect(
-      await screen.findByRole('button', { name: 'Clone with a new slug' }),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Clone with a new slug' })).toBeInTheDocument()
   })
 
   it('pre-fills a clone from the original but leaves the slug empty', async () => {
@@ -374,9 +386,7 @@ describe('the editor', () => {
     })
     renderAt(client, '/gateways/new?clone=g1')
 
-    await waitFor(() =>
-      expect(screen.getByLabelText('Name')).toHaveValue('Support Bot (copy)'),
-    )
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Support Bot (copy)'))
     expect(screen.getByLabelText('Slug')).toHaveValue('')
     expect(screen.getByLabelText(/System context/)).toHaveValue('Be concise.')
   })
@@ -423,7 +433,9 @@ describe('the editor', () => {
     await person.click(await screen.findByRole('button', { name: 'Send test message' }))
 
     const result = await screen.findByRole('status')
-    expect(within(result).getByText(/answered by acme-mini after 1 failed attempt/)).toBeInTheDocument()
+    expect(
+      within(result).getByText(/answered by acme-mini after 1 failed attempt/),
+    ).toBeInTheDocument()
     expect(within(result).getByText('upstream_error')).toBeInTheDocument()
   })
 
@@ -458,9 +470,7 @@ describe('the editor', () => {
 
     await person.selectOptions(await screen.findByLabelText('Mode'), 'failover')
 
-    expect(
-      await screen.findByText(/cannot fail over once\s+output has begun/),
-    ).toBeInTheDocument()
+    expect(await screen.findByText(/cannot fail over once\s+output has begun/)).toBeInTheDocument()
   })
 
   it('saves a failover chain in the order the buttons put it in', async () => {
@@ -821,7 +831,9 @@ describe('the logging section', () => {
     await person.click(screen.getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => {
-      const body = lastBody(requests, 'PATCH') as { logging_config: { redaction_patterns: string[] } }
+      const body = lastBody(requests, 'PATCH') as {
+        logging_config: { redaction_patterns: string[] }
+      }
       expect(body.logging_config.redaction_patterns).toEqual(['first', 'second'])
     })
   })
@@ -899,6 +911,34 @@ describe('the memory section', () => {
     expect(body.doc_min_score).toBe(0.5)
   })
 
+  it('says when an attached connector is stale, and not otherwise (task 104)', async () => {
+    // The gateway is where two chunkings are felt, and the notice follows the form: an
+    // unsaved selection of a stale connector shows it, deselecting it hides it.
+    const { client } = fakeServer({
+      connectors: [
+        makeConnector({ id: 'cn1', name: 'Product docs', stale_documents: 12 }),
+        makeConnector({ id: 'cn2', name: 'Wiki' }),
+      ],
+    })
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+    await screen.findByLabelText(/Product docs/)
+    expect(screen.queryByTestId('stale-connectors')).not.toBeInTheDocument()
+
+    await person.click(screen.getByLabelText(/Wiki/))
+    expect(screen.queryByTestId('stale-connectors')).not.toBeInTheDocument()
+
+    await person.click(screen.getByLabelText(/Product docs/))
+    const notice = await screen.findByTestId('stale-connectors')
+    expect(notice).toHaveTextContent(
+      'Answers may be drawn from two chunkings until Product docs (12 stale) is reprocessed.',
+    )
+    expect(within(notice).getByRole('link', { name: 'Open Product docs' })).toHaveAttribute(
+      'href',
+      '/connectors/cn1',
+    )
+  })
+
   it('saves the citation mode from the Prompt section into the memory blob (task 100)', async () => {
     // Edited under Prompt, because it is about the answer; stored in memory_config,
     // because it is about the retrieved documents. The form has to bridge the two.
@@ -974,10 +1014,7 @@ describe('the memory section', () => {
     const person = userEvent.setup()
 
     expect(screen.queryByLabelText('Turns to include')).not.toBeInTheDocument()
-    await person.selectOptions(
-      await screen.findByLabelText('What to search for'),
-      'last_n_turns',
-    )
+    await person.selectOptions(await screen.findByLabelText('What to search for'), 'last_n_turns')
 
     expect(screen.getByLabelText('Turns to include')).toBeInTheDocument()
   })
@@ -987,10 +1024,7 @@ describe('the memory section', () => {
     renderAt(client, '/gateways/g1')
     const person = userEvent.setup()
 
-    await person.selectOptions(
-      await screen.findByLabelText('If retrieval fails'),
-      'fail_closed',
-    )
+    await person.selectOptions(await screen.findByLabelText('If retrieval fails'), 'fail_closed')
 
     expect(screen.getByText(/refused with a 503/)).toBeInTheDocument()
   })
@@ -1020,9 +1054,7 @@ describe('try retrieval', () => {
     await person.type(screen.getByLabelText('Question'), 'refunds')
     await person.click(screen.getByRole('button', { name: 'Try retrieval' }))
 
-    await waitFor(() =>
-      expect(requests.some((r) => r.path.endsWith('/try-retrieval'))).toBe(true),
-    )
+    await waitFor(() => expect(requests.some((r) => r.path.endsWith('/try-retrieval'))).toBe(true))
     const body = requests.find((r) => r.path.endsWith('/try-retrieval'))!.body
     expect((body.memory_config as Record<string, unknown>).doc_min_score).toBe(0.6)
     // And nothing was saved.

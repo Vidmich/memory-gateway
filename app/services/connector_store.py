@@ -25,15 +25,17 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import case, false, func, or_, select, true, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import uuid7
 from app.core.tenancy import TenantScope
-from app.db.models import Connector, Document
+from app.db.models import Connector, Document, ReprocessingRun
+from app.db.models.connector import TERMINAL_DOCUMENT_STATUSES
+from app.db.models.reprocessing import settle
 from app.db.repositories import ConnectorRepository, DocumentIndexRow, DocumentRepository
 from app.db.scoping import scoped
 from app.services.audit import (
@@ -41,6 +43,7 @@ from app.services.audit import (
     MemoryAuditRecorder,
     PostgresAuditRecorder,
 )
+from app.services.filetypes import KNOWN_MEDIA_TYPES, format_label, media_types_of
 from app.services.memory_db import MemoryDatabase
 
 
@@ -55,8 +58,50 @@ class DocumentAuditRow:
     mime_type: str | None
     size_bytes: int
     status: str
-    chunk_fingerprint: str | None
+    #: Task 104: the structured fingerprint. The audit reads this one; ``chunk_fingerprint``
+    #: is gone from the row's readers.
+    index_fingerprint: str | None
     embedding_model: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StaleCounts:
+    """A connector's documents by index status (task 104), for the badge and the header."""
+
+    current: int = 0
+    stale: int = 0
+    reprocessing: int = 0
+    #: Indexed rows with no readable fingerprint: shown as *unrecorded*, never as stale.
+    unrecorded: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class StaleSummary:
+    """One connector with stale documents, and since when — the oldest marking among
+    them, which is the row's ``updated_at`` at the moment the save marked it (task 104).
+    What the dashboard's degraded list is built from."""
+
+    id: uuid.UUID
+    name: str
+    stale: int
+    since: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReprocessScope:
+    """Which of a connector's documents a reprocessing run takes (task 104).
+
+    ``stale`` is the default and the reason the run exists: the old endpoint could only
+    reprocess everything, and re-ingesting a thousand current documents to recut twelve
+    stale ones is a bill nobody asked for. ``formats`` narrows to kinds; ``all`` is every
+    terminal document; ``unrecorded`` the rows with no fingerprint to compare; ``failed``
+    the ones a previous run left failed — **Retry failed**.
+    """
+
+    kind: str = "stale"
+    formats: frozenset[str] = frozenset()
+    #: For ``failed``: only documents the named run left failed.
+    run_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +141,17 @@ class ConnectorTransaction(AuditingTransaction, Protocol):
         after: uuid.UUID | None,
         limit: int,
         status: str | None = None,
+        index_status: str | None = None,
     ) -> Sequence[Document]: ...
+
+    async def stale_mime_types(self, connector_id: uuid.UUID) -> set[str | None]:
+        """The media types of the connector's stale documents, for the formats the
+        header names (task 104)."""
+        ...
+
+    async def indexed_by_format(self, connector_id: uuid.UUID) -> Mapping[str, int]:
+        """Indexed documents per format kind — what a save is about to mark stale."""
+        ...
 
     async def document_by_source(
         self, connector_id: uuid.UUID, source_uri: str
@@ -133,6 +188,73 @@ class ConnectorTransaction(AuditingTransaction, Protocol):
 
     async def audit_rows(self, connector_id: uuid.UUID) -> Sequence[DocumentAuditRow]:
         """Every document of a connector, as an audit sees it (task 103)."""
+        ...
+
+    # -- index status (task 104) -------------------------------------------
+
+    async def reconcile_index_status(
+        self,
+        connector_id: uuid.UUID,
+        expected: Mapping[str, str],
+        *,
+        kinds: Sequence[str] | None = None,
+    ) -> int:
+        """Set every indexed document's ``index_status`` from its fingerprint.
+
+        ``expected`` is the effective fingerprint per format kind; ``kinds`` narrows the
+        pass to the formats a change touched, and ``None`` covers them all (the nightly
+        reconciliation). One ``UPDATE`` per kind, not a comparison per row at read time:
+        a row whose fingerprint equals the expected one becomes ``current``, any other
+        recorded one ``stale``. Rows a run owns (``reprocessing``) and rows with no
+        fingerprint are left alone. Returns how many rows changed, which for the nightly
+        pass is the number of rows the stored status had wrong.
+        """
+        ...
+
+    async def index_status_counts(
+        self, connector_ids: Sequence[uuid.UUID]
+    ) -> Mapping[uuid.UUID, StaleCounts]: ...
+
+    async def stale_summaries(self) -> Sequence[StaleSummary]:
+        """Every connector in the scope with stale documents, oldest marking first."""
+        ...
+
+    async def documents_in_scope(
+        self,
+        connector_id: uuid.UUID,
+        scope: ReprocessScope,
+        *,
+        after: uuid.UUID | None,
+        limit: int,
+    ) -> Sequence[Document]:
+        """A page of the documents a reprocessing run would take, oldest first, terminal
+        rows only — a document with a job already coming is not reset under it."""
+        ...
+
+    async def claim_for_run(self, documents: Sequence[Document], run_id: uuid.UUID) -> None:
+        """Reset these rows to ``pending`` under the run: ``index_status`` becomes
+        ``reprocessing`` and the run id is written, so a run a worker abandoned can be
+        continued over exactly the rows it still owns."""
+        ...
+
+    async def unfinished_for_run(self, run_id: uuid.UUID) -> Sequence[Document]:
+        """The rows a run still owns that have not reached a terminal state — what
+        continuing it re-enqueues."""
+        ...
+
+    async def count_reprocessed(
+        self, run_id: uuid.UUID, outcome: str, *, tokens: int
+    ) -> ReprocessingRun | None:
+        """One document of the run finished as ``done``, ``failed`` or ``skipped``. Bumps
+        the counter and the spend atomically, and closes the run when every document has
+        settled. Returns the run, or ``None`` when no such run exists."""
+        ...
+
+    async def rewrite_embedding_model(self, embedding_model: str) -> int:
+        """After a platform reindex swapped the collection (task 17): every indexed row in
+        the scope now holds vectors from ``embedding_model``. Rewrites the row's
+        ``embedding_model`` and the fingerprint's embedding segment, leaving the other
+        segments — the chunks did not change — and leaving unrecorded rows unrecorded."""
         ...
 
     async def commit(self) -> None: ...
@@ -185,10 +307,42 @@ class PostgresConnectorTransaction(PostgresAuditRecorder):
         after: uuid.UUID | None,
         limit: int,
         status: str | None = None,
+        index_status: str | None = None,
     ) -> Sequence[Document]:
-        return await self._documents.fetch(
-            self._documents.page(connector_id, after=after, limit=limit, status=status)
+        statement = self._documents.page(connector_id, after=after, limit=limit, status=status)
+        if index_status is not None:
+            statement = statement.where(Document.index_status == index_status)
+        return await self._documents.fetch(statement)
+
+    async def stale_mime_types(self, connector_id: uuid.UUID) -> set[str | None]:
+        statement = (
+            select(Document.mime_type)
+            .where(
+                self._scope.clause(Document),
+                Document.connector_id == connector_id,
+                Document.index_status == "stale",
+            )
+            .distinct()
+            .execution_options(**scoped())
         )
+        return {row[0] for row in (await self._session.execute(statement)).all()}
+
+    async def indexed_by_format(self, connector_id: uuid.UUID) -> Mapping[str, int]:
+        statement = (
+            select(Document.mime_type, func.count())
+            .where(
+                self._scope.clause(Document),
+                Document.connector_id == connector_id,
+                Document.status == "indexed",
+            )
+            .group_by(Document.mime_type)
+            .execution_options(**scoped())
+        )
+        counts: dict[str, int] = {}
+        for mime, count in (await self._session.execute(statement)).all():
+            kind = format_label(mime or "")
+            counts[kind] = counts.get(kind, 0) + int(count)
+        return counts
 
     async def document_by_source(self, connector_id: uuid.UUID, source_uri: str) -> Document | None:
         return await self._documents.by_source(connector_id, source_uri)
@@ -223,6 +377,10 @@ class PostgresConnectorTransaction(PostgresAuditRecorder):
                     "error": None,
                     "chunk_count": 0,
                     "indexed_at": None,
+                    # A new version on its way: nothing is claimed about the old points
+                    # until ingestion writes the row again (task 104).
+                    "index_status": "current",
+                    "reprocessing_run_id": None,
                     "updated_at": datetime.now(UTC),
                 },
             )
@@ -263,7 +421,7 @@ class PostgresConnectorTransaction(PostgresAuditRecorder):
                 Document.mime_type,
                 Document.size_bytes,
                 Document.status,
-                Document.chunk_fingerprint,
+                Document.index_fingerprint,
                 Document.embedding_model,
             )
             .where(self._scope.clause(Document), Document.connector_id == connector_id)
@@ -273,8 +431,226 @@ class PostgresConnectorTransaction(PostgresAuditRecorder):
         rows = (await self._session.execute(statement)).all()
         return [DocumentAuditRow(*row) for row in rows]
 
+    # -- index status (task 104) -------------------------------------------
+
+    async def reconcile_index_status(
+        self,
+        connector_id: uuid.UUID,
+        expected: Mapping[str, str],
+        *,
+        kinds: Sequence[str] | None = None,
+    ) -> int:
+        changed = 0
+        for kind in kinds if kinds is not None else list(expected):
+            fingerprint = expected.get(kind)
+            if fingerprint is None:
+                continue
+            wanted = case((Document.index_fingerprint == fingerprint, "current"), else_="stale")
+            statement = (
+                update(Document)
+                .where(
+                    self._scope.clause(Document),
+                    Document.connector_id == connector_id,
+                    Document.status == "indexed",
+                    Document.index_fingerprint.is_not(None),
+                    Document.index_status != "reprocessing",
+                    Document.index_status != wanted,
+                    _format_clause(kind),
+                )
+                .values(index_status=wanted)
+                .execution_options(**scoped())
+            )
+            result = await self._session.execute(statement)
+            changed += int(getattr(result, "rowcount", 0) or 0)
+        return changed
+
+    async def index_status_counts(
+        self, connector_ids: Sequence[uuid.UUID]
+    ) -> Mapping[uuid.UUID, StaleCounts]:
+        if not connector_ids:
+            return {}
+        unrecorded = case(
+            (
+                (Document.status == "indexed") & Document.index_fingerprint.is_(None),
+                "unrecorded",
+            ),
+            else_=Document.index_status,
+        )
+        statement = (
+            select(Document.connector_id, unrecorded, func.count())
+            .where(self._scope.clause(Document), Document.connector_id.in_(list(connector_ids)))
+            .group_by(Document.connector_id, unrecorded)
+            .execution_options(**scoped())
+        )
+        buckets: dict[uuid.UUID, dict[str, int]] = {}
+        for connector_id, status, count in (await self._session.execute(statement)).all():
+            buckets.setdefault(connector_id, {})[str(status)] = int(count)
+        return {identifier: StaleCounts(**counts) for identifier, counts in buckets.items()}
+
+    async def stale_summaries(self) -> Sequence[StaleSummary]:
+        statement = (
+            select(
+                Connector.id,
+                Connector.name,
+                func.count(),
+                func.min(Document.updated_at),
+            )
+            .join(Document, Document.connector_id == Connector.id)
+            .where(self._scope.clause(Connector), Document.index_status == "stale")
+            .group_by(Connector.id, Connector.name)
+            .order_by(func.min(Document.updated_at), Connector.name)
+            .execution_options(**scoped())
+        )
+        return [
+            StaleSummary(id=identifier, name=name, stale=int(count), since=since)
+            for identifier, name, count, since in (await self._session.execute(statement)).all()
+        ]
+
+    async def documents_in_scope(
+        self,
+        connector_id: uuid.UUID,
+        scope: ReprocessScope,
+        *,
+        after: uuid.UUID | None,
+        limit: int,
+    ) -> Sequence[Document]:
+        statement = (
+            select(Document)
+            .where(
+                self._scope.clause(Document),
+                Document.connector_id == connector_id,
+                Document.status.in_(list(TERMINAL_DOCUMENT_STATUSES)),
+                _scope_clause(scope),
+            )
+            .order_by(Document.id)
+            .limit(limit)
+            .execution_options(**scoped())
+        )
+        if after is not None:
+            statement = statement.where(Document.id > after)
+        return list((await self._session.execute(statement)).scalars().all())
+
+    async def claim_for_run(self, documents: Sequence[Document], run_id: uuid.UUID) -> None:
+        for document in documents:
+            _claim(document, run_id)
+        await self._session.flush()
+
+    async def unfinished_for_run(self, run_id: uuid.UUID) -> Sequence[Document]:
+        statement = (
+            select(Document)
+            .where(
+                self._scope.clause(Document),
+                Document.reprocessing_run_id == run_id,
+                Document.status.not_in(list(TERMINAL_DOCUMENT_STATUSES)),
+            )
+            .order_by(Document.id)
+            .execution_options(**scoped())
+        )
+        return list((await self._session.execute(statement)).scalars().all())
+
+    async def count_reprocessed(
+        self, run_id: uuid.UUID, outcome: str, *, tokens: int
+    ) -> ReprocessingRun | None:
+        # Locked for the update, so two documents finishing at once increment rather
+        # than overwrite — the counters are the progress bar, and a lost increment is a
+        # run that never reaches its total.
+        statement = (
+            select(ReprocessingRun)
+            .where(self._scope.clause(ReprocessingRun), ReprocessingRun.id == run_id)
+            .with_for_update()
+            .execution_options(**scoped())
+        )
+        run = (await self._session.execute(statement)).scalar_one_or_none()
+        if run is None:
+            return None
+        settle(run, outcome, tokens=tokens)
+        await self._session.flush()
+        return run
+
+    async def rewrite_embedding_model(self, embedding_model: str) -> int:
+        from app.services.index_fingerprint import embedding_segment
+
+        statement = (
+            update(Document)
+            .where(
+                self._scope.clause(Document),
+                Document.status == "indexed",
+                Document.index_fingerprint.is_not(None),
+            )
+            .values(
+                embedding_model=embedding_model,
+                index_fingerprint=func.regexp_replace(
+                    Document.index_fingerprint, "em=[0-9a-f]+", embedding_segment(embedding_model)
+                ),
+            )
+            .execution_options(**scoped())
+        )
+        result = await self._session.execute(statement)
+        return int(getattr(result, "rowcount", 0) or 0)
+
     async def commit(self) -> None:
         await self._session.commit()
+
+
+def _format_clause(kind: str) -> Any:
+    """``mime_type`` expressed as a format kind, for the one place a format has to be
+    named in SQL. ``other`` is the complement of every known type, and a row that never
+    had its type sniffed is ``other`` too."""
+    if kind == "other":
+        return or_(
+            Document.mime_type.is_(None), Document.mime_type.not_in(sorted(KNOWN_MEDIA_TYPES))
+        )
+    return Document.mime_type.in_(sorted(media_types_of(kind)))
+
+
+def _scope_clause(scope: ReprocessScope) -> Any:
+    if scope.kind == "stale":
+        return Document.index_status == "stale"
+    if scope.kind == "formats":
+        return (
+            or_(*(_format_clause(kind) for kind in sorted(scope.formats)))
+            if scope.formats
+            else false()
+        )
+    if scope.kind == "unrecorded":
+        return (Document.status == "indexed") & Document.index_fingerprint.is_(None)
+    if scope.kind == "failed":
+        # Not the sources that are gone: a recut needs the bytes, and retrying a document
+        # whose object was deleted would fail it again for the same reason.
+        clause = (Document.status == "failed") & (
+            or_(Document.reason.is_(None), Document.reason != "missing_object")
+        )
+        if scope.run_id is not None:
+            clause = clause & (Document.reprocessing_run_id == scope.run_id)
+        return clause
+    return true()
+
+
+def _in_scope(document: Document, scope: ReprocessScope) -> bool:
+    """The memory twin of :func:`_scope_clause`, over one row."""
+    if scope.kind == "stale":
+        return document.index_status == "stale"
+    if scope.kind == "formats":
+        return format_label(document.mime_type or "") in scope.formats
+    if scope.kind == "unrecorded":
+        return document.status == "indexed" and document.index_fingerprint is None
+    if scope.kind == "failed":
+        return (
+            document.status == "failed"
+            and document.reason != "missing_object"
+            and (scope.run_id is None or document.reprocessing_run_id == scope.run_id)
+        )
+    return True
+
+
+def _claim(document: Document, run_id: uuid.UUID) -> None:
+    document.status = "pending"
+    document.error = None
+    document.reason = None
+    document.chunk_count = 0
+    document.indexed_at = None
+    document.index_status = "reprocessing"
+    document.reprocessing_run_id = run_id
 
 
 class PostgresConnectorStore:
@@ -352,6 +728,7 @@ class MemoryConnectorTransaction(MemoryAuditRecorder):
         after: uuid.UUID | None,
         limit: int,
         status: str | None = None,
+        index_status: str | None = None,
     ) -> Sequence[Document]:
         rows = [
             document
@@ -359,11 +736,23 @@ class MemoryConnectorTransaction(MemoryAuditRecorder):
             if document.connector_id == connector_id
             and self._scope.permits(document.organization_id)
             and (status is None or document.status == status)
+            and (index_status is None or document.index_status == index_status)
         ]
         ordered = sorted(rows, key=lambda row: row.id, reverse=True)
         if after is not None:
             ordered = [row for row in ordered if row.id < after]
         return ordered[: limit + 1]
+
+    async def stale_mime_types(self, connector_id: uuid.UUID) -> set[str | None]:
+        return {row.mime_type for row in self._rows(connector_id) if row.index_status == "stale"}
+
+    async def indexed_by_format(self, connector_id: uuid.UUID) -> Mapping[str, int]:
+        counts: dict[str, int] = {}
+        for row in self._rows(connector_id):
+            if row.status == "indexed":
+                kind = format_label(row.mime_type or "")
+                counts[kind] = counts.get(kind, 0) + 1
+        return counts
 
     async def document_by_source(self, connector_id: uuid.UUID, source_uri: str) -> Document | None:
         for document in self._db.documents.values():
@@ -389,6 +778,8 @@ class MemoryConnectorTransaction(MemoryAuditRecorder):
                 existing.error = None
                 existing.chunk_count = 0
                 existing.indexed_at = None
+                existing.index_status = "current"
+                existing.reprocessing_run_id = None
             return existing
         return self._db.add_document(
             Document(
@@ -402,6 +793,7 @@ class MemoryConnectorTransaction(MemoryAuditRecorder):
                 mime_type=draft.mime_type,
                 status="pending",
                 chunk_count=0,
+                index_status="current",
             )
         )
 
@@ -452,13 +844,146 @@ class MemoryConnectorTransaction(MemoryAuditRecorder):
                 mime_type=document.mime_type,
                 size_bytes=document.size_bytes,
                 status=document.status,
-                chunk_fingerprint=document.chunk_fingerprint,
+                index_fingerprint=document.index_fingerprint,
                 embedding_model=document.embedding_model,
             )
             for document in sorted(self._db.documents.values(), key=lambda row: row.id)
             if document.connector_id == connector_id
             and self._scope.permits(document.organization_id)
         ]
+
+    # -- index status (task 104) -------------------------------------------
+
+    def _rows(self, connector_id: uuid.UUID) -> list[Document]:
+        return sorted(
+            (
+                document
+                for document in self._db.documents.values()
+                if document.connector_id == connector_id
+                and self._scope.permits(document.organization_id)
+            ),
+            key=lambda row: row.id,
+        )
+
+    async def reconcile_index_status(
+        self,
+        connector_id: uuid.UUID,
+        expected: Mapping[str, str],
+        *,
+        kinds: Sequence[str] | None = None,
+    ) -> int:
+        wanted = set(kinds) if kinds is not None else set(expected)
+        changed = 0
+        for document in self._rows(connector_id):
+            kind = format_label(document.mime_type or "")
+            if (
+                kind not in wanted
+                or kind not in expected
+                or document.status != "indexed"
+                or document.index_fingerprint is None
+                or document.index_status == "reprocessing"
+            ):
+                continue
+            status = "current" if document.index_fingerprint == expected[kind] else "stale"
+            if document.index_status != status:
+                document.index_status = status
+                # What the ORM's `onupdate` does for the SQL twin: the marking is dated.
+                document.updated_at = datetime.now(UTC)
+                changed += 1
+        return changed
+
+    async def index_status_counts(
+        self, connector_ids: Sequence[uuid.UUID]
+    ) -> Mapping[uuid.UUID, StaleCounts]:
+        counts: dict[uuid.UUID, dict[str, int]] = {}
+        for connector_id in connector_ids:
+            for document in self._rows(connector_id):
+                bucket = counts.setdefault(connector_id, {})
+                key = (
+                    "unrecorded"
+                    if document.status == "indexed" and document.index_fingerprint is None
+                    else (document.index_status or "current")
+                )
+                bucket[key] = bucket.get(key, 0) + 1
+        return {identifier: StaleCounts(**bucket) for identifier, bucket in counts.items()}
+
+    async def stale_summaries(self) -> Sequence[StaleSummary]:
+        found: list[StaleSummary] = []
+        for connector in self._db.connectors.values():
+            if not self._scope.permits(connector.organization_id):
+                continue
+            stale = [
+                row
+                for row in self._rows(connector.id)
+                if row.index_status == "stale" and row.updated_at is not None
+            ]
+            if stale:
+                found.append(
+                    StaleSummary(
+                        id=connector.id,
+                        name=connector.name,
+                        stale=len(stale),
+                        since=min(row.updated_at for row in stale),
+                    )
+                )
+        found.sort(key=lambda row: (row.since, row.name))
+        return found
+
+    async def documents_in_scope(
+        self,
+        connector_id: uuid.UUID,
+        scope: ReprocessScope,
+        *,
+        after: uuid.UUID | None,
+        limit: int,
+    ) -> Sequence[Document]:
+        rows = [
+            document
+            for document in self._rows(connector_id)
+            if document.status in TERMINAL_DOCUMENT_STATUSES
+            and (after is None or document.id > after)
+            and _in_scope(document, scope)
+        ]
+        return rows[:limit]
+
+    async def claim_for_run(self, documents: Sequence[Document], run_id: uuid.UUID) -> None:
+        for document in documents:
+            _claim(document, run_id)
+
+    async def unfinished_for_run(self, run_id: uuid.UUID) -> Sequence[Document]:
+        return [
+            document
+            for document in sorted(self._db.documents.values(), key=lambda row: row.id)
+            if document.reprocessing_run_id == run_id
+            and document.status not in TERMINAL_DOCUMENT_STATUSES
+            and self._scope.permits(document.organization_id)
+        ]
+
+    async def count_reprocessed(
+        self, run_id: uuid.UUID, outcome: str, *, tokens: int
+    ) -> ReprocessingRun | None:
+        run = self._db.reprocessing_runs.get(run_id)
+        if run is None or not self._scope.permits(run.organization_id):
+            return None
+        settle(run, outcome, tokens=tokens)
+        return run
+
+    async def rewrite_embedding_model(self, embedding_model: str) -> int:
+        from app.services.index_fingerprint import with_embedding_model
+
+        changed = 0
+        for document in self._db.documents.values():
+            if (
+                document.status == "indexed"
+                and document.index_fingerprint is not None
+                and self._scope.permits(document.organization_id)
+            ):
+                document.embedding_model = embedding_model
+                document.index_fingerprint = with_embedding_model(
+                    document.index_fingerprint, embedding_model
+                )
+                changed += 1
+        return changed
 
     async def commit(self) -> None:
         return None
@@ -482,4 +1007,7 @@ __all__ = [
     "MemoryConnectorTransaction",
     "PostgresConnectorStore",
     "PostgresConnectorTransaction",
+    "ReprocessScope",
+    "StaleCounts",
+    "StaleSummary",
 ]

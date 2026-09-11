@@ -176,6 +176,8 @@ def build_platform(
     #: Task 20. ``None`` is the shape every process but the worker has, and the reindexer
     #: is expected to refuse a run that needs one rather than quietly copy instead.
     recutter: Recutter | None = None,
+    #: Task 104. The per-connector runs a recut leaves behind; ``None`` is untracked.
+    tracker: Any = None,
 ) -> PlatformFixture:
     """One call, everything connected.
 
@@ -217,6 +219,7 @@ def build_platform(
         embedder_for=lambda choice: _embedder_for(choice, embed),
         recutter=recutter,
         pause_seconds=0.0,
+        tracker=tracker,
     )
     migrator = VectorMigrator(
         backends, end_users=MemoryEndUserStore(database), embedder=embed, queue=queue

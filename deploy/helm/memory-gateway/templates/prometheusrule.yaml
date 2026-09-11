@@ -150,6 +150,34 @@ spec:
               were bought for, which is why this needs an alert rather than a complaint.
             runbook_url: {{ $runbook }}/summarization-failures.md
 
+        - alert: DocumentsStaleForADay
+          expr: |
+            min_over_time(documents_stale[24h]) > 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: A connector has had stale documents for a day
+            description: >-
+              Connector {{ `{{ $labels.connector }}` }} still has documents cut under a
+              previous configuration a day after the change. Retrieval keeps serving them,
+              labelled stale, but the change that was saved is not live until the connector is
+              reprocessed — and nothing else will do it.
+            runbook_url: {{ $runbook }}/chunking-change.md
+
+        - alert: ReprocessingRunsFailing
+          expr: |
+            sum(increase(reprocessing_runs_total{outcome=~"partial|failed"}[6h])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: A reprocessing run finished with failures
+            description: >-
+              Documents the run could not re-ingest keep their failure reason on the row;
+              the run's history shows how many and Retry failed re-enqueues exactly those.
+            runbook_url: {{ $runbook }}/chunking-change.md
+
         - alert: ApiDown
           expr: |
             sum(up{job=~".*{{ include "memory-gateway.fullname" . }}.*"}) == 0

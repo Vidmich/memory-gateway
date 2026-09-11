@@ -47,6 +47,7 @@ from app.api.control.deps import (
     get_limits_service,
     get_memory_preview,
     get_monitoring_service,
+    get_reprocessor,
     get_settings_from_app,
     get_summarization_service,
 )
@@ -583,6 +584,8 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     connectors = auth.connectors
     if connectors is not None:
         application.dependency_overrides[get_connector_service] = lambda: connectors.service
+        # Task 104: the runs, over the same fixture the connector service marks stale in.
+        application.dependency_overrides[get_reprocessor] = lambda: connectors.reprocessor
     end_users = auth.end_users
     if end_users is not None:
         application.dependency_overrides[get_end_user_service] = lambda: end_users.service

@@ -34,6 +34,7 @@ from app.core.metrics import (
     ExtractionMetrics,
     JobMetrics,
     MaintenanceMetrics,
+    ReprocessingMetrics,
     SummarizationMetrics,
 )
 from app.schemas.platform import EmbeddingChoice
@@ -67,6 +68,7 @@ from app.services.jobs import (
     EVALUATE_SET,
     INGEST_DOCUMENT,
     MIGRATE_VECTORS,
+    RECONCILE_INDEX,
     REINDEX,
     SUMMARIZE_DOCUMENT,
     DeadLetterSink,
@@ -86,6 +88,8 @@ from app.services.proxy import ProxyService
 from app.services.reconciliation import Reconciler
 from app.services.reindex import Reindexer
 from app.services.reindex_store import PostgresReindexStore
+from app.services.reprocessing import CachedFingerprints, Reprocessor
+from app.services.reprocessing_store import PostgresReprocessingStore
 from app.services.retrieval import MemoryService, Retriever
 from app.services.summarization_store import PostgresSummarizationStore, SummarizationStore
 from app.services.summarizer import SummarizationModelResolver, Summarizer
@@ -128,6 +132,10 @@ class Ingestion:
     #: connector screen resolves a model the way the worker does.
     summaries: SummarizationStore
     summary_models: SummarizationModelResolver
+    #: Task 104. The runs, over the same store and queue as the pipeline; and the
+    #: fingerprint source retrieval labels stale chunks with.
+    reprocessor: Reprocessor
+    fingerprints: CachedFingerprints
 
     async def aclose(self) -> None:
         await self.pool.aclose()
@@ -202,6 +210,7 @@ def build_ingestion(
     embedding: EmbeddingChoice | None = None,
     tokenizer: TokenizerSource | None = None,
     summarization_metrics: SummarizationMetrics | None = None,
+    reprocessing_metrics: ReprocessingMetrics | None = None,
 ) -> Ingestion:
     limits = ingestion_settings(settings)
     store = PostgresConnectorStore(clients.session_factory)
@@ -248,6 +257,31 @@ def build_ingestion(
         memory_limit_bytes=settings.extraction_memory_limit_bytes,
     )
 
+    pipeline = IngestionPipeline(
+        store,
+        objects=objects,
+        vectors=vectors,
+        embedder=embedder,
+        tokenizer=tokenizers,
+        registry=registry,
+        queue=queue,
+        lock=lock,
+        settings=limits,
+        pool=pool,
+        metrics=metrics,
+        chunking_metrics=chunking_metrics,
+        summarizer=summarizer,
+        reprocessing_metrics=reprocessing_metrics,
+    )
+    # Task 104. The pipeline is the one thing that knows what it would write, so it is
+    # the source of the fingerprints every row and every retrieved chunk is compared to.
+    reprocessor = Reprocessor(
+        PostgresReprocessingStore(clients.session_factory),
+        connectors=store,
+        expected=pipeline.expected_fingerprints,
+        queue=queue,
+        metrics=reprocessing_metrics,
+    )
     return Ingestion(
         store=store,
         objects=objects,
@@ -257,25 +291,13 @@ def build_ingestion(
         registry=registry,
         queue=queue,
         lock=lock,
-        pipeline=IngestionPipeline(
-            store,
-            objects=objects,
-            vectors=vectors,
-            embedder=embedder,
-            tokenizer=tokenizers,
-            registry=registry,
-            queue=queue,
-            lock=lock,
-            settings=limits,
-            pool=pool,
-            metrics=metrics,
-            chunking_metrics=chunking_metrics,
-            summarizer=summarizer,
-        ),
+        pipeline=pipeline,
         settings=limits,
         pool=pool,
         summaries=summaries,
         summary_models=summary_models,
+        reprocessor=reprocessor,
+        fingerprints=CachedFingerprints(store, expected=pipeline.expected_fingerprints),
     )
 
 
@@ -439,6 +461,9 @@ def build_platform(
         # of the embedding model cannot be reindexed by re-embedding its stored text, and
         # the only thing that knows how to cut a document is the thing that cuts documents.
         recutter=ingestion.pipeline,
+        # Task 104: a reprocessing run per recut connector, and the rows re-marked when
+        # the model is adopted.
+        tracker=ingestion.reprocessor,
     )
     migrator = VectorMigrator(
         backends,
@@ -575,9 +600,25 @@ def build_handlers(
     """
 
     async def ingest_document(payload: Mapping[str, Any]) -> None:
+        run_id = payload.get("run_id")
         await ingestion.pipeline.ingest(
             organization_id=uuid.UUID(str(payload["organization_id"])),
             document_id=uuid.UUID(str(payload["document_id"])),
+            # Task 104: the reprocessing run this ingestion counts against, if any.
+            run_id=uuid.UUID(str(run_id)) if run_id else None,
+        )
+
+    async def reconcile_index(payload: Mapping[str, Any]) -> None:
+        report = await ingestion.reprocessor.reconcile()
+        logger.info(
+            "index status reconciled",
+            extra={
+                "reason": payload.get("reason"),
+                "connectors": report.connectors,
+                "disagreements": report.disagreements,
+                "runs_continued": report.continued,
+                "runs_closed": report.closed,
+            },
         )
 
     async def delete_connector(payload: Mapping[str, Any]) -> None:
@@ -597,6 +638,7 @@ def build_handlers(
         INGEST_DOCUMENT: ingest_document,
         DELETE_CONNECTOR: delete_connector,
         SUMMARIZE_DOCUMENT: summarize_document,
+        RECONCILE_INDEX: reconcile_index,
     }
     if platform is not None:
 

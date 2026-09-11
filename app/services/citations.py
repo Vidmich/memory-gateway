@@ -193,6 +193,10 @@ class Citation:
             # The sentence that matched under ``sentence_window``, not the window around
             # it — the one strategy where "what was cited" and "what was shown" differ.
             "matched_text": chunk.matched_text,
+            # Task 104. Cut under a configuration the connector no longer uses — served
+            # anyway, because a reprocess must not be an outage, and labelled so a client
+            # can say so.
+            "stale": chunk.stale,
             "url": inspector_url(base_url, chunk),
         }
 

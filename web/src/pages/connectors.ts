@@ -12,9 +12,9 @@
  * pending is not "ready" — the summary answers "is anything wrong" and "is anything
  * happening", in that order, because those are the two reasons somebody opens the list.
  *
- * :func:`chunkingWarning` decides when to say a reindex is needed. Only when something is
- * actually indexed: a warning on an empty connector is noise, and noise is what makes the
- * real one invisible.
+ * What a save will do to the index is no longer decided here (task 104): the server's
+ * fingerprint diff answers that through the stale preview, and the reprocess lives in the
+ * connector header beside the stored stale count.
  */
 
 import type { ChunkingCandidate, ChunkingConfig, ConnectorResponse } from '@/api/types'
@@ -154,23 +154,6 @@ export function formatResolutions(connector: ConnectorResponse): FormatResolutio
       overridden: Object.hasOwn(overrides, format.value),
     }
   })
-}
-
-/**
- * The sentence on the reindex prompt after a chunking change.
- *
- * Names the formats when only some of them moved, which is the entire payoff of per-format
- * overrides: "reindex the code files" is an offer somebody accepts, and "reindex
- * everything" on a corpus of ten thousand PDFs is one they postpone indefinitely.
- */
-export function reindexScope(connector: ConnectorResponse): string {
-  const formats = connector.reindex_formats ?? []
-  const everything = formats.length === 0 || formats.length >= FORMAT_KINDS.length
-  if (everything) return 'every document'
-  const labels = formats.map(
-    (kind) => FORMAT_KINDS.find((format) => format.value === kind)?.label ?? kind,
-  )
-  return `the ${labels.join(', ')} documents`
 }
 
 export type Summary = {
@@ -347,15 +330,6 @@ export function chunkingProblem(form: ChunkingForm): string | null {
  * Only when there is an index to invalidate. A warning on an empty connector is noise,
  * and noise is what makes the real warning invisible.
  */
-export function chunkingWarning(connector: ConnectorResponse, changed: boolean): string | null {
-  if (!changed) return null
-  const indexed = countOf(connector, 'indexed')
-  if (indexed === 0) return null
-  return `Saving re-chunks nothing on its own. The ${indexed} document${
-    indexed === 1 ? '' : 's'
-  } already indexed keep their old chunks until you reindex them.`
-}
-
 /**
  * The four numbers that make two candidate chunkings comparable, as rows.
  *
@@ -369,9 +343,7 @@ export type ComparisonRow = {
   values: string[]
 }
 
-export function comparisonRows(
-  candidates: readonly ChunkingCandidate[],
-): ComparisonRow[] {
+export function comparisonRows(candidates: readonly ChunkingCandidate[]): ComparisonRow[] {
   const at = (pick: (candidate: ChunkingCandidate) => string) => candidates.map(pick)
   return [
     { label: 'Chunks', values: at((one) => String(one.distribution.chunks)) },
@@ -407,10 +379,7 @@ export function comparisonRows(
  */
 const PAGE_UNITS: Record<string, [string, string]> = {
   'application/pdf': ['page', 'pages'],
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': [
-    'slide',
-    'slides',
-  ],
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['slide', 'slides'],
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['sheet', 'sheets'],
 }
 

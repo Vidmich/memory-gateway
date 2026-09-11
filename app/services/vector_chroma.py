@@ -322,6 +322,23 @@ class ChromaVectorStore:
     async def delete_document(self, organization_id: uuid.UUID, document_id: uuid.UUID) -> None:
         await self._delete_where(organization_id, _where_equals("document_id", str(document_id)))
 
+    async def replace_document(
+        self, organization_id: uuid.UUID, document_id: uuid.UUID, points: Sequence[ChunkPoint]
+    ) -> None:
+        await self.upsert(organization_id, points)
+        collection = await self._open_live(organization_id)
+        if collection is None:
+            return
+        # Chroma's `where` has no "not one of these ids", so the document's ids are read
+        # and the difference deleted by id. Two requests, both bounded by one document.
+        found = await collection.get(
+            where=_where_equals("document_id", str(document_id)), include=[]
+        )
+        keep = {point.id for point in points}
+        stale = [identifier for identifier in (found.get("ids") or []) if identifier not in keep]
+        if stale:
+            await collection.delete(ids=stale)
+
     async def delete_connector(self, organization_id: uuid.UUID, connector_id: uuid.UUID) -> None:
         await self._delete_where(organization_id, _where_equals("connector_id", str(connector_id)))
 

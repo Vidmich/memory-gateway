@@ -498,7 +498,7 @@ def _record_of(row: DocumentAuditRow) -> DocumentRecord:
         source_name=row.source_name,
         mime_type=row.mime_type,
         size_bytes=row.size_bytes,
-        fingerprint=row.chunk_fingerprint,
+        fingerprint=row.index_fingerprint,
         embedding_model=row.embedding_model,
     )
 

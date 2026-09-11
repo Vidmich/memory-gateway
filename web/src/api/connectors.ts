@@ -40,8 +40,13 @@ export const keys = {
   all: ['connectors'] as const,
   list: (cursor?: string | null) => ['connectors', { cursor: cursor ?? null }] as const,
   one: (id: string) => ['connectors', id] as const,
-  documents: (connectorId: string, status?: string | null) =>
-    ['connectors', connectorId, 'documents', { status: status ?? null }] as const,
+  documents: (connectorId: string, status?: string | null, indexStatus?: string | null) =>
+    [
+      'connectors',
+      connectorId,
+      'documents',
+      { status: status ?? null, indexStatus: indexStatus ?? null },
+    ] as const,
   chunks: (documentId: string) => ['connectors', 'chunks', documentId] as const,
 }
 
@@ -88,13 +93,17 @@ export function useConnector(id: string | undefined): UseQueryResult<ConnectorRe
 export function useDocuments(
   connectorId: string | undefined,
   status?: string | null,
+  indexStatus?: string | null,
 ): UseQueryResult<DocumentPage> {
   const client = useApiClient()
-  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  const params = new URLSearchParams()
+  if (status) params.set('status', status)
+  // Task 104: the second axis, filterable on its own or together with the first.
+  if (indexStatus) params.set('index_status', indexStatus)
+  const query = params.size > 0 ? `?${params.toString()}` : ''
   return useQuery({
-    queryKey: keys.documents(connectorId ?? '', status),
-    queryFn: () =>
-      client.get<DocumentPage>(`/api/v1/connectors/${connectorId}/documents${query}`),
+    queryKey: keys.documents(connectorId ?? '', status, indexStatus),
+    queryFn: () => client.get<DocumentPage>(`/api/v1/connectors/${connectorId}/documents${query}`),
     enabled: Boolean(connectorId),
     // Derived from the data rather than from a flag somebody has to remember to clear.
     // An idle connector polls not at all; a busy one polls until it is not busy.
@@ -162,29 +171,6 @@ export function useDeleteConnector() {
   const invalidate = useInvalidateConnectors()
   return useMutation({
     mutationFn: (id: string) => client.delete<void>(`/api/v1/connectors/${id}`),
-    onSuccess: invalidate,
-  })
-}
-
-/**
- * Re-run ingestion for a connector's documents, optionally narrowed to some formats.
- *
- * Not `POST /platform/reindex`, despite the shared word. That one re-embeds chunks that are
- * still correct under a new model; this one exists because a changed `chunk_size` makes the
- * chunks themselves wrong, and only running the pipeline again fixes that.
- *
- * `formats` is what makes a per-format override affordable: adding one for code re-runs the
- * code files and leaves a thousand PDFs indexed. Omitted means everything, which is the
- * right answer when the connector's own settings moved.
- */
-export function useReindexConnector(connectorId: string | undefined) {
-  const client = useApiClient()
-  const invalidate = useInvalidateConnectors()
-  return useMutation({
-    mutationFn: (formats?: string[]) =>
-      client.post<{ documents: number }>(`/api/v1/connectors/${connectorId}/reindex`, {
-        formats: formats && formats.length > 0 ? formats : null,
-      }),
     onSuccess: invalidate,
   })
 }

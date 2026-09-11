@@ -275,6 +275,50 @@ async def deleting_a_document_removes_every_chunk_of_it(store: VectorStore, org:
 
 
 @check
+async def replacing_a_document_keeps_the_new_points_and_drops_the_old_tail(
+    store: VectorStore, org: uuid.UUID
+) -> None:
+    """Task 104. A recut that produced fewer chunks leaves exactly the new ones: the ids
+    the two cuts share are overwritten, the tail the old cut had is deleted by filter, and
+    another document is untouched. Upsert-then-delete, so the document never vanishes."""
+    document, other, connector = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await seed(
+        store,
+        org,
+        [
+            make_point(
+                document_id=document,
+                connector_id=connector,
+                organization_id=org,
+                index=index,
+                text=f"old {index}",
+            )
+            for index in range(4)
+        ]
+        + [make_point(document_id=other, connector_id=connector, organization_id=org, text="keep")],
+    )
+
+    await store.replace_document(
+        org,
+        document,
+        [
+            make_point(
+                document_id=document,
+                connector_id=connector,
+                organization_id=org,
+                index=index,
+                text=f"new {index}",
+            )
+            for index in range(2)
+        ],
+    )
+
+    stored = await store.chunks(org, document)
+    assert [chunk.text for chunk in stored] == ["new 0", "new 1"]
+    assert await store.count(org, document_id=other) == 1
+
+
+@check
 async def deleting_a_connector_removes_only_its_chunks(store: VectorStore, org: uuid.UUID) -> None:
     doomed, kept = uuid.uuid4(), uuid.uuid4()
     await seed(

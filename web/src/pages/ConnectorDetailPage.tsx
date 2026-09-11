@@ -19,6 +19,8 @@ import {
 import { DOCUMENT_STATUSES, formatBytes, resyncSummary, statusSummary } from '@/pages/connectors'
 import { ConnectorValidation } from '@/pages/ConnectorValidation'
 import { ObjectAudit } from '@/pages/ObjectAudit'
+import { INDEX_STATUSES } from '@/pages/reprocessing'
+import { ReprocessingHeader } from '@/pages/ReprocessingPanel'
 import { SummarizationPanel } from '@/pages/SummarizationPanel'
 
 /**
@@ -41,10 +43,11 @@ export function ConnectorDetailPage() {
   const { notify } = useToast()
 
   const [status, setStatus] = useState<string | null>(null)
+  const [indexStatus, setIndexStatus] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
 
   const { data: connector, isLoading } = useConnector(connectorId)
-  const documents = useDocuments(connectorId, status)
+  const documents = useDocuments(connectorId, status, indexStatus)
   const resync = useResync(connectorId)
   const remove = useDeleteConnector()
 
@@ -108,27 +111,52 @@ export function ConnectorDetailPage() {
         </p>
       ) : null}
 
+      {/* Task 104. The stale count, the reprocess, the progress bar and the history —
+          a stored fact, so it reads the same after a refresh and from the list. */}
+      <ReprocessingHeader connector={connector} writes={writes} />
+
       {writes ? <UploadZone connectorId={connector.id} disabled={deleting} /> : null}
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between gap-4">
           <h2 className="text-sm font-semibold text-slate-900">Documents</h2>
-          <label className="flex items-center gap-2 text-xs text-slate-500">
-            Status
-            <select
-              aria-label="Filter by status"
-              value={status ?? ''}
-              onChange={(event) => setStatus(event.target.value || null)}
-              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs"
-            >
-              <option value="">All</option>
-              {DOCUMENT_STATUSES.map((value) => (
-                <option key={value} value={value}>
+          <div className="flex items-center gap-3">
+            {/* Task 104. The second axis as chips: a click filters the table to the rows
+              that are current, stale, or being reprocessed, on top of the status filter. */}
+            <div role="group" aria-label="Filter by index status" className="flex gap-1">
+              {INDEX_STATUSES.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={indexStatus === value}
+                  onClick={() => setIndexStatus((current) => (current === value ? null : value))}
+                  className={`rounded-full border px-2 py-0.5 text-xs ${
+                    indexStatus === value
+                      ? 'border-slate-800 bg-slate-800 text-white'
+                      : 'border-slate-300 text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
                   {value}
-                </option>
+                </button>
               ))}
-            </select>
-          </label>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-slate-500">
+              Status
+              <select
+                aria-label="Filter by status"
+                value={status ?? ''}
+                onChange={(event) => setStatus(event.target.value || null)}
+                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs"
+              >
+                <option value="">All</option>
+                {DOCUMENT_STATUSES.map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
         <DocumentTable
           documents={documents.data?.items ?? []}
@@ -186,8 +214,8 @@ export function ConnectorDetailPage() {
         description={
           <>
             Its {connector.document_count.toLocaleString()} document
-            {connector.document_count === 1 ? '' : 's'}, their files, and everything indexed
-            from them are removed. This cannot be undone.
+            {connector.document_count === 1 ? '' : 's'}, their files, and everything indexed from
+            them are removed. This cannot be undone.
           </>
         }
         resourceName={connector.name}

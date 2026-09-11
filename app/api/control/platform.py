@@ -20,7 +20,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from app.api.control.deps import CurrentActor, get_platform_service, require_capability
+from app.api.control.deps import (
+    CurrentActor,
+    get_platform_service,
+    get_reprocessor,
+    require_capability,
+)
 from app.core.errors import NotFound, Validation
 from app.schemas.platform import (
     EffectiveTokenizerResponse,
@@ -44,6 +49,7 @@ from app.schemas.platform import (
     VectorMigrationRequest,
     VectorMigrationResponse,
 )
+from app.schemas.reprocessing import ReprocessingRunResponse
 from app.services.maintenance import Runway, SweepReport
 from app.services.maintenance_store import RunState
 from app.services.permissions import Capability
@@ -55,11 +61,13 @@ from app.services.platform_service import (
 )
 from app.services.reindex import progress_of
 from app.services.reindex_store import RunView
+from app.services.reprocessing import Reprocessor
 from app.services.vector_migration import MigrationPlan
 
 router = APIRouter(prefix="/platform", tags=["platform"])
 
 _Service = Annotated[PlatformService, Depends(get_platform_service)]
+_Reprocessor = Annotated[Reprocessor, Depends(get_reprocessor)]
 
 _administers = Depends(require_capability(Capability.PLATFORM_ADMINISTER))
 
@@ -170,11 +178,19 @@ async def start_reindex(
 
 
 @router.get("/reindex/{run_id}", dependencies=[_administers])
-async def read_reindex(run_id: uuid.UUID, service: _Service) -> ReindexRunResponse:
+async def read_reindex(
+    run_id: uuid.UUID, service: _Service, reprocessor: _Reprocessor
+) -> ReindexRunResponse:
     run = await service.reindex_run(run_id)
     if run is None:
         raise NotFound("No such reindex run.")
-    return _reindex_of(run)
+    response = _reindex_of(run)
+    # Task 104: the recut connectors' own runs, so the platform screen can show which
+    # connectors this operation is recutting and how far each has got.
+    response.reprocessing_runs = [
+        ReprocessingRunResponse.of(spawned) for spawned in await reprocessor.spawned_by(run.id)
+    ]
+    return response
 
 
 # ---------------------------------------------------------------------------

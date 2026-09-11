@@ -9,7 +9,6 @@ import {
   summarizationForm,
   summarizationModelSummary,
   summarizationProblem,
-  summarizationWarning,
   summaryStatus,
   waitingSummary,
 } from '@/pages/summarization'
@@ -71,7 +70,11 @@ describe('the cost line', () => {
 
   it('says nothing under off and something honest for an empty connector', () => {
     expect(
-      summarizationCost(makeConnector(), { mode: 'off', max_input_tokens: 1, max_summary_tokens: 1 }),
+      summarizationCost(makeConnector(), {
+        mode: 'off',
+        max_input_tokens: 1,
+        max_summary_tokens: 1,
+      }),
     ).toBeNull()
     const empty = makeConnector({ document_count: 0, counts: {}, total_bytes: 0 })
     const cost = summarizationCost(empty, {
@@ -80,46 +83,6 @@ describe('the cost line', () => {
       max_summary_tokens: 150,
     })
     expect(describeCost(cost!)).toMatch(/costs nothing until documents arrive/)
-  })
-})
-
-describe('the warning before saving', () => {
-  const stored = makeConnector({ counts: { indexed: 3 }, document_count: 3 })
-
-  it('warns that every vector changes when contextual is switched on or off', () => {
-    const on = summarizationForm(makeSummarization({ mode: 'contextual' }))
-    expect(summarizationWarning(stored, on)).toMatch(/3 documents already indexed become stale/)
-
-    const contextual = makeConnector({
-      counts: { indexed: 3 },
-      summarization: makeSummarization({ mode: 'contextual' }),
-    })
-    const off = summarizationForm(makeSummarization({ mode: 'summary_chunk' }))
-    expect(summarizationWarning(contextual, off)).toMatch(/embedded with a summary prefix/)
-  })
-
-  it('warns when the model moves under contextual, and not under summary_chunk', () => {
-    const contextual = makeConnector({
-      counts: { indexed: 3 },
-      summarization: makeSummarization({ mode: 'contextual', model_id: 'mo1' }),
-    })
-    expect(
-      summarizationWarning(contextual, summarizationForm(makeSummarization({ mode: 'contextual', model_id: 'mo2' }))),
-    ).not.toBeNull()
-
-    const chunked = makeConnector({
-      counts: { indexed: 3 },
-      summarization: makeSummarization({ mode: 'summary_chunk', model_id: 'mo1' }),
-    })
-    expect(
-      summarizationWarning(chunked, summarizationForm(makeSummarization({ mode: 'summary_chunk', model_id: 'mo2' }))),
-    ).toBeNull()
-  })
-
-  it('says nothing about summary_chunk, and nothing to an empty connector', () => {
-    expect(summarizationWarning(stored, summarizationForm(makeSummarization({ mode: 'summary_chunk' })))).toBeNull()
-    const empty = makeConnector({ counts: {}, document_count: 0 })
-    expect(summarizationWarning(empty, summarizationForm(makeSummarization({ mode: 'contextual' })))).toBeNull()
   })
 })
 
@@ -161,9 +124,9 @@ describe('what the table says about a summary', () => {
         }),
       ),
     ).toEqual({ label: 'summarized', tone: 'ok', detail: 'cheap, 120 tokens.' })
-    expect(summaryStatus(makeDocument({ summary_status: 'summarized', summary_model: 'manual' }))?.label).toBe(
-      'edited',
-    )
+    expect(
+      summaryStatus(makeDocument({ summary_status: 'summarized', summary_model: 'manual' }))?.label,
+    ).toBe('edited')
     expect(summaryStatus(makeDocument({ summary_status: 'failed', summary_error: 'no' }))).toEqual({
       label: 'summary failed',
       tone: 'warn',
@@ -175,7 +138,9 @@ describe('what the table says about a summary', () => {
 
 describe('the panel sentences', () => {
   it('sums the window and flags estimates', () => {
-    expect(healthSummary(makeSummarizationHealth())).toBe('12 summarized, 1 failed — 25,800 tokens.')
+    expect(healthSummary(makeSummarizationHealth())).toBe(
+      '12 summarized, 1 failed — 25,800 tokens.',
+    )
     expect(healthSummary(makeSummarizationHealth({ capped: 3, estimated_runs: 2 }))).toMatch(
       /3 refused by a cap — 25,800 tokens \(some estimated\)/,
     )
@@ -195,15 +160,23 @@ describe('the panel sentences', () => {
   })
 
   it('says which link of the model chain is answering', () => {
-    expect(summarizationModelSummary(makeSummarizationSettings())).toMatch(/platform default, acme-gpt/)
+    expect(summarizationModelSummary(makeSummarizationSettings())).toMatch(
+      /platform default, acme-gpt/,
+    )
     expect(
-      summarizationModelSummary(makeSummarizationSettings({ effective_model_source: 'distillation' })),
+      summarizationModelSummary(
+        makeSummarizationSettings({ effective_model_source: 'distillation' }),
+      ),
     ).toMatch(/distillation model, acme-gpt/)
     expect(
-      summarizationModelSummary(makeSummarizationSettings({ effective_model_source: 'summarization' })),
+      summarizationModelSummary(
+        makeSummarizationSettings({ effective_model_source: 'summarization' }),
+      ),
     ).toBe('Summarizing with acme-gpt.')
     expect(
-      summarizationModelSummary(makeSummarizationSettings({ effective_model_id: null, effective_model_name: null })),
+      summarizationModelSummary(
+        makeSummarizationSettings({ effective_model_id: null, effective_model_name: null }),
+      ),
     ).toMatch(/No summarization model resolves anywhere/)
   })
 })

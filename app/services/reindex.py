@@ -51,16 +51,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.core.errors import Conflict, NotFound
 from app.core.tenancy import Actor
 from app.schemas.connector_config import ChunkingConfig, depends_on_embedding_model
 from app.schemas.platform import EmbeddingChoice, PlatformSettingsPatch, ReindexEstimate
 from app.services.embeddings import Embedder
+from app.services.index_fingerprint import with_embedding_model
 from app.services.maintenance_store import ConnectorChunking, MaintenanceStore
 from app.services.platform_settings import PlatformSettingsService
 from app.services.reindex_store import (
@@ -75,7 +76,7 @@ from app.services.reindex_store import (
     RunView,
     TargetView,
 )
-from app.services.summarization import embedding_input
+from app.services.summarization import KIND_SOURCE, embedding_input
 from app.services.vector_backends import VectorBackends
 from app.services.vector_index import COPY_BATCH, successor
 from app.services.vector_store import ChunkPoint
@@ -119,6 +120,39 @@ class Recutter(Protocol):
     async def recut(
         self, *, organization_id: uuid.UUID, document_id: uuid.UUID, embedder: Embedder
     ) -> list[ChunkPoint]: ...
+
+
+class RunTracker(Protocol):
+    """The per-connector reprocessing runs a platform reindex leaves behind (task 104).
+
+    A port so that this module, which the API process builds to *estimate*, does not
+    depend on the reprocessing service; the worker wires the real one. ``None`` means the
+    recut is untracked, which is what it was before task 104.
+    """
+
+    async def open_for_reindex(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        connector_id: uuid.UUID,
+        reindex_run_id: uuid.UUID,
+        documents: Sequence[uuid.UUID],
+    ) -> Any: ...
+
+    async def settle_recut(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        run_id: uuid.UUID,
+        document_id: uuid.UUID,
+        outcome: str,
+        tokens: int = 0,
+        chunk_count: int | None = None,
+    ) -> None: ...
+
+    async def adopt_embedding_model(
+        self, organization_id: uuid.UUID, embedding_model: str
+    ) -> None: ...
 
 
 class MissingRecutter(RuntimeError):
@@ -187,6 +221,7 @@ class Reindexer:
         recutter: Recutter | None = None,
         batch_size: int = COPY_BATCH,
         pause_seconds: float = PAGE_PAUSE_SECONDS,
+        tracker: RunTracker | None = None,
     ) -> None:
         self._store = store
         self._backends = backends
@@ -196,6 +231,7 @@ class Reindexer:
         self._recutter = recutter
         self._batch = batch_size
         self._pause = pause_seconds
+        self._tracker = tracker
 
     # -- estimating ------------------------------------------------------
 
@@ -539,6 +575,17 @@ class Reindexer:
         for connector_id in sorted(connectors):
             async with self._maintenance.begin() as transaction:
                 documents = await transaction.indexed_documents(connector_id)
+            # Task 104: the connector's own screen shows this operation's progress for
+            # its documents, as a reprocessing run with `trigger: embedding_model`.
+            run_id: uuid.UUID | None = None
+            if self._tracker is not None:
+                run = await self._tracker.open_for_reindex(
+                    organization_id=target.organization_id,
+                    connector_id=connector_id,
+                    reindex_run_id=target.run_id,
+                    documents=documents,
+                )
+                run_id = run.id
             for document_id in documents:
                 try:
                     points = await self._recutter.recut(
@@ -556,10 +603,12 @@ class Reindexer:
                             "document_id": str(document_id),
                         },
                     )
+                    await self._settle(target, run_id, document_id, "failed")
                     continue
                 if points:
                     await index.upsert_into(target.collection, points)
                     produced += len(points)
+                await self._settle(target, run_id, document_id, "done", points)
                 if self._pause:
                     await asyncio.sleep(self._pause)
         logger.info(
@@ -572,6 +621,29 @@ class Reindexer:
             },
         )
         return produced
+
+    async def _settle(
+        self,
+        target: TargetView,
+        run_id: uuid.UUID | None,
+        document_id: uuid.UUID,
+        outcome: str,
+        points: Sequence[ChunkPoint] = (),
+    ) -> None:
+        if self._tracker is None or run_id is None:
+            return
+        await self._tracker.settle_recut(
+            organization_id=target.organization_id,
+            run_id=run_id,
+            document_id=document_id,
+            outcome=outcome,
+            tokens=sum(int(point.payload.get("token_count", 0) or 0) for point in points),
+            chunk_count=(
+                sum(1 for point in points if point.payload.get("kind", KIND_SOURCE) == KIND_SOURCE)
+                if outcome == "done"
+                else None
+            ),
+        )
 
     async def _verify(self, target: TargetView, *, expected: int, embedder: Embedder) -> None:
         """Counts, then a search. Raising here leaves the old collection live.
@@ -615,17 +687,22 @@ class Reindexer:
         if run.scope != PLATFORM:
             return
         current = await self._settings.current()
-        if current.embedding.name == run.to_model:
-            return
-        from app.services.platform_store import platform_attribution
+        if current.embedding.name != run.to_model:
+            from app.services.platform_store import platform_attribution
 
-        await self._settings.update(
-            platform_attribution("reindex"),
-            PlatformSettingsPatch(
-                embedding={"name": run.to_model, "dimension": run.to_dimension},
-                confirm_reindex=run.to_model,
-            ),
-        )
+            await self._settings.update(
+                platform_attribution("reindex"),
+                PlatformSettingsPatch(
+                    embedding={"name": run.to_model, "dimension": run.to_dimension},
+                    confirm_reindex=run.to_model,
+                ),
+            )
+        if self._tracker is not None:
+            # Task 104. Every row in every swapped tenant now holds vectors from the new
+            # model: rewrite the rows' model and fingerprint segment to say so, and
+            # recompute their statuses against the model that is now the platform's.
+            for target in run.targets:
+                await self._tracker.adopt_embedding_model(target.organization_id, run.to_model)
 
 
 def _belongs_to(point: ChunkPoint, connectors: set[uuid.UUID] | None) -> bool:
@@ -652,9 +729,20 @@ async def _embed(points: Sequence[ChunkPoint], embedder: Embedder) -> list[Chunk
     texts = [embedding_input(point.payload) for point in points]
     vectors = await embedder.embed(texts)
     return [
-        ChunkPoint(id=point.id, vector=list(vector), payload=dict(point.payload))
+        ChunkPoint(id=point.id, vector=list(vector), payload=_re_embedded(point.payload, embedder))
         for point, vector in zip(points, vectors, strict=True)
     ]
+
+
+def _re_embedded(payload: Mapping[str, Any], embedder: Embedder) -> dict[str, Any]:
+    """The payload of a copied point: the same, with its index fingerprint's model
+    segment moved to the model that just produced the vector (task 104). A point with no
+    structured fingerprint keeps what it has."""
+    copied = dict(payload)
+    recorded = copied.get("index_fingerprint")
+    if recorded:
+        copied["index_fingerprint"] = with_embedding_model(str(recorded), embedder.model)
+    return copied
 
 
 def estimated_cost_lines(estimate: ReindexEstimate) -> list[str]:
@@ -684,6 +772,7 @@ __all__ = [
     "Recutter",
     "ReindexInProgress",
     "Reindexer",
+    "RunTracker",
     "estimated_cost_lines",
     "progress_of",
 ]

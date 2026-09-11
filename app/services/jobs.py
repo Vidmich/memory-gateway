@@ -366,6 +366,10 @@ DROP_MIGRATION_SOURCE = "drop_migration_source"
 #: question. Both are things a person presses a button for and neither is a request.
 AUDIT_INDEX = "audit_index"
 EVALUATE_SET = "evaluate_set"
+#: Task 104. Recompute every document's stored index status from its fingerprint and
+#: continue any reprocessing run a dead worker left — nightly, and after a platform
+#: change (the tokenizer) that invalidates chunks without a connector save.
+RECONCILE_INDEX = "reconcile_index"
 
 #: Every job this build knows how to run: one file's extraction and embedding, a
 #: connector's whole teardown, one conversation's distillation, task 17's reindex, and
@@ -385,6 +389,7 @@ JOB_NAMES = (
     DROP_MIGRATION_SOURCE,
     AUDIT_INDEX,
     EVALUATE_SET,
+    RECONCILE_INDEX,
 )
 
 
@@ -396,6 +401,12 @@ def ingest_key(document_id: uuid.UUID, content_hash: str | None) -> str:
     the fix would silently never be indexed.
     """
     return f"ingest:{document_id}:{content_hash or 'unknown'}"
+
+
+def reconcile_key(reason: str) -> str:
+    """One reconciliation per reason per hour: two tokenizer saves in a minute need one
+    pass, not two."""
+    return f"reconcile-index:{reason}"
 
 
 def audit_key(audit_id: uuid.UUID) -> str:
@@ -483,6 +494,7 @@ __all__ = [
     "INGEST_DOCUMENT",
     "JOB_NAMES",
     "MIGRATE_VECTORS",
+    "RECONCILE_INDEX",
     "REINDEX",
     "DeadLetter",
     "DeadLetterSink",
@@ -501,6 +513,7 @@ __all__ = [
     "evaluate_key",
     "ingest_key",
     "queue_for",
+    "reconcile_key",
     "reindex_key",
     "resync_key",
 ]

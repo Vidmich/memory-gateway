@@ -91,6 +91,7 @@ async def startup(context: dict[str, Any]) -> None:
         metrics=metrics.extraction,
         chunking_metrics=metrics.chunking,
         summarization_metrics=metrics.summarization,
+        reprocessing_metrics=metrics.reprocessing,
         embedding=platform_settings.snapshot.embedding,
         tokenizer=lambda: embedding_tokenizer(platform_settings.snapshot.embedding),
     )
@@ -150,11 +151,17 @@ async def nightly_maintenance(context: dict[str, Any]) -> None:
     platform: Platform | None = context.get("platform")
     if platform is None:  # pragma: no cover - a worker built without the platform bundle
         return
-    for name, run in (
+    ingestion: Ingestion | None = context.get("ingestion")
+    passes: list[tuple[str, Any]] = [
         ("partitions", platform.service.run_partitions),
         ("retention", platform.service.run_retention),
         ("organization-purge", platform.service.purge_due),
-    ):
+    ]
+    if ingestion is not None:
+        # Task 104. Last, after the purge: every document's stored index status from
+        # its fingerprint, and any reprocessing run a dead worker left, continued.
+        passes.append(("reconcile-index", ingestion.reprocessor.reconcile))
+    for name, run in passes:
         try:
             await run()
         except Exception:

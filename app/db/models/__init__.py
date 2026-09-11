@@ -22,6 +22,7 @@ from app.db.models.platform import (
     ReindexRun,
     ReindexTarget,
 )
+from app.db.models.reprocessing import ReprocessingRun
 from app.db.models.request_log import RequestLog, Transcript
 from app.db.models.session import UserSession
 from app.db.models.summarization import SummarizationRun
@@ -56,6 +57,7 @@ __all__ = [
     "PlatformSetting",
     "ReindexRun",
     "ReindexTarget",
+    "ReprocessingRun",
     "RequestLog",
     "SummarizationRun",
     "Transcript",

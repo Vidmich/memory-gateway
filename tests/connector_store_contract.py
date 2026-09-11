@@ -244,7 +244,7 @@ async def audit_rows_carry_what_an_index_audit_classifies_by(fixture: Fixture) -
         assert connector is not None
         document = await transaction.claim_document(connector, draft(size=2048), reset=True)
         document.status = "indexed"
-        document.chunk_fingerprint = "abc123"
+        document.index_fingerprint = "abc123"
         document.embedding_model = "hash-bow"
         await transaction.commit()
 
@@ -257,7 +257,7 @@ async def audit_rows_carry_what_an_index_audit_classifies_by(fixture: Fixture) -
             row.mime_type,
             row.size_bytes,
             row.status,
-            row.chunk_fingerprint,
+            row.index_fingerprint,
             row.embedding_model,
         )
         for row in rows

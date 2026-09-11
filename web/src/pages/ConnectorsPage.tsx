@@ -40,15 +40,10 @@ export function ConnectorsPage() {
       sortValue: (row) => row.name,
       render: (row) => (
         <div>
-          <Link
-            to={`/connectors/${row.id}`}
-            className="font-medium text-slate-900 hover:underline"
-          >
+          <Link to={`/connectors/${row.id}`} className="font-medium text-slate-900 hover:underline">
             {row.name}
           </Link>
-          {row.description ? (
-            <div className="text-xs text-slate-500">{row.description}</div>
-          ) : null}
+          {row.description ? <div className="text-xs text-slate-500">{row.description}</div> : null}
         </div>
       ),
     },
@@ -72,7 +67,9 @@ export function ConnectorsPage() {
       header: 'Size',
       align: 'right',
       sortValue: (row) => row.total_bytes,
-      render: (row) => <span className="text-sm text-slate-600">{formatBytes(row.total_bytes)}</span>,
+      render: (row) => (
+        <span className="text-sm text-slate-600">{formatBytes(row.total_bytes)}</span>
+      ),
     },
     {
       key: 'synced',
@@ -156,9 +153,21 @@ export function ConnectorsPage() {
  */
 function StatusCell({ connector }: { connector: ConnectorResponse }) {
   const summary = statusSummary(connector)
+  const stale = connector.stale_documents ?? 0
+  const busy = connector.reprocessing_documents ?? 0
   return (
     <div>
       <StatusBadge status={summary.label} tone={summary.tone} />
+      {/* Task 104. A stored count, so the list says it without opening the row. */}
+      {stale > 0 ? (
+        <span className="ml-2" data-testid="stale-badge">
+          <StatusBadge status={`${stale.toLocaleString()} stale`} tone="warn" />
+        </span>
+      ) : busy > 0 ? (
+        <span className="ml-2" data-testid="stale-badge">
+          <StatusBadge status={`${busy.toLocaleString()} reprocessing`} tone="info" />
+        </span>
+      ) : null}
       <div className="mt-1 text-xs text-slate-500">{summary.detail}</div>
     </div>
   )

@@ -160,7 +160,7 @@ class EvaluationRunner:
                 fingerprints: Counter[str] = Counter()
                 for document in await transaction.audit_rows(connector_id):
                     if document.status == "indexed":
-                        fingerprints[document.chunk_fingerprint or ""] += 1
+                        fingerprints[document.index_fingerprint or ""] += 1
                 connectors[str(connector_id)] = {
                     "name": row.name if row is not None else None,
                     "fingerprints": dict(fingerprints),

@@ -306,6 +306,12 @@ class RoutingVectorStore:
         store = await self._backends.store_for(organization_id)
         await store.delete_document(organization_id, document_id)
 
+    async def replace_document(
+        self, organization_id: uuid.UUID, document_id: uuid.UUID, points: Sequence[ChunkPoint]
+    ) -> None:
+        store = await self._backends.store_for(organization_id)
+        await store.replace_document(organization_id, document_id, points)
+
     async def delete_connector(self, organization_id: uuid.UUID, connector_id: uuid.UUID) -> None:
         store = await self._backends.store_for(organization_id)
         await store.delete_connector(organization_id, connector_id)

@@ -179,3 +179,11 @@ export type ImportRequest = components['schemas']['ImportRequest']
 export type ImportResponse = components['schemas']['ImportResponse']
 export type GenerateRequest = components['schemas']['GenerateRequest']
 export type GenerateResponse = components['schemas']['GenerateResponse']
+
+// Task 104: reprocessing status — the second status axis, the runs, and the alerts.
+export type ReprocessingRunResponse = components['schemas']['ReprocessingRunResponse']
+export type ReprocessingProgress = components['schemas']['ReprocessingProgress']
+export type ReprocessRequest = components['schemas']['ReprocessRequest']
+export type StalePreviewResponse = components['schemas']['StalePreviewResponse']
+export type StaleAlertResponse = components['schemas']['StaleAlertResponse']
+export type StaleConnectorResponse = components['schemas']['StaleConnectorResponse']

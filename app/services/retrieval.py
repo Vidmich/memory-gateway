@@ -41,10 +41,10 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any
+from typing import Any, Protocol
 
 from app.api.proxy.errors import GatewayUnavailable
 from app.core.metrics import RetrievalMetrics
@@ -127,9 +127,14 @@ class Chunk:
     #: on this rather than inferring it. A point written before the key existed is a
     #: source, because before the key existed nothing else could be written.
     kind: str = KIND_SOURCE
+    #: Task 104. True when the point was written under a fingerprint that is no longer the
+    #: connector's effective one for its format — a chunk cut the old way, still served
+    #: because a connector mid-reprocess has to keep answering. On the request log and
+    #: the citation, so "why did it answer that" during a reprocess has its answer.
+    stale: bool = False
 
     @classmethod
-    def of(cls, match: Match) -> Chunk:
+    def of(cls, match: Match, *, expected: Mapping[str, Mapping[str, str]] | None = None) -> Chunk:
         payload = match.payload
         section = payload.get("page_or_section")
         embedded = payload.get("embedded_text")
@@ -143,6 +148,7 @@ class Chunk:
             matched_text=str(embedded) if embedded and str(embedded) != text else None,
             chunk_strategy=str(strategy) if strategy else None,
             kind=kind,
+            stale=is_stale(payload, expected),
             # A document whose name is missing is still a usable citation target by id;
             # rendering "source: None" into somebody's prompt is not.
             source_name=str(payload.get("source_name") or "untitled"),
@@ -174,6 +180,8 @@ class Chunk:
         }
         if self.kind != KIND_SOURCE:
             entry["kind"] = self.kind
+        if self.stale:
+            entry["stale"] = True
         if dropped_reason is not None:
             entry["dropped"] = dropped_reason
         return entry
@@ -355,6 +363,42 @@ class QueryCache:
 # ---------------------------------------------------------------------------
 
 
+class FingerprintSource(Protocol):
+    """Where retrieval learns what each connector's effective fingerprints are (task 104),
+    so it can label a chunk cut under a previous one. Cached and cheap by contract: it is
+    called on every request that retrieves, and a database read per request would be the
+    wrong price for a label."""
+
+    async def expected(
+        self, organization_id: uuid.UUID, connector_ids: Sequence[uuid.UUID]
+    ) -> Mapping[str, Mapping[str, str]]:
+        """``{connector_id: {format_kind: fingerprint}}`` for the connectors named."""
+        ...
+
+
+def is_stale(payload: Mapping[str, Any], expected: Mapping[str, Mapping[str, str]] | None) -> bool:
+    """Whether a stored point was written under a fingerprint that is no longer current.
+
+    Decided from the payload alone against the connector's effective fingerprints: by the
+    point's format when the payload names one, and otherwise against every format the
+    connector has — a point that matches *any* current fingerprint is not stale. A point
+    with no fingerprint at all (indexed before task 104) is not known to be stale, and a
+    request with no source to compare against labels nothing.
+    """
+    if not expected:
+        return False
+    recorded = payload.get("index_fingerprint")
+    if not recorded:
+        return False
+    current = expected.get(str(payload.get("connector_id")))
+    if not current:
+        return False
+    kind = payload.get("format_kind")
+    if kind is not None and str(kind) in current:
+        return current[str(kind)] != str(recorded)
+    return str(recorded) not in set(current.values())
+
+
 class Retriever:
     """Query text in, chunks out, inside a deadline."""
 
@@ -365,11 +409,13 @@ class Retriever:
         *,
         cache: QueryCache | None = None,
         metrics: RetrievalMetrics | None = None,
+        fingerprints: FingerprintSource | None = None,
     ) -> None:
         self._embedder = embedder
         self._vectors = vectors
         self._cache = cache if cache is not None else QueryCache()
         self._metrics = metrics
+        self._fingerprints = fingerprints
 
     async def documents(
         self,
@@ -456,7 +502,8 @@ class Retriever:
                 )
             )
 
-        chunks = tuple(Chunk.of(match) for match in matches)
+        expected = await self._expected(organization_id, config)
+        chunks = tuple(Chunk.of(match, expected=expected) for match in matches)
         return self._done(
             Retrieval(
                 chunks=chunks,
@@ -465,6 +512,21 @@ class Retriever:
                 query=query,
             )
         )
+
+    async def _expected(
+        self, organization_id: uuid.UUID, config: MemoryConfig
+    ) -> Mapping[str, Mapping[str, str]] | None:
+        """The connectors' effective fingerprints, or ``None`` when there is nothing to
+        ask or the source failed — a label is never worth failing a request over."""
+        if self._fingerprints is None:
+            return None
+        try:
+            return await self._fingerprints.expected(organization_id, list(config.connector_ids))
+        except Exception:
+            logger.warning(
+                "could not read connector fingerprints; chunks are unlabelled", exc_info=True
+            )
+            return None
 
     async def _search(
         self, organization_id: uuid.UUID, config: MemoryConfig, query: str
@@ -541,8 +603,16 @@ def _dedupe(matches: Sequence[Match]) -> list[Match]:
 
     Matches arrive sorted by score, so the first of a neighbouring pair seen here is the
     better one.
+
+    A chunk whose text is the same as one already kept from the same document is dropped
+    whatever its index (task 104). During a reprocess a document briefly holds its old cut
+    and its new one — the new points are written before the old tail is deleted — and a
+    paragraph that did not move between the two cuts would otherwise be injected twice
+    under two fingerprints. Exact text, whitespace-folded: an overlap is the radius rule's
+    business, and a same-text pair at different indexes is the replacement window's.
     """
     kept: list[Match] = []
+    seen_text: set[tuple[Any, str]] = set()
     for match in matches:
         if match.payload.get("kind") == KIND_SUMMARY:
             # A summary shares no text with any source chunk of its document — it is a
@@ -554,6 +624,9 @@ def _dedupe(matches: Sequence[Match]) -> list[Match]:
         document = match.payload.get("document_id")
         index = int(match.payload.get("chunk_index", 0) or 0)
         radius = _radius(match)
+        folded = " ".join(str(match.payload.get("text", "")).split())
+        if folded and (document, folded) in seen_text:
+            continue
         if any(
             existing.payload.get("document_id") == document
             and existing.payload.get("kind") != KIND_SUMMARY
@@ -563,6 +636,8 @@ def _dedupe(matches: Sequence[Match]) -> list[Match]:
         ):
             continue
         kept.append(match)
+        if folded:
+            seen_text.add((document, folded))
     return kept
 
 
@@ -759,6 +834,7 @@ __all__ = [
     "Fact",
     "FactRecall",
     "FactRecaller",
+    "FingerprintSource",
     "MemoryService",
     "QueryCache",
     "Recall",
@@ -766,4 +842,5 @@ __all__ = [
     "RetrievalUnavailable",
     "Retriever",
     "build_query",
+    "is_stale",
 ]

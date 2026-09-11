@@ -28,6 +28,7 @@ from app.db.models import (
     Gateway,
     MemoryFact,
     Organization,
+    ReprocessingRun,
     RequestLog,
     UpstreamModel,
     User,
@@ -55,6 +56,7 @@ from tests.gateway_support import (
 from tests.monitoring_support import make_log_row
 from tests.platform_support import PlatformFixture
 from tests.platform_support import build_platform as build_platform_fixture
+from tests.reprocessing_support import make_reprocessing_run
 from tests.validation_support import (
     make_evaluation_item,
     make_evaluation_run,
@@ -124,6 +126,7 @@ class World:
     globex_evaluation_set: EvaluationSet
     globex_evaluation_item: EvaluationItem
     globex_evaluation_run: EvaluationRun
+    globex_reprocessing_run: ReprocessingRun
 
     #: Every user, keyed by the short name the tests use.
     people: dict[str, User] = field(default_factory=dict)
@@ -237,6 +240,9 @@ def build_world(*, settings: Settings | None = None) -> World:
     database.evaluation_sets[globex_evaluation_set.id] = globex_evaluation_set
     database.evaluation_items[globex_evaluation_item.id] = globex_evaluation_item
     database.evaluation_runs[globex_evaluation_run.id] = globex_evaluation_run
+    # Task 104: a finished reprocessing run of Globex's connector, for the net.
+    globex_reprocessing_run = make_reprocessing_run(globex_connector)
+    database.reprocessing_runs[globex_reprocessing_run.id] = globex_reprocessing_run
 
     acme_log = make_log_row(acme, gateway_id=acme_gateway.id, api_key_id=acme_key.id)
     globex_log = make_log_row(globex, gateway_id=globex_gateway.id, api_key_id=globex_key.id)
@@ -286,6 +292,7 @@ def build_world(*, settings: Settings | None = None) -> World:
         globex_evaluation_set=globex_evaluation_set,
         globex_evaluation_item=globex_evaluation_item,
         globex_evaluation_run=globex_evaluation_run,
+        globex_reprocessing_run=globex_reprocessing_run,
         people=people,
     )
 

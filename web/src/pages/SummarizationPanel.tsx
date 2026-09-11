@@ -1,24 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { useReindexConnector, useUpdateConnector } from '@/api/connectors'
+import { useUpdateConnector } from '@/api/connectors'
 import { useModels } from '@/api/models'
 import { resolveRange } from '@/api/monitoring'
 import { useSummarizationHealth } from '@/api/summarization'
 import type { ConnectorResponse } from '@/api/types'
 import { Field, Form, Select, SubmitButton, TextInput } from '@/components/Form'
-import { FORMAT_KINDS, reindexScope } from '@/pages/connectors'
+import { FORMAT_KINDS } from '@/pages/connectors'
+import { StalePreviewNotice } from '@/pages/ReprocessingPanel'
 import {
   SUMMARY_MODES,
   describeCost,
   effectiveModeFor,
   modeLabel,
-  prefixesContext,
   summarizationBody,
   summarizationChanged,
   summarizationCost,
   summarizationForm,
   summarizationProblem,
-  summarizationWarning,
 } from '@/pages/summarization'
 
 /**
@@ -35,7 +34,6 @@ import {
  */
 export function SummarizationPanel({ connector }: { connector: ConnectorResponse }) {
   const update = useUpdateConnector(connector.id)
-  const reindex = useReindexConnector(connector.id)
   const { data: models } = useModels(null)
   const [form, setForm] = useState(() => summarizationForm(connector.summarization))
 
@@ -45,7 +43,6 @@ export function SummarizationPanel({ connector }: { connector: ConnectorResponse
 
   const changed = summarizationChanged(form, connector.summarization)
   const problem = summarizationProblem(form)
-  const warning = summarizationWarning(connector, form)
   const cost = summarizationCost(connector, {
     mode: form.mode,
     max_input_tokens: Number(form.maxInputTokens) || 0,
@@ -54,7 +51,8 @@ export function SummarizationPanel({ connector }: { connector: ConnectorResponse
   const mode = SUMMARY_MODES.find((entry) => entry.value === form.mode)
   const inherited = connector.summary_model
   const overrides = FORMAT_KINDS.filter(
-    (kind) => effectiveModeFor(connector.summarization, kind.value) !== connector.summarization.mode,
+    (kind) =>
+      effectiveModeFor(connector.summarization, kind.value) !== connector.summarization.mode,
   )
 
   const submit = async () => {
@@ -111,8 +109,8 @@ export function SummarizationPanel({ connector }: { connector: ConnectorResponse
           </Field>
           {!inherited && !form.modelId ? (
             <p role="status" className="-mt-2 mb-4 text-sm text-amber-800">
-              No summarization model resolves for this connector. Pick one here, under
-              Settings, or as the platform default, or every summary will fail.
+              No summarization model resolves for this connector. Pick one here, under Settings, or
+              as the platform default, or every summary will fail.
             </p>
           ) : null}
 
@@ -180,31 +178,13 @@ export function SummarizationPanel({ connector }: { connector: ConnectorResponse
           {problem}
         </p>
       ) : null}
-      {warning ? (
-        <p
-          role="status"
-          className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
-        >
-          {warning}
-        </p>
-      ) : null}
-
-      {connector.reindex_required && prefixesContext(connector.summarization.mode) ? (
-        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          <p>
-            Every chunk's embedding now depends on the summary, so the stored vectors are
-            stale. Reindexing re-embeds {reindexScope(connector)}, reusing each document's
-            summary where it already has one.
-          </p>
-          <button
-            type="button"
-            onClick={() => reindex.mutate(connector.reindex_formats ?? [])}
-            className="mt-2 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-100"
-          >
-            {reindex.isPending ? 'Queueing…' : `Re-embed ${reindexScope(connector)}`}
-          </button>
-        </div>
-      ) : null}
+      {/* Task 104. One component, fed by the fingerprint diff: the same sentence the
+          chunking form shows, and the reprocess lives in the header beside the count. */}
+      <StalePreviewNotice
+        connectorId={connector.id}
+        patch={{ summarization: summarizationBody(form) }}
+        enabled={changed && problem === null}
+      />
 
       <SubmitButton busy={update.isPending} disabled={!changed || problem !== null}>
         Save summarization

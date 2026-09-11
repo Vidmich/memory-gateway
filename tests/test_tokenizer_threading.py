@@ -78,9 +78,15 @@ async def test_changing_the_tokenizer_marks_documents_stale_through_the_fingerpr
     fresh = await fixture.service.list_documents(fixture.actor, fixture.connector.id)
     assert fresh.stale == frozenset()
 
+    # A tokenizer moves under a running pipeline without a connector save, so nothing
+    # marks the rows at the moment it moves; the reconciliation pass (task 104) is what
+    # recomputes the stored status from the fingerprints, and the listing then says why.
     source.current = ApproximateTokenizer(3.5)
+    report = await fixture.reprocessor.reconcile()
+    assert report.disagreements == 1
     stale = await fixture.service.list_documents(fixture.actor, fixture.connector.id)
     assert stale.stale == {row.id for row in stale.items}
+    assert {reason.code for reason in stale.reasons.values()} == {"tokenizer"}
 
     # Recutting under the new unit clears it, and the row now says the new unit.
     await fixture.service.reindex_connector(fixture.actor, fixture.connector.id)

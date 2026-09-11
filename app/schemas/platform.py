@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.config import ConfigBlob
 from app.schemas.gateway_config import LoggingConfig, Quota
+from app.schemas.reprocessing import ReprocessingRunResponse
 from app.services.tokenizers import Effective, TokenizerSpec, effective
 
 #: Section names, which are also the ``platform_settings.key`` values. Derived from the
@@ -354,6 +355,10 @@ class ReindexRunResponse(BaseModel):
     #: work has finished for a rate to mean anything. A number invented from two points
     #: is worse than an honest blank on a screen somebody is deciding to wait on.
     eta_seconds: int | None = None
+    #: Task 104. The per-connector reprocessing runs this reindex spawned for the
+    #: connectors it had to recut — each one also visible on its own connector's screen.
+    #: Filled on the single-run read, empty on lists.
+    reprocessing_runs: list[ReprocessingRunResponse] = Field(default_factory=list)
 
 
 class MaintenanceRunResponse(BaseModel):

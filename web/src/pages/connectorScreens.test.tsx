@@ -13,6 +13,7 @@ import {
   makeConnector,
   makeDocument,
   makeDocumentChunk,
+  makeReprocessingRun,
   makeSearchHit,
   makeSummarization,
   makeSummarizationHealth,
@@ -32,6 +33,8 @@ type ServerOptions = {
   saveError?: { status: number; code: string; message: string; param?: string }
   /** Task 102: what `GET /summarization/health` answers. */
   summarization?: ReturnType<typeof makeSummarizationHealth>
+  /** Task 104: the connector's reprocessing history. */
+  runs?: ReturnType<typeof makeReprocessingRun>[]
 }
 
 /**
@@ -79,7 +82,13 @@ function fakeServer(options: ServerOptions = {}) {
     if (path.startsWith('/api/v1/documents/') && path.endsWith('/summary') && method === 'PATCH') {
       const body = bodyOf<{ summary: string }>(init)
       return Promise.resolve(
-        json(makeDocument({ summary: body.summary, summary_status: 'summarized', summary_model: 'manual' })),
+        json(
+          makeDocument({
+            summary: body.summary,
+            summary_status: 'summarized',
+            summary_model: 'manual',
+          }),
+        ),
       )
     }
     if (path.startsWith('/api/v1/documents/') && path.endsWith('/summarize') && method === 'POST') {
@@ -97,11 +106,49 @@ function fakeServer(options: ServerOptions = {}) {
     if (path.endsWith('/reindex') && method === 'POST' && path.includes('/connectors/')) {
       return Promise.resolve(json({ documents: 1 }))
     }
-    if (path.endsWith('/resync') && method === 'POST') {
+    // Task 104. The preview answers from the patch's shape: a chunking or a
+    // summarization change marks the two indexed documents; anything else nothing.
+    if (path.endsWith('/stale-preview') && method === 'POST') {
+      const body = bodyOf<Record<string, unknown>>(init)
+      const touches = 'chunking' in body || 'summarization' in body
+      const indexed = connectors[0]?.document_count ?? 0
       return Promise.resolve(
         json(
-          options.resync ?? { added: 0, updated: 0, deleted: 0, unchanged: 1, skipped: 0 },
+          touches && indexed > 0
+            ? { formats: { markdown: 2 }, total: 2 }
+            : { formats: {}, total: 0 },
         ),
+      )
+    }
+    if (path.endsWith('/reprocess') && method === 'POST') {
+      const body = bodyOf<{ scope: string; formats: string[] }>(init)
+      return Promise.resolve(
+        json(
+          makeReprocessingRun({
+            scope: body.scope,
+            formats: body.formats,
+            total: 12,
+            done: 0,
+            failed: 0,
+          }),
+          202,
+        ),
+      )
+    }
+    if (path.endsWith('/reprocessing-runs') && method === 'GET') {
+      return Promise.resolve(json({ items: options.runs ?? [] }))
+    }
+    if (path.includes('/reprocessing-runs/') && path.endsWith('/retry') && method === 'POST') {
+      return Promise.resolve(
+        json(makeReprocessingRun({ scope: 'failed', total: 3, done: 0, failed: 0 }), 202),
+      )
+    }
+    if (path.startsWith('/api/v1/reprocessing/alerts')) {
+      return Promise.resolve(json({ items: [] }))
+    }
+    if (path.endsWith('/resync') && method === 'POST') {
+      return Promise.resolve(
+        json(options.resync ?? { added: 0, updated: 0, deleted: 0, unchanged: 1, skipped: 0 }),
       )
     }
     if (path.endsWith('/upload-url') && method === 'POST') {
@@ -118,8 +165,12 @@ function fakeServer(options: ServerOptions = {}) {
       return Promise.resolve(json({ chunks: rows, chunk_count: rows.length }))
     }
     if (path.includes('/documents') && method === 'GET') {
-      const status = new URL(path, 'http://x').searchParams.get('status')
-      const rows = status ? documents.filter((row) => row.status === status) : documents
+      const params = new URL(path, 'http://x').searchParams
+      const status = params.get('status')
+      const indexStatus = params.get('index_status')
+      const rows = documents
+        .filter((row) => !status || row.status === status)
+        .filter((row) => !indexStatus || row.index_status === indexStatus)
       return Promise.resolve(json({ items: rows, next_cursor: null }))
     }
     if (path.startsWith('/api/v1/documents/') && path.endsWith('/reindex')) {
@@ -192,6 +243,22 @@ describe('connectors list', () => {
     expect(await screen.findByText('1 failed')).toBeInTheDocument()
   })
 
+  it('shows a stale badge with the count on the list (task 104)', async () => {
+    renderAt(
+      '/connectors',
+      fakeServer({
+        connectors: [
+          makeConnector({ id: 'c1', name: 'Product docs', stale_documents: 1184 }),
+          makeConnector({ id: 'c2', name: 'Wiki', reprocessing_documents: 3 }),
+          makeConnector({ id: 'c3', name: 'Runbooks' }),
+        ],
+      }),
+    )
+
+    const badges = await screen.findAllByTestId('stale-badge')
+    expect(badges.map((badge) => badge.textContent)).toEqual(['1,184 stale', '3 reprocessing'])
+  })
+
   it('tells an empty organization what a connector is for', async () => {
     renderAt('/connectors', fakeServer({ connectors: [] }))
 
@@ -253,7 +320,10 @@ describe('connector detail', () => {
             id: 'd2',
             source_name: 'old.md',
             tokenizer: 'words (cl100k_base unavailable)',
+            index_status: 'stale',
             stale: true,
+            stale_reason: 'tokenizer',
+            stale_detail: 'Sized with words; the tokenizer is now o200k_base.',
           }),
         ],
       }),
@@ -267,6 +337,33 @@ describe('connector detail', () => {
     const fresh = rows.find((row) => row.textContent?.includes('fresh.md'))
     expect(old?.textContent).toContain('stale')
     expect(fresh?.textContent).not.toContain('stale')
+    // Task 104: the reason, in the server's words, on hover.
+    expect(within(old!).getByTestId('index-status')).toHaveAttribute(
+      'title',
+      'Sized with words; the tokenizer is now o200k_base.',
+    )
+  })
+
+  it('filters the table on the index status axis (task 104)', async () => {
+    const server = fakeServer({
+      documents: [
+        makeDocument({ id: 'd1', source_name: 'fresh.md' }),
+        makeDocument({ id: 'd2', source_name: 'old.md', index_status: 'stale', stale: true }),
+      ],
+    })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+    await screen.findByText('fresh.md')
+
+    await user.click(screen.getByRole('button', { name: 'stale', pressed: false }))
+
+    await waitFor(() => {
+      expect(server.requests.some((request) => request.path.includes('index_status=stale'))).toBe(
+        true,
+      )
+    })
+    expect(await screen.findByText('old.md')).toBeInTheDocument()
+    expect(screen.queryByText('fresh.md')).not.toBeInTheDocument()
   })
 
   it('shows a failed document’s error inline', async () => {
@@ -290,14 +387,14 @@ describe('connector detail', () => {
     ).toBeInTheDocument()
   })
 
-  it('offers Retry on a failed document and Reindex on a healthy one', async () => {
+  it('offers Retry on a failed document and Reprocess on a healthy one', async () => {
     renderAt(
       '/connectors/c1',
       fakeServer({ documents: [makeDocument({ status: 'failed', error: 'broken' })] }),
     )
-    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Retry handbook.md' })).toBeInTheDocument()
 
-    screen.getByRole('button', { name: 'Retry' }).click()
+    screen.getByRole('button', { name: 'Retry handbook.md' }).click()
   })
 
   it('retries a failed document through the reindex endpoint', async () => {
@@ -307,7 +404,7 @@ describe('connector detail', () => {
     renderAt('/connectors/c1', server)
     const user = userEvent.setup()
 
-    await user.click(await screen.findByRole('button', { name: 'Retry' }))
+    await user.click(await screen.findByRole('button', { name: 'Retry handbook.md' }))
 
     await waitFor(() => {
       expect(
@@ -368,7 +465,7 @@ describe('connector detail', () => {
     expect(await screen.findByText('handbook.md')).toBeInTheDocument()
     expect(screen.queryByLabelText('Upload files')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Resync' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Reindex' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Reprocess / })).not.toBeInTheDocument()
   })
 
   it('says a connector is going away and stops offering uploads', async () => {
@@ -443,42 +540,115 @@ describe('chunking panel', () => {
     expect(screen.getByRole('button', { name: 'Save chunking' })).toBeDisabled()
   })
 
-  it('warns that indexed documents keep their old chunks', async () => {
-    renderAt('/connectors/c1', fakeServer())
+  it('says before saving how many documents the change will mark stale (task 104)', async () => {
+    // Fed by the server's fingerprint diff, so the chunking form and the summarization
+    // form say the same sentence and a later setting gets it for free.
+    const server = fakeServer()
+    renderAt('/connectors/c1', server)
     const user = userEvent.setup()
 
     await user.selectOptions(await screen.findByLabelText('Strategy'), 'by_heading')
 
-    expect(await screen.findByText(/keep their old chunks/)).toBeInTheDocument()
+    expect(await screen.findByTestId('stale-preview')).toHaveTextContent(
+      'Saving marks 2 indexed documents stale (2 markdown). They keep their old chunks until you reprocess them.',
+    )
+    const preview = server.requests.find((request) => request.path.endsWith('/stale-preview'))
+    expect(preview?.body).toEqual({ chunking: expect.objectContaining({ strategy: 'by_heading' }) })
   })
 
-  it('offers a reindex when the stored chunking no longer matches what is indexed', async () => {
-    // Saying "your chunks are stale" and offering nothing to do about it is the state
-    // task 09 left this screen in. The button is the action, and it is a *different*
-    // operation from Platform → Settings' reindex: this one re-runs the pipeline, because
-    // a changed chunk size makes the chunks wrong rather than the vectors.
+  it('shows the stale count in the header and reprocesses the stale documents (task 104)', async () => {
+    // A stored fact, so it reads the same after a refresh and from the list; the button is
+    // next to the sentence, scoped to the stale documents by default.
     const server = fakeServer({
-      connectors: [makeConnector({ reindex_required: true })],
+      connectors: [
+        makeConnector({
+          document_count: 2,
+          stale_documents: 1,
+          reindex_required: true,
+          reindex_formats: ['markdown'],
+        }),
+      ],
     })
     renderAt('/connectors/c1', server)
     const user = userEvent.setup()
 
-    await user.click(await screen.findByRole('button', { name: 'Reindex every document' }))
+    const header = await screen.findByTestId('reprocessing-header')
+    expect(header).toHaveTextContent(
+      '1 of 2 documents indexed under a previous configuration (markdown).',
+    )
+    expect(header).toHaveTextContent('Re-ingests the 1 stale document')
+    await user.click(within(header).getByRole('button', { name: 'Reprocess' }))
+
+    await waitFor(() => {
+      const call = server.requests.find((request) => request.path.endsWith('/reprocess'))
+      expect(call?.body).toEqual({ scope: 'stale', formats: [] })
+    })
+  })
+
+  it('shows the progress bar while a run is going, and offers no second one', async () => {
+    const server = fakeServer({
+      connectors: [
+        makeConnector({
+          document_count: 1200,
+          reprocessing_documents: 1184,
+          reprocessing: makeReprocessingRun(),
+        }),
+      ],
+    })
+    renderAt('/connectors/c1', server)
+
+    const progress = await screen.findByTestId('run-progress')
+    expect(progress).toHaveTextContent('314 / 1,184, ~6 min remaining, 2 failed')
+    expect(screen.getByRole('progressbar', { name: 'Reprocessing progress' })).toHaveAttribute(
+      'aria-valuenow',
+      '27',
+    )
+    expect(screen.queryByTestId('reprocess')).not.toBeInTheDocument()
+  })
+
+  it('lists the history with who, when, outcome and the spend, and retries the failures', async () => {
+    const server = fakeServer({
+      connectors: [
+        makeConnector({ stale_documents: 3, reindex_required: true, document_count: 9 }),
+      ],
+      runs: [
+        makeReprocessingRun({
+          id: 'rr9',
+          status: 'partial',
+          done: 95,
+          failed: 3,
+          skipped: 2,
+          total: 100,
+          finished_at: '2026-09-06T12:02:30Z',
+          spent_tokens: 1_050_000,
+        }),
+      ],
+    })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'History' }))
+    const row = await screen.findByTestId('run-row')
+    expect(row).toHaveTextContent('chunking change')
+    expect(row).toHaveTextContent('ops@acme.test')
+    expect(row).toHaveTextContent('13 min')
+    expect(row).toHaveTextContent('95 documents reprocessed, 3 failed, 2 skipped')
+    expect(row).toHaveTextContent('1.2M estimated · 1.1M spent')
+    await user.click(within(row).getByRole('button', { name: 'Retry failed' }))
 
     await waitFor(() => {
       expect(
-        server.requests.some((request) => request.path === '/api/v1/connectors/c1/reindex'),
+        server.requests.some((request) => request.path === '/api/v1/reprocessing-runs/rr9/retry'),
       ).toBe(true)
     })
   })
 
-  it('offers no reindex when nothing is stale', async () => {
+  it('shows no stale block when nothing is stale', async () => {
     renderAt('/connectors/c1', fakeServer())
     await screen.findByLabelText('Chunk size (tokens)')
 
-    expect(
-      screen.queryByRole('button', { name: 'Reindex every document' }),
-    ).not.toBeInTheDocument()
+    expect(screen.queryByTestId('reprocess')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('stale-preview')).not.toBeInTheDocument()
   })
 
   it('does not warn an empty connector', async () => {
@@ -739,7 +909,6 @@ describe('the dashboard card', () => {
   })
 })
 
-
 describe('the dashboard’s summarization cap card (task 102)', () => {
   it('is absent when nothing is waiting', async () => {
     renderAt('/', fakeServer())
@@ -809,21 +978,31 @@ describe('chunking comparison', () => {
     })
   })
 
-  it('reindexes only the formats the change invalidated', async () => {
+  it('reprocesses only the formats the person picks (task 104)', async () => {
     // The payoff of per-format overrides: adding one for code re-runs the code files and
-    // leaves a thousand PDFs where they are.
-    const connector = makeConnector({ reindex_required: true, reindex_formats: ['code'] })
+    // leaves a thousand PDFs where they are. The scope selector preselects the formats
+    // the connector reports stale.
+    const connector = makeConnector({
+      document_count: 4,
+      stale_documents: 1,
+      reindex_required: true,
+      reindex_formats: ['code'],
+    })
     const server = fakeServer({ connectors: [connector] })
     renderAt('/connectors/c1', server)
     const user = userEvent.setup()
 
-    await user.click(await screen.findByRole('button', { name: /reindex the code documents/i }))
+    await user.selectOptions(await screen.findByLabelText('Reprocess scope'), 'formats')
+    expect(screen.getByRole('checkbox', { name: 'Code' })).toBeChecked()
+    await user.click(
+      within(screen.getByTestId('reprocess')).getByRole('button', { name: 'Reprocess' }),
+    )
 
     await waitFor(() => {
       const call = server.requests.find(
-        (request) => request.path.endsWith('/reindex') && request.method === 'POST',
+        (request) => request.path.endsWith('/reprocess') && request.method === 'POST',
       )
-      expect(call?.body.formats).toEqual(['code'])
+      expect(call?.body).toEqual({ scope: 'formats', formats: ['code'] })
     })
   })
 })
@@ -846,18 +1025,21 @@ describe('the summarization panel', () => {
     expect(screen.getByTestId('summarization-cost')).toHaveTextContent(
       /2 documents: about 1,324 tokens at the summarization model\. Nothing already indexed is recut/,
     )
-    // Summary chunk changes no vector: no warning about stale documents.
-    expect(screen.queryByText(/become stale/)).not.toBeInTheDocument()
   })
 
-  it('says what contextual will cost and that every document becomes stale', async () => {
+  it('says what contextual will cost and how many documents saving marks stale', async () => {
     renderAt('/connectors/c1', fakeServer())
     const user = userEvent.setup()
 
     await user.selectOptions(await screen.findByLabelText('Mode'), 'contextual')
 
-    expect(screen.getByTestId('summarization-cost')).toHaveTextContent(/plus re-embedding every chunk/)
-    expect(screen.getByText(/2 documents already indexed become stale/)).toBeInTheDocument()
+    expect(screen.getByTestId('summarization-cost')).toHaveTextContent(
+      /plus re-embedding every chunk/,
+    )
+    // Task 104: the same preview the chunking form shows, from the same fingerprint diff.
+    expect(await screen.findByTestId('stale-preview')).toHaveTextContent(
+      /Saving marks 2 indexed documents stale/,
+    )
   })
 
   it('shows the inherited model greyed and sends the whole section on save', async () => {
@@ -897,22 +1079,31 @@ describe('the summarization panel', () => {
     expect(screen.getByText(/No summarization model resolves/)).toBeInTheDocument()
   })
 
-  it('offers the re-embed when contextual made the vectors stale', async () => {
+  it('sends a contextual change through the header’s reprocess like any other (task 104)', async () => {
+    // Summarization no longer has a re-embed button of its own: the stale count and the
+    // reprocess live in the header, whatever made the documents stale.
     const connector = makeConnector({
       summarization: makeSummarization({ mode: 'contextual' }),
+      document_count: 2,
+      stale_documents: 2,
       reindex_required: true,
-      reindex_formats: [],
+      reindex_formats: ['markdown'],
     })
     const server = fakeServer({ connectors: [connector] })
     renderAt('/connectors/c1', server)
     const user = userEvent.setup()
 
-    await user.click(await screen.findByRole('button', { name: /re-embed every document/i }))
+    expect(
+      screen.queryByRole('button', { name: /re-embed every document/i }),
+    ).not.toBeInTheDocument()
+    await user.click(
+      within(await screen.findByTestId('reprocess')).getByRole('button', { name: 'Reprocess' }),
+    )
 
     await waitFor(() => {
       expect(
         server.requests.some(
-          (request) => request.path.endsWith('/reindex') && request.method === 'POST',
+          (request) => request.path.endsWith('/reprocess') && request.method === 'POST',
         ),
       ).toBe(true)
     })
@@ -933,7 +1124,12 @@ describe('the document summary', () => {
       '/connectors/c1',
       fakeServer({
         documents: [
-          makeDocument({ id: 'd1', source_name: 'ok.md', summary_status: 'summarized', summary_model: 'cheap' }),
+          makeDocument({
+            id: 'd1',
+            source_name: 'ok.md',
+            summary_status: 'summarized',
+            summary_model: 'cheap',
+          }),
           makeDocument({
             id: 'd2',
             source_name: 'no.md',
@@ -1001,7 +1197,8 @@ describe('the document summary', () => {
     await waitFor(() => {
       expect(
         server.requests.some(
-          (request) => request.path === '/api/v1/documents/d1/summarize' && request.method === 'POST',
+          (request) =>
+            request.path === '/api/v1/documents/d1/summarize' && request.method === 'POST',
         ),
       ).toBe(true)
     })

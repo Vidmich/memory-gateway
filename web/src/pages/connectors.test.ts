@@ -7,10 +7,8 @@ import {
   chunkingChanged,
   chunkingForm,
   chunkingProblem,
-  chunkingWarning,
   comparisonRows,
   formatResolutions,
-  reindexScope,
   strategyCost,
   strategyFields,
   documentTone,
@@ -179,25 +177,6 @@ describe('chunkingProblem', () => {
   })
 })
 
-describe('chunkingWarning', () => {
-  it('warns when a change would leave indexed documents stale', () => {
-    const warning = chunkingWarning(makeConnector({ counts: { indexed: 4 } }), true)
-
-    expect(warning).toContain('4 documents')
-    expect(warning).toContain('reindex')
-  })
-
-  it('says nothing when nothing changed', () => {
-    expect(chunkingWarning(makeConnector({ counts: { indexed: 4 } }), false)).toBeNull()
-  })
-
-  it('says nothing when there is no index to invalidate', () => {
-    // A warning on an empty connector is noise, and noise is what makes the real one
-    // invisible.
-    expect(chunkingWarning(makeConnector({ counts: {}, document_count: 0 }), true)).toBeNull()
-  })
-})
-
 describe('resyncSummary', () => {
   it('names only what actually happened', () => {
     const message = resyncSummary({ added: 2, updated: 1, deleted: 0, unchanged: 7, skipped: 0 })
@@ -215,15 +194,15 @@ describe('resyncSummary', () => {
   it('reports work already under way separately from work not needed', () => {
     // "Nothing to sync" next to five documents stuck mid-pipeline would make a broken
     // connector look healthy.
-    expect(
-      resyncSummary({ added: 0, updated: 0, deleted: 0, unchanged: 0, skipped: 5 }),
-    ).toContain('already in progress')
+    expect(resyncSummary({ added: 0, updated: 0, deleted: 0, unchanged: 0, skipped: 5 })).toContain(
+      'already in progress',
+    )
   })
 
   it('handles an empty connector', () => {
-    expect(
-      resyncSummary({ added: 0, updated: 0, deleted: 0, unchanged: 0, skipped: 0 }),
-    ).toBe('Nothing to sync.')
+    expect(resyncSummary({ added: 0, updated: 0, deleted: 0, unchanged: 0, skipped: 0 })).toBe(
+      'Nothing to sync.',
+    )
   })
 })
 
@@ -235,7 +214,6 @@ describe('uploadSnippet', () => {
     expect(snippet).toContain('https://storage.test/presigned?sig=abc')
   })
 })
-
 
 describe('pageLabel', () => {
   const PDF = 'application/pdf'
@@ -268,9 +246,7 @@ describe('explanationFor', () => {
   })
 
   it('tells somebody how to get past a password-protected file', () => {
-    expect(explanationFor({ reason: 'password_protected' })?.guidance).toContain(
-      'unprotected copy',
-    )
+    expect(explanationFor({ reason: 'password_protected' })?.guidance).toContain('unprotected copy')
   })
 
   it('falls through for a code it does not recognise', () => {
@@ -280,7 +256,6 @@ describe('explanationFor', () => {
     expect(explanationFor({ reason: null })).toBeNull()
   })
 })
-
 
 describe('strategy fields', () => {
   it('hides overlap under sentence_window, where the window is the overlap', () => {
@@ -326,20 +301,6 @@ describe('formatResolutions', () => {
     // A table that showed only the overrides would hide the fact that everything else
     // inherits, which is the question somebody opens it to answer.
     expect(formatResolutions(makeConnector())).toHaveLength(FORMAT_KINDS.length)
-  })
-})
-
-describe('reindexScope', () => {
-  it('names the formats when only some of them moved', () => {
-    // "Reindex the code files" is an offer somebody accepts; "reindex everything" on a
-    // corpus of ten thousand PDFs is one they postpone indefinitely.
-    const connector = makeConnector({ reindex_formats: ['code'] })
-
-    expect(reindexScope(connector)).toBe('the Code documents')
-  })
-
-  it('says every document when the connector-wide settings moved', () => {
-    expect(reindexScope(makeConnector({ reindex_formats: [] }))).toBe('every document')
   })
 })
 

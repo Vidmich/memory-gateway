@@ -241,6 +241,25 @@ FORMAT_KINDS: tuple[str, ...] = (
 )
 
 
+#: Every media type :func:`format_label` classifies as something other than ``other``.
+#: What a store needs to express a format kind as a ``WHERE`` clause (task 104): a kind
+#: is a set of media types, and ``other`` is everything outside this set.
+KNOWN_MEDIA_TYPES: frozenset[str] = frozenset(FORMAT_LABELS) | TEXT_MEDIA_TYPES
+
+
+def media_types_of(kind: str) -> frozenset[str]:
+    """The media types that classify as ``kind`` — the inverse of :func:`format_label`,
+    for the one place a format has to be named in SQL rather than in Python: marking every
+    document of a format stale in one ``UPDATE`` (task 104). Empty for ``other``, which
+    is *not* a set of types but the complement of :data:`KNOWN_MEDIA_TYPES`; the caller
+    spells that out as ``NOT IN``."""
+    if kind == "other":
+        return frozenset()
+    if kind == "code":
+        return frozenset(TEXT_MEDIA_TYPES - set(FORMAT_LABELS))
+    return frozenset(media for media, label in FORMAT_LABELS.items() if label == kind)
+
+
 def format_label(media_type: str) -> str:
     """A bounded label for the extraction metrics, and the key a chunking override uses.
 
@@ -305,6 +324,7 @@ __all__ = [
     "DOCX",
     "FORMAT_KINDS",
     "FORMAT_LABELS",
+    "KNOWN_MEDIA_TYPES",
     "PDF",
     "PPTX",
     "SNIFF_BYTES",
@@ -318,5 +338,6 @@ __all__ = [
     "is_text",
     "language_of",
     "looks_like_text",
+    "media_types_of",
     "sniff",
 ]

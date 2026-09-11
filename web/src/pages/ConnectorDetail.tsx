@@ -9,7 +9,6 @@ import {
   useDocumentChunks,
   useDocuments,
   usePreviewChunking,
-  useReindexConnector,
   useReindexDocument,
   useSearch,
   useUpdateConnector,
@@ -29,6 +28,7 @@ import { Field, Form, Select, SubmitButton, TextInput } from '@/components/Form'
 import { StatusBadge } from '@/components/StatusBadge'
 import { useToast } from '@/components/Toast'
 import { filesFrom } from '@/pages/dropFiles'
+import { IndexStatusCell, StalePreviewNotice } from '@/pages/ReprocessingPanel'
 import { summaryStatus } from '@/pages/summarization'
 import {
   CHUNK_STRATEGIES,
@@ -36,14 +36,12 @@ import {
   chunkingChanged,
   chunkingForm,
   chunkingProblem,
-  chunkingWarning,
   comparisonRows,
   documentTone,
   explanationFor,
   formatBytes,
   formatResolutions,
   pageLabel,
-  reindexScope,
   strategyCost,
   strategyFields,
   strategyLabel,
@@ -114,8 +112,8 @@ export function UploadZone({ connectorId, disabled }: { connectorId: string; dis
     >
       <p className="text-sm font-medium text-slate-800">Drop files or a folder here</p>
       <p className="mt-1 text-xs text-slate-500">
-        PDF, Word, PowerPoint and Excel, plus text and code: Markdown, HTML, CSV, JSON, YAML
-        and source files. Scanned PDFs need OCR and are skipped with an explanation.
+        PDF, Word, PowerPoint and Excel, plus text and code: Markdown, HTML, CSV, JSON, YAML and
+        source files. Scanned PDFs need OCR and are skipped with an explanation.
       </p>
       <button
         type="button"
@@ -189,8 +187,7 @@ export function DocumentTable({
   if (documents.length === 0) {
     return (
       <p className="py-8 text-center text-sm text-slate-500">
-        Nothing here yet. Drop some files above, or upload with a presigned URL and press
-        Resync.
+        Nothing here yet. Drop some files above, or upload with a presigned URL and press Resync.
       </p>
     )
   }
@@ -225,6 +222,9 @@ export function DocumentTable({
             Cut with
           </th>
           <th scope="col" className="py-2 pr-3">
+            Index
+          </th>
+          <th scope="col" className="py-2 pr-3">
             Summary
           </th>
           <th scope="col" className="py-2" />
@@ -233,109 +233,105 @@ export function DocumentTable({
       <tbody className="divide-y divide-slate-100">
         {documents.map((document) => (
           <Fragment key={document.id}>
-          <tr className="align-top">
-            <td className="py-2 pr-3">
-              <div className="font-medium text-slate-800">{document.source_name}</div>
-              {/* Inline, per SPEC §13.1. A detail view per failed row would mean the
+            <tr className="align-top">
+              <td className="py-2 pr-3">
+                <div className="font-medium text-slate-800">{document.source_name}</div>
+                {/* Inline, per SPEC §13.1. A detail view per failed row would mean the
                   table cannot say what is wrong until somebody clicks. An explained
                   state replaces the sentence rather than sitting beside it: two ways of
                   saying the same thing is how somebody reads neither. */}
-              <DocumentReason document={document} />
-            </td>
-            <td className="py-2 pr-3 font-mono text-xs text-slate-500">
-              {document.mime_type ?? '—'}
-            </td>
-            <td className="py-2 pr-3 text-right text-slate-600">
-              {formatBytes(document.size_bytes)}
-            </td>
-            <td className="py-2 pr-3">
-              <StatusBadge status={document.status} tone={documentTone(document.status)} />
-            </td>
-            <td className="py-2 pr-3 text-right text-slate-600">
-              {document.chunk_count || '—'}
-            </td>
-            <td className="py-2 pr-3 text-right text-xs text-slate-500">
-              {pageLabel(document)}
-            </td>
-            <td className="py-2 pr-3 text-xs text-slate-500">
-              {document.indexed_at ? new Date(document.indexed_at).toLocaleString() : '—'}
-            </td>
-            <td className="py-2 pr-3 text-xs">
-              {/* Task 101. The tokenizer the sizes were measured with, by the name it
+                <DocumentReason document={document} />
+              </td>
+              <td className="py-2 pr-3 font-mono text-xs text-slate-500">
+                {document.mime_type ?? '—'}
+              </td>
+              <td className="py-2 pr-3 text-right text-slate-600">
+                {formatBytes(document.size_bytes)}
+              </td>
+              <td className="py-2 pr-3">
+                <StatusBadge status={document.status} tone={documentTone(document.status)} />
+              </td>
+              <td className="py-2 pr-3 text-right text-slate-600">{document.chunk_count || '—'}</td>
+              <td className="py-2 pr-3 text-right text-xs text-slate-500">{pageLabel(document)}</td>
+              <td className="py-2 pr-3 text-xs text-slate-500">
+                {document.indexed_at ? new Date(document.indexed_at).toLocaleString() : '—'}
+              </td>
+              <td className="py-2 pr-3 text-xs">
+                {/* Task 101. The tokenizer the sizes were measured with, by the name it
                   gave itself — so a worker whose vocabulary failed to load is visible
-                  here rather than in a log line. `stale` is a comparison the listing
-                  made against what ingestion would write now. */}
-              <span className="font-mono text-slate-500">{document.tokenizer ?? '—'}</span>
-              {document.stale ? (
-                <span
-                  title="Cut under a configuration that is no longer current — settings, embedding model or tokenizer. Reindex to recut."
-                  className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-800"
-                >
-                  stale
-                </span>
-              ) : null}
-            </td>
-            <td className="py-2 pr-3 text-xs">
-              {/* Task 102. One word, and the sentence behind it on hover: `capped` is not
+                  here rather than in a log line. */}
+                <span className="font-mono text-slate-500">{document.tokenizer ?? '—'}</span>
+              </td>
+              <td className="py-2 pr-3 text-xs">
+                {/* Task 104. The second status axis, stored on the row: `current`, `stale`
+                  or `reprocessing`, with the reason in the server's words on hover. A
+                  document is `indexed` and `stale` at once after a change, and that is
+                  the normal state — hence a column of its own rather than a second badge
+                  fighting the first for the meaning of "status". */}
+                <IndexStatusCell document={document} />
+              </td>
+              <td className="py-2 pr-3 text-xs">
+                {/* Task 102. One word, and the sentence behind it on hover: `capped` is not
                   a failure and a failed summary is not a failed document, and a red badge
                   beside an `indexed` one would send somebody looking for a broken file. */}
-              <SummaryCell document={document} />
-            </td>
-            <td className="py-2 text-right whitespace-nowrap">
-              {document.chunk_count > 0 || document.summary ? (
-                <button
-                  type="button"
-                  aria-expanded={inspecting === document.id}
-                  onClick={() =>
-                    setInspecting((open) => (open === document.id ? null : document.id))
-                  }
-                  className="text-xs font-medium text-slate-600 hover:underline"
-                >
-                  {inspecting === document.id ? 'Hide chunks' : 'Chunks'}
-                </button>
-              ) : null}
-              {writes ? (
-                <>
+                <SummaryCell document={document} />
+              </td>
+              <td className="py-2 text-right whitespace-nowrap">
+                {document.chunk_count > 0 || document.summary ? (
                   <button
                     type="button"
-                    onClick={() => {
-                      void reindex.mutateAsync(document.id).then(() => {
-                        notify(`Reindexing ${document.source_name}.`)
-                      })
-                    }}
-                    className="ml-3 text-xs font-medium text-slate-600 hover:underline"
+                    aria-expanded={inspecting === document.id}
+                    onClick={() =>
+                      setInspecting((open) => (open === document.id ? null : document.id))
+                    }
+                    className="text-xs font-medium text-slate-600 hover:underline"
                   >
-                    {document.status === 'failed' ? 'Retry' : 'Reindex'}
+                    {inspecting === document.id ? 'Hide chunks' : 'Chunks'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void remove.mutateAsync(document.id).then(() => {
-                        notify(`Deleted ${document.source_name}.`)
-                      })
-                    }}
-                    className="ml-3 text-xs font-medium text-red-600 hover:underline"
-                  >
-                    Delete
-                  </button>
-                </>
-              ) : null}
-            </td>
-          </tr>
-          {inspecting === document.id ? (
-            <tr>
-              <td colSpan={10} className="bg-slate-50 px-3 py-3">
-                {document.summary_status || document.summary ? (
-                  <SummaryView document={document} writes={writes} />
                 ) : null}
-                <ChunkInspector
-                  documentId={document.id}
-                  expected={document.chunk_count}
-                  highlight={document.id === linkedDocument ? linkedChunk : null}
-                />
+                {writes ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void reindex.mutateAsync(document.id).then(() => {
+                          notify(`Reprocessing ${document.source_name}.`)
+                        })
+                      }}
+                      aria-label={`${document.status === 'failed' ? 'Retry' : 'Reprocess'} ${document.source_name}`}
+                      className="ml-3 text-xs font-medium text-slate-600 hover:underline"
+                    >
+                      {document.status === 'failed' ? 'Retry' : 'Reprocess'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void remove.mutateAsync(document.id).then(() => {
+                          notify(`Deleted ${document.source_name}.`)
+                        })
+                      }}
+                      className="ml-3 text-xs font-medium text-red-600 hover:underline"
+                    >
+                      Delete
+                    </button>
+                  </>
+                ) : null}
               </td>
             </tr>
-          ) : null}
+            {inspecting === document.id ? (
+              <tr>
+                <td colSpan={11} className="bg-slate-50 px-3 py-3">
+                  {document.summary_status || document.summary ? (
+                    <SummaryView document={document} writes={writes} />
+                  ) : null}
+                  <ChunkInspector
+                    documentId={document.id}
+                    expected={document.chunk_count}
+                    highlight={document.id === linkedDocument ? linkedChunk : null}
+                  />
+                </td>
+              </tr>
+            ) : null}
           </Fragment>
         ))}
       </tbody>
@@ -362,13 +358,7 @@ function SummaryCell({ document }: { document: DocumentResponse }) {
  * and is charged like any other call. Both re-embed what depends on the summary — the
  * summary chunk, and under `contextual` every chunk — through the same jobs ingestion runs.
  */
-export function SummaryView({
-  document,
-  writes,
-}: {
-  document: DocumentResponse
-  writes: boolean
-}) {
+export function SummaryView({ document, writes }: { document: DocumentResponse; writes: boolean }) {
   const edit = useEditSummary()
   const regenerate = useRegenerateSummary()
   const { notify } = useToast()
@@ -471,9 +461,7 @@ export function SummaryView({
       ) : document.summary ? (
         <p className="whitespace-pre-wrap text-sm text-slate-700">{document.summary}</p>
       ) : (
-        <p className="text-sm text-slate-500">
-          {document.summary_error ?? 'No summary yet.'}
-        </p>
+        <p className="text-sm text-slate-500">{document.summary_error ?? 'No summary yet.'}</p>
       )}
     </section>
   )
@@ -592,7 +580,9 @@ export function ChunkInspector({
             ref={chunk.id === highlight ? highlighted : null}
             data-highlighted={chunk.id === highlight || undefined}
             className={`rounded-md border bg-white p-2 ${
-              chunk.id === highlight ? 'border-violet-400 ring-2 ring-violet-200' : 'border-slate-200'
+              chunk.id === highlight
+                ? 'border-violet-400 ring-2 ring-violet-200'
+                : 'border-slate-200'
             }`}
           >
             <div className="mb-1 flex items-center justify-between gap-2 text-xs text-slate-500">
@@ -657,7 +647,6 @@ function embeddedNote(because: string | null | undefined): string {
 // ---------------------------------------------------------------------------
 
 export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
-  const reindex = useReindexConnector(connector.id)
   const [form, setForm] = useState<ChunkingForm>(() => chunkingForm(connector.chunking))
   // A finding on the Validation section links here as `?compare=<document>` (task 103):
   // the page that found a badly cut file opens the page that recuts it, on that file.
@@ -674,7 +663,6 @@ export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
 
   const changed = chunkingChanged(form, connector.chunking)
   const problem = chunkingProblem(form)
-  const warning = chunkingWarning(connector, changed)
   const strategy = CHUNK_STRATEGIES.find((entry) => entry.value === form.strategy)
   const shows = strategyFields(form.strategy)
   const cost = strategyCost(form.strategy)
@@ -762,9 +750,7 @@ export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
                 invalid={invalid}
                 describedBy={describedBy}
                 value={form.breakpointPercentile}
-                onChange={(event) =>
-                  setForm({ ...form, breakpointPercentile: event.target.value })
-                }
+                onChange={(event) => setForm({ ...form, breakpointPercentile: event.target.value })}
               />
             )}
           </Field>
@@ -794,36 +780,15 @@ export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
           {problem}
         </p>
       ) : null}
-      {warning ? (
-        <p className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          {warning}
-        </p>
-      ) : null}
-
-      {connector.reindex_required ? (
-        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          <p>
-            The chunking has changed since these documents were indexed, so their chunks are
-            stale. Reindexing runs {reindexScope(connector)} through the pipeline again.
-          </p>
-          <button
-            type="button"
-            onClick={() =>
-              reindex.mutate(connector.reindex_formats ?? [], {
-                onSuccess: (result: { documents: number }) =>
-                  notify(
-                    `Reindexing ${result.documents} document${
-                      result.documents === 1 ? '' : 's'
-                    }.`,
-                  ),
-              })
-            }
-            className="mt-2 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-100"
-          >
-            {reindex.isPending ? 'Queueing…' : `Reindex ${reindexScope(connector)}`}
-          </button>
-        </div>
-      ) : null}
+      {/* Task 104. What this save will mark stale, per format, from the server's own
+          fingerprint diff — the same sentence the summarization form gets, for free. The
+          reprocess itself lives in the header, where the stale count is, so a person
+          reads the consequence and the remedy in one place. */}
+      <StalePreviewNotice
+        connectorId={connector.id}
+        patch={{ chunking: chunkingBody(form) }}
+        enabled={changed && problem === null}
+      />
 
       <div className="flex flex-wrap items-center gap-3">
         <SubmitButton busy={update.isPending} disabled={!changed || problem !== null}>
@@ -923,9 +888,9 @@ export function ChunkingCompare({
     <div className="mt-6 rounded-md border border-slate-200 bg-slate-50 p-3">
       <p className="mb-2 text-sm font-medium text-slate-800">Compare</p>
       <p className="mb-3 text-xs text-slate-600">
-        Runs the settings above against one document beside what this connector does today.
-        Nothing is saved, and nothing is indexed — but it does embed the document, so it
-        costs what one ingestion would.
+        Runs the settings above against one document beside what this connector does today. Nothing
+        is saved, and nothing is indexed — but it does embed the document, so it costs what one
+        ingestion would.
       </p>
 
       <div className="mb-3 grid gap-2 sm:grid-cols-2">
@@ -1182,8 +1147,8 @@ export function SearchPanel({ connectorId }: { connectorId: string }) {
   return (
     <div>
       <p className="mb-3 text-sm text-slate-600">
-        Ask what a gateway would ask. This searches the chunks that are actually indexed, so
-        it answers "is my file in there" before anything is wired up to use it.
+        Ask what a gateway would ask. This searches the chunks that are actually indexed, so it
+        answers "is my file in there" before anything is wired up to use it.
       </p>
       <Form
         onSubmit={async () => {
@@ -1255,5 +1220,7 @@ export function SearchPanel({ connectorId }: { connectorId: string }) {
 function candidateChunkSize(candidate: ChunkingCandidate, result: ChunkingPreviewResponse): number {
   const largest = Math.max(1, ...candidate.chunks.map((chunk) => chunk.token_count))
   const ceilings = [200, 400, 600, 800, 1000, 1500, 2000, 4000, 8000]
-  return ceilings.find((ceiling) => ceiling >= largest) ?? Math.max(largest, result.candidates.length)
+  return (
+    ceilings.find((ceiling) => ceiling >= largest) ?? Math.max(largest, result.candidates.length)
+  )
 }

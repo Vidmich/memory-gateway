@@ -8,7 +8,7 @@ import { ApiClient } from '@/api/client'
 import { AppRoutes, makeQueryClient } from '@/App'
 import { AuthProvider } from '@/auth/AuthContext'
 import { ToastProvider } from '@/components/Toast'
-import { makeSuperadmin, makeTokenizers } from '@/test/factories'
+import { makeReprocessingRun, makeSuperadmin, makeTokenizers } from '@/test/factories'
 import { bodyOf, jsonResponse as json, pathOf } from '@/test/http'
 
 /**
@@ -98,6 +98,8 @@ const MAINTENANCE = {
 type Options = {
   settings?: typeof SETTINGS
   maintenance?: typeof MAINTENANCE
+  /** Task 104: the per-connector runs a reindex spawned. */
+  spawned?: ReturnType<typeof makeReprocessingRun>[]
   sweep?: Record<string, unknown>
   estimate?: Record<string, unknown>
 }
@@ -135,11 +137,17 @@ function fakeServer(options: Options = {}) {
             applied: false,
             organizations: 2,
             deleted: 0,
-            groups: [
-              { store: 'qdrant', kind: 'document_points', count: 2, sample: ['d1', 'd2'] },
-            ],
+            groups: [{ store: 'qdrant', kind: 'document_points', count: 2, sample: ['d1', 'd2'] }],
           },
         ),
+      )
+    }
+    if (path.startsWith('/api/v1/platform/reindex/')) {
+      return Promise.resolve(
+        json({
+          ...((options.maintenance ?? MAINTENANCE).reindex as Record<string, unknown> | null),
+          reprocessing_runs: options.spawned ?? [],
+        }),
       )
     }
     if (path === '/api/v1/platform/reindex') {
@@ -341,6 +349,48 @@ describe('Platform → Maintenance', () => {
     expect(await screen.findByText(/5 MB reclaimed/)).toBeInTheDocument()
   })
 
+  it('lists the per-connector runs a running reindex spawned (task 104)', async () => {
+    renderAt(
+      '/platform/maintenance',
+      fakeServer({
+        maintenance: {
+          ...MAINTENANCE,
+          reindex: {
+            id: 'r1',
+            scope: 'platform',
+            status: 'running',
+            from_model: 'hash-bow',
+            from_dimension: 256,
+            to_model: 'text-embedding-3-large',
+            to_dimension: 3072,
+            estimated_points: 1200,
+            estimated_tokens: 48000,
+            started_at: '2026-09-14T09:00:00Z',
+            finished_at: null,
+            error: null,
+            targets: [],
+            eta_seconds: null,
+          },
+        } as unknown as typeof MAINTENANCE,
+        spawned: [
+          makeReprocessingRun({
+            id: 'rr1',
+            connector_id: 'cn-semantic',
+            trigger: 'embedding_model',
+            scope: 'all',
+            total: 40,
+            done: 12,
+            failed: 0,
+          }),
+        ],
+      }),
+    )
+
+    const list = await screen.findByTestId('spawned-runs')
+    expect(list).toHaveTextContent('cn-semantic')
+    expect(list).toHaveTextContent('embedding model change · everything · running · 12 / 40')
+  })
+
   it('offers no delete button until a sweep has produced a list', async () => {
     // Report before delete. The destructive pass acts on the set somebody has seen.
     renderAt('/platform/maintenance', fakeServer())
@@ -355,7 +405,8 @@ describe('Platform → Maintenance', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Find orphans' }))
 
-    expect(await screen.findByRole('button', { name: 'Delete the 2 orphans listed above' })
+    expect(
+      await screen.findByRole('button', { name: 'Delete the 2 orphans listed above' }),
     ).toBeInTheDocument()
     const sweep = server.requests.find((entry) => entry.path.endsWith('/sweep'))
     expect(sweep!.body.apply).toBe(false)

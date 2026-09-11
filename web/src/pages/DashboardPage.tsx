@@ -6,7 +6,9 @@ import { useGateways } from '@/api/gateways'
 import { useLimitPressure } from '@/api/limits'
 import { resolveRange, useSummary } from '@/api/monitoring'
 import { useSummarizationHealth } from '@/api/summarization'
+import { useStaleAlerts } from '@/api/reprocessing'
 import { useAuditAlerts } from '@/api/validation'
+import { staleAlertLine } from '@/pages/reprocessing'
 import { useAuth } from '@/auth/AuthContext'
 import { pressureSummary } from '@/pages/limits'
 import { waitingSummary } from '@/pages/summarization'
@@ -50,6 +52,11 @@ export function DashboardPage() {
   // index that ranks and ranks wrong, and nothing on the traffic charts says so.
   const alerts = useAuditAlerts()
   const redFindings = Array.isArray(alerts.data?.items) ? alerts.data.items : []
+  // Task 104's degraded state: a connector whose documents have been stale for longer
+  // than a day. A change somebody saved and never applied, or a run that ended partial
+  // and nobody retried — either way a thing to open, with its age.
+  const stale = useStaleAlerts()
+  const staleConnectors = Array.isArray(stale.data?.items) ? stale.data.items : []
 
   const enabled = (gateways.data?.items ?? []).filter((gateway) => gateway.enabled).length
   const indexed = (connectors.data?.items ?? []).reduce(
@@ -130,8 +137,8 @@ export function DashboardPage() {
         <section className="mt-8 rounded-lg border border-amber-200 bg-amber-50 p-5">
           <h2 className="text-sm font-semibold text-amber-900">Close to a rate limit</h2>
           <p className="mt-1 text-sm text-amber-900">
-            These endpoints are above 80% of one of their caps. Past 100% the gateway
-            answers 429 and the request never reaches a model.
+            These endpoints are above 80% of one of their caps. Past 100% the gateway answers 429
+            and the request never reaches a model.
           </p>
           <ul className="mt-3 space-y-1 text-sm">
             {(pressure.data?.items ?? []).map((item) => (
@@ -176,8 +183,8 @@ export function DashboardPage() {
         >
           <h2 className="text-sm font-semibold text-red-900">An index audit found a problem</h2>
           <p className="mt-1 text-sm text-red-900">
-            These connectors&apos; last chunking or embedding audit raised a red finding.
-            Retrieval keeps working; it is working on the wrong chunks.
+            These connectors&apos; last chunking or embedding audit raised a red finding. Retrieval
+            keeps working; it is working on the wrong chunks.
           </p>
           <ul className="mt-3 space-y-1 text-sm">
             {redFindings.map((alert) => (
@@ -194,12 +201,41 @@ export function DashboardPage() {
         </section>
       ) : null}
 
+      {staleConnectors.length > 0 ? (
+        <section
+          className="mt-8 rounded-lg border border-amber-200 bg-amber-50 p-5"
+          data-testid="stale-alerts"
+        >
+          <h2 className="text-sm font-semibold text-amber-900">
+            Documents indexed under a previous configuration
+          </h2>
+          <p className="mt-1 text-sm text-amber-900">
+            These connectors have had stale documents for more than a day. Retrieval keeps serving
+            them, labelled stale; the change that was saved is not live until they are reprocessed.
+          </p>
+          <ul className="mt-3 space-y-1 text-sm">
+            {staleConnectors.map((alert) => (
+              <li key={alert.connector_id}>
+                <Link
+                  to={`/connectors/${alert.connector_id}`}
+                  className="font-medium text-amber-900 underline"
+                >
+                  {alert.connector_name}: {staleAlertLine(alert)}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {summary.data && summary.data.requests === 0 ? (
         <section className="mt-8 rounded-lg border border-slate-200 bg-white p-6">
-          <h2 className="text-sm font-semibold text-slate-900">Nothing has called your gateways yet</h2>
+          <h2 className="text-sm font-semibold text-slate-900">
+            Nothing has called your gateways yet
+          </h2>
           <p className="mt-2 max-w-2xl text-sm text-slate-600">
-            Create a gateway, mint a key, and point an OpenAI client at the endpoint URL.
-            Every request from then on appears under{' '}
+            Create a gateway, mint a key, and point an OpenAI client at the endpoint URL. Every
+            request from then on appears under{' '}
             <Link to="/monitoring" className="text-slate-900 underline">
               Monitoring
             </Link>

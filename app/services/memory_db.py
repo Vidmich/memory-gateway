@@ -37,6 +37,7 @@ from app.db.models import (
     Organization,
     ReindexRun,
     ReindexTarget,
+    ReprocessingRun,
     RequestLog,
     SummarizationRun,
     Transcript,
@@ -83,6 +84,8 @@ class MemoryDatabase:
     maintenance_runs: dict[uuid.UUID, MaintenanceRun] = field(default_factory=dict)
     reindex_runs: dict[uuid.UUID, ReindexRun] = field(default_factory=dict)
     reindex_targets: dict[uuid.UUID, ReindexTarget] = field(default_factory=dict)
+    #: Task 104. One row per reprocessing run of one connector.
+    reprocessing_runs: dict[uuid.UUID, ReprocessingRun] = field(default_factory=dict)
 
     def add_user(self, user: User) -> User:
         self.users[user.id] = _stamped(user)

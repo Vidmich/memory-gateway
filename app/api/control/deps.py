@@ -31,6 +31,7 @@ from app.services.memory_preview import MemoryPreview
 from app.services.monitoring import MonitoringService
 from app.services.permissions import Capability, allows
 from app.services.platform_service import PlatformService
+from app.services.reprocessing import Reprocessor
 from app.services.summarization_service import SummarizationService
 
 #: Sent on every 401 from the control plane. The SPA keys its refresh-and-retry off the
@@ -79,6 +80,11 @@ def get_distillation_service(request: Request) -> DistillationService:
 
 def get_summarization_service(request: Request) -> SummarizationService:
     service: SummarizationService = request.app.state.summarization_service
+    return service
+
+
+def get_reprocessor(request: Request) -> Reprocessor:
+    service: Reprocessor = request.app.state.reprocessor
     return service
 
 

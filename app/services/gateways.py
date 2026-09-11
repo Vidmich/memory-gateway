@@ -62,7 +62,7 @@ from app.schemas.platform import RetentionCeilings
 from app.services.audit_snapshots import subject
 from app.services.gateway_probe import GatewayProbe, GatewayProbeResult
 from app.services.gateway_resolver import ConfigCache
-from app.services.gateway_store import Chain, GatewayStore, GatewayTransaction
+from app.services.gateway_store import Chain, GatewayStore, GatewayTransaction, StaleConnector
 from app.services.limits import LIMIT_LABELS, Ceilings
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
 from app.services.params import validate_params
@@ -186,6 +186,9 @@ class GatewayView:
     #: Active keys. Shown on the list so "why is nobody calling this" has an answer.
     key_count: int
     endpoint_url: str
+    #: Task 104. The connectors this gateway reads that have stale documents or a
+    #: reprocess in flight, with counts. Filled on the detail read; empty on the list.
+    stale_connectors: tuple[StaleConnector, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +271,11 @@ class GatewayService:
         async with self._store.begin(actor.scope) as transaction:
             gateway = await self._must_find(transaction, gateway_id)
             counts = await transaction.key_counts([gateway.id])
-            return self._view(gateway, key_count=counts.get(gateway.id, 0))
+            # The consequence of a stale connector is felt here and nowhere else a
+            # person would think to look, so the gateway says so on every read.
+            memory = MemoryConfig.load(gateway.memory_config)
+            stale = tuple(await transaction.stale_connectors(list(memory.connector_ids)))
+            return self._view(gateway, key_count=counts.get(gateway.id, 0), stale=stale)
 
     async def list_keys(self, actor: Actor, gateway_id: uuid.UUID) -> tuple[ApiKey, ...]:
         async with self._store.begin(actor.scope) as transaction:
@@ -593,7 +600,13 @@ class GatewayService:
 
     # -- internals --------------------------------------------------------
 
-    def _view(self, gateway: Gateway, *, key_count: int) -> GatewayView:
+    def _view(
+        self,
+        gateway: Gateway,
+        *,
+        key_count: int,
+        stale: tuple[StaleConnector, ...] = (),
+    ) -> GatewayView:
         targets = tuple(
             TargetView(model=target.upstream_model, priority=target.priority, weight=target.weight)
             for target in gateway.targets
@@ -604,6 +617,7 @@ class GatewayService:
             targets=targets,
             key_count=key_count,
             endpoint_url=self.endpoint_url(gateway.slug),
+            stale_connectors=stale,
         )
 
     def endpoint_url(self, slug: str) -> str:

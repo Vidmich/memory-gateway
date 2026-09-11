@@ -43,7 +43,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.core.errors import NotFound
-from app.core.metrics import ChunkingMetrics, ExtractionMetrics
+from app.core.metrics import ChunkingMetrics, ExtractionMetrics, ReprocessingMetrics
 from app.core.tenancy import TenantScope
 from app.core.tracing import phase, record_error
 from app.db.models import Connector, Document
@@ -76,9 +76,11 @@ from app.services.extraction import (
     ExtractorRegistry,
     Registration,
     SkippedDocument,
+    extraction_version,
 )
 from app.services.extraction_pool import ExtractionPool
-from app.services.filetypes import SNIFF_BYTES, describe, format_label, sniff
+from app.services.filetypes import FORMAT_KINDS, SNIFF_BYTES, describe, format_label, sniff
+from app.services.index_fingerprint import index_fingerprint
 from app.services.jobs import (
     INGEST_DOCUMENT,
     SUMMARIZE_DOCUMENT,
@@ -175,9 +177,16 @@ class IngestOutcome:
     #: what the connector's top-level setting says.
     chunk_strategy: str | None = None
     chunk_fingerprint: str | None = None
+    #: Task 104. Everything the stored points depend on, for ``documents.index_fingerprint``
+    #: — see :mod:`app.services.index_fingerprint`. ``chunk_fingerprint`` above is task
+    #: 20's digest, still written this release (expand-contract) and read by nothing.
+    index_fingerprint: str | None = None
     #: What ``chunk_size`` was measured with (task 101), by the tokenizer's own name — so
     #: a vocabulary that failed to load is recorded as the word fallback it actually was.
     tokenizer: str | None = None
+    #: Embedding tokens this ingestion sent to the provider — every chunk's count, plus
+    #: the summary point's. What a reprocessing run (task 104) adds to ``spent_tokens``.
+    embedding_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,9 +261,13 @@ class IngestionPipeline:
         metrics: ExtractionMetrics | None = None,
         chunking_metrics: ChunkingMetrics | None = None,
         summarizer: Summarizer | None = None,
+        reprocessing_metrics: ReprocessingMetrics | None = None,
     ) -> None:
         self._store = store
         self._objects = objects
+        #: Task 104. Set when a finish here is the one that closes a reprocessing run,
+        #: which is the only moment anything knows the run's outcome and duration.
+        self._reprocessing_metrics = reprocessing_metrics
         self._vectors = vectors
         self._embedder = embedder
         #: Task 102. ``None`` means no model call can be made from this process; a
@@ -282,8 +295,19 @@ class IngestionPipeline:
 
     # -- ingestion -------------------------------------------------------
 
-    async def ingest(self, *, organization_id: uuid.UUID, document_id: uuid.UUID) -> IngestOutcome:
-        """Take one document from wherever it is to a terminal state."""
+    async def ingest(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        document_id: uuid.UUID,
+        run_id: uuid.UUID | None = None,
+    ) -> IngestOutcome:
+        """Take one document from wherever it is to a terminal state.
+
+        ``run_id`` names the reprocessing run (task 104) this ingestion belongs to, when
+        it belongs to one: the finish then counts against the run's counters in the same
+        transaction that writes the row, which is what makes the counters exact.
+        """
         scope = TenantScope.of_organization(organization_id)
 
         async with self._store.begin(scope) as transaction:
@@ -319,6 +343,7 @@ class IngestionPipeline:
                 document_id,
                 IngestOutcome(status="failed", reason="missing_object"),
                 error="This file is no longer in storage. Run a resync.",
+                run_id=run_id,
             )
             return IngestOutcome(status="failed", error="missing object")
 
@@ -331,6 +356,7 @@ class IngestionPipeline:
                 media_type=read.media_type,
                 size_bytes=read.size_bytes,
                 content_hash=read.content_hash,
+                run_id=run_id,
             )
             return read.outcome
 
@@ -352,6 +378,7 @@ class IngestionPipeline:
                 media_type=read.media_type,
                 size_bytes=read.size_bytes,
                 content_hash=read.content_hash,
+                run_id=run_id,
             )
             return outcome
 
@@ -389,6 +416,7 @@ class IngestionPipeline:
                 media_type=read.media_type,
                 size_bytes=read.size_bytes,
                 content_hash=read.content_hash,
+                run_id=run_id,
             )
             return summarized.outcome
 
@@ -396,13 +424,19 @@ class IngestionPipeline:
             document = await self._require(transaction, document_id)
             await self._advance(transaction, document, "chunking")
 
+        context = context_identity(summarizing, summarized.model_id, prompt_version=PROMPT_VERSION)
         cut = fingerprint(
+            cutting, embedding_model=self._embedder.model, tokenizer=tokenizer.name, context=context
+        )
+        # Task 104. The structured fingerprint beside task 20's digest, from the same
+        # inputs plus the two the digest never had — the model under every strategy and
+        # the extractor's version — so a row can say *why* it is stale.
+        index = index_fingerprint(
             cutting,
             embedding_model=self._embedder.model,
             tokenizer=tokenizer.name,
-            context=context_identity(
-                summarizing, summarized.model_id, prompt_version=PROMPT_VERSION
-            ),
+            context=context,
+            extraction_version=extraction_version(kind),
         )
         try:
             chunks = await self._chunk(
@@ -435,6 +469,7 @@ class IngestionPipeline:
                 media_type=read.media_type,
                 size_bytes=read.size_bytes,
                 content_hash=read.content_hash,
+                run_id=run_id,
             )
             return outcome
 
@@ -456,6 +491,7 @@ class IngestionPipeline:
                 media_type=read.media_type,
                 size_bytes=read.size_bytes,
                 content_hash=read.content_hash,
+                run_id=run_id,
             )
             return outcome
 
@@ -469,6 +505,7 @@ class IngestionPipeline:
         # `summary_chunk` the summary is one more point, labelled as one.
         if prefixes_context(summarizing.mode):
             chunks = [chunk.with_context(summarized.summary) for chunk in chunks]
+        summary_point = summarized.summary if adds_summary_chunk(summarizing.mode) else None
         await self._index(
             organization_id=organization_id,
             connector_id=connector_id,
@@ -479,8 +516,10 @@ class IngestionPipeline:
             chunks=chunks,
             config=cutting,
             cut=cut,
+            index=index,
+            format_kind=kind,
             tokenizer=tokenizer,
-            summary=summarized.summary if adds_summary_chunk(summarizing.mode) else None,
+            summary=summary_point,
         )
 
         outcome = IngestOutcome(
@@ -489,7 +528,10 @@ class IngestionPipeline:
             page_count=extracted.page_count,
             chunk_strategy=cutting.strategy,
             chunk_fingerprint=cut,
+            index_fingerprint=index,
             tokenizer=tokenizer.name,
+            embedding_tokens=sum(chunk.token_count for chunk in chunks)
+            + (token_estimate(summary_point, tokenizer) if summary_point else 0),
         )
         await self._finish(
             scope,
@@ -498,6 +540,7 @@ class IngestionPipeline:
             media_type=read.media_type,
             size_bytes=read.size_bytes,
             content_hash=read.content_hash,
+            run_id=run_id,
         )
         logger.info(
             "document indexed",
@@ -776,6 +819,8 @@ class IngestionPipeline:
         tokenizer: Tokenizer,
         vector: Sequence[float],
         ingested_at: str,
+        index: str | None = None,
+        format_kind: str | None = None,
     ) -> ChunkPoint:
         """The one point per document that is *not* a quote, and says so.
 
@@ -800,6 +845,7 @@ class IngestionPipeline:
                 "text": summary,
                 "kind": KIND_SUMMARY,
                 "tokenizer": tokenizer.name,
+                **({"index_fingerprint": index, "format_kind": format_kind} if index else {}),
             },
         )
 
@@ -878,6 +924,8 @@ class IngestionPipeline:
         chunks: Sequence[Chunk],
         config: ChunkingConfig,
         cut: str,
+        index: str,
+        format_kind: str,
         tokenizer: Tokenizer,
         vectors: Sequence[Sequence[float]],
         summary: str | None = None,
@@ -915,6 +963,12 @@ class IngestionPipeline:
                     "text": chunk.text,
                     "chunk_strategy": config.strategy,
                     "chunk_fingerprint": cut,
+                    # Task 104. What retrieval compares with the connector's effective
+                    # fingerprint for this format to label a chunk `stale`; the format
+                    # rides along because the payload has no media type and the
+                    # effective fingerprint is per format.
+                    "index_fingerprint": index,
+                    "format_kind": format_kind,
                     "tokenizer": tokenizer.name,
                     # Always present, so a reader never infers a kind from its absence.
                     "kind": KIND_SOURCE,
@@ -936,6 +990,8 @@ class IngestionPipeline:
                     tokenizer=tokenizer,
                     vector=vectors[len(chunks)],
                     ingested_at=ingested_at,
+                    index=index,
+                    format_kind=format_kind,
                 )
             )
         return points
@@ -952,6 +1008,8 @@ class IngestionPipeline:
         chunks: Sequence[Chunk],
         config: ChunkingConfig,
         cut: str,
+        index: str,
+        format_kind: str,
         tokenizer: Tokenizer,
         summary: str | None = None,
     ) -> None:
@@ -973,15 +1031,19 @@ class IngestionPipeline:
             chunks=chunks,
             config=config,
             cut=cut,
+            index=index,
+            format_kind=format_kind,
             tokenizer=tokenizer,
             vectors=await self._embedder.embed(texts),
             summary=summary,
         )
 
-        # Delete first, then upsert. Deterministic ids overwrite the points that still
-        # exist; only a delete removes the tail of a document that got shorter.
-        await self._vectors.delete_document(organization_id, document_id)
-        await self._vectors.upsert(organization_id, points)
+        # Upsert, then delete the rest — one step per document, in that order (task 104).
+        # Deterministic ids overwrite the points the new cut shares with the old; the
+        # delete removes the tail of a document that got shorter. The other order had a
+        # window in which a document being reprocessed had nothing to say, and a
+        # connector mid-reprocess has to keep answering.
+        await self._vectors.replace_document(organization_id, document_id, points)
 
     # -- reading for a preview -------------------------------------------
 
@@ -1086,6 +1148,11 @@ class IngestionPipeline:
         as_point = summary if adds_summary_chunk(summarizing.mode) else None
         if as_point is not None:
             texts.append(as_point)
+        context = context_identity(
+            summarizing,
+            await self._context_model(organization_id, summarizing),
+            prompt_version=PROMPT_VERSION,
+        )
         return self._points(
             organization_id=organization_id,
             connector_id=read.connector_id,
@@ -1096,19 +1163,56 @@ class IngestionPipeline:
             chunks=chunks,
             config=config,
             cut=fingerprint(
+                config, embedding_model=embedder.model, tokenizer=tokenizer.name, context=context
+            ),
+            index=index_fingerprint(
                 config,
                 embedding_model=embedder.model,
                 tokenizer=tokenizer.name,
-                context=context_identity(
-                    summarizing,
-                    await self._context_model(organization_id, summarizing),
-                    prompt_version=PROMPT_VERSION,
-                ),
+                context=context,
+                extraction_version=extraction_version(kind),
             ),
+            format_kind=kind,
             tokenizer=tokenizer,
             vectors=await embedder.embed(texts),
             summary=as_point,
         )
+
+    async def expected_fingerprints(
+        self, connector: Connector, *, embedding_model: str | None = None
+    ) -> dict[str, str]:
+        """What ingestion would write *now* for a document of each format under this
+        connector (task 104) — the thing every stored row is compared against.
+
+        Here rather than on the connector service because this is the object that writes
+        the fingerprints, and "what would you write" has exactly one correct answer, which
+        is the same code path with the same inputs: the effective chunking per format, the
+        serving embedder, the tokenizer it implies, the contextual-summarization identity
+        resolved through the model chain, and the extractor's version for the format.
+        """
+        chunking = ChunkingConfig.load(connector.chunking)
+        summarization = SummarizationConfig.load(connector.summarization)
+        tokenizer = self.tokenizer
+        resolved: dict[uuid.UUID | None, uuid.UUID | None] = {}
+        expected: dict[str, str] = {}
+        for kind in FORMAT_KINDS:
+            summarizing = summarization_for(summarization, kind)
+            model_id: uuid.UUID | None = None
+            if prefixes_context(summarizing.mode):
+                if summarizing.model_id not in resolved:
+                    choice = await self.summary_model(
+                        connector.organization_id, summarizing.model_id
+                    )
+                    resolved[summarizing.model_id] = choice.id if choice else None
+                model_id = resolved[summarizing.model_id]
+            expected[kind] = index_fingerprint(
+                effective(chunking, kind),
+                embedding_model=embedding_model or self._embedder.model,
+                tokenizer=tokenizer.name,
+                context=context_identity(summarizing, model_id, prompt_version=PROMPT_VERSION),
+                extraction_version=extraction_version(kind),
+            )
+        return expected
 
     # -- reading ---------------------------------------------------------
 
@@ -1441,10 +1545,16 @@ class IngestionPipeline:
         media_type: str | None = None,
         size_bytes: int | None = None,
         content_hash: str | None = None,
+        run_id: uuid.UUID | None = None,
     ) -> None:
         async with self._store.begin(scope) as transaction:
             document = await transaction.document(document_id)
             if document is None:
+                if run_id is not None:
+                    # The row went while the job ran. The run still has to settle its
+                    # count, or it would wait forever for a document that is not coming.
+                    await transaction.count_reprocessed(run_id, "done", tokens=0)
+                    await transaction.commit()
                 return
             document.status = outcome.status
             document.error = error
@@ -1459,14 +1569,62 @@ class IngestionPipeline:
                 document.content_hash = content_hash
             document.chunk_strategy = outcome.chunk_strategy
             document.chunk_fingerprint = outcome.chunk_fingerprint
+            document.index_fingerprint = outcome.index_fingerprint
             document.tokenizer = outcome.tokenizer
+            # Task 104. Whatever the outcome, the row is now what ingestion just wrote,
+            # which is by definition current: a document that failed has no points that
+            # could be stale, and one that indexed has the fingerprint of *now*.
+            document.index_status = "current"
+            # A failure keeps the run's mark, so **Retry failed** can find exactly the
+            # documents this run left behind; anything else is the run's no longer.
+            if outcome.status != "failed":
+                document.reprocessing_run_id = None
             if outcome.status == "indexed":
                 document.embedding_model = self._embedder.model
                 document.indexed_at = datetime.now(UTC)
             else:
                 document.indexed_at = None
                 document.embedding_model = None
+            run = None
+            if run_id is not None:
+                # In the same transaction as the row, so a crash between the two cannot
+                # leave a run whose counters disagree with its documents.
+                run = await transaction.count_reprocessed(
+                    run_id, _run_outcome(outcome), tokens=outcome.embedding_tokens
+                )
             await transaction.commit()
+        if run is not None and run.finished_at is not None:
+            logger.info(
+                "reprocessing run finished",
+                extra={
+                    "run_id": str(run.id),
+                    "connector_id": str(run.connector_id),
+                    "status": run.status,
+                    "done": run.done,
+                    "failed": run.failed,
+                    "skipped": run.skipped,
+                    "spent_tokens": run.spent_tokens,
+                },
+            )
+            if self._reprocessing_metrics is not None:
+                self._reprocessing_metrics.runs.labels(outcome=run.status).inc()
+                self._reprocessing_metrics.duration.observe(
+                    (run.finished_at - run.started_at).total_seconds()
+                )
+
+
+def _run_outcome(outcome: IngestOutcome) -> str:
+    """Which reprocessing counter an ingestion lands in (task 104).
+
+    A source that is gone from object storage is ``skipped`` rather than ``failed``: a
+    recut needs the bytes, nothing can be done about bytes that no longer exist except
+    say so, and a run full of "failures" nobody can retry would be a run that lies about
+    itself. A document the pipeline *decided* to skip — a scan without a text layer, an
+    empty file — reached the state it was always going to reach, and counts as done.
+    """
+    if outcome.status == "failed":
+        return "skipped" if outcome.reason == "missing_object" else "failed"
+    return "done"
 
 
 def _reusable(document: Document, content_hash: str, model_id: uuid.UUID | None) -> bool:

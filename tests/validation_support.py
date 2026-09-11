@@ -125,9 +125,11 @@ def build_validation_fixture(
     pipeline = connectors.pipeline
 
     async def ingest(payload: Mapping[str, Any]) -> None:
+        run_id = payload.get("run_id")
         await pipeline.ingest(
             organization_id=uuid.UUID(str(payload["organization_id"])),
             document_id=uuid.UUID(str(payload["document_id"])),
+            run_id=uuid.UUID(str(run_id)) if run_id else None,
         )
 
     async def purge(payload: Mapping[str, Any]) -> None:

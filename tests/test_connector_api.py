@@ -558,9 +558,16 @@ async def test_a_patch_names_the_formats_it_invalidated(
     auth_harness: AuthHarness, token: str
 ) -> None:
     """So the prompt can say "reindex the code files" instead of "reindex everything" when
-    only an override moved."""
+    only an override moved. Since task 104 the answer comes from the rows: the code file
+    is marked stale, the Markdown one is not, and a GET a moment later says the same."""
     connector = await created(auth_harness, token)
-    await indexed(auth_harness, token, connector, ("handbook.md", HANDBOOK))
+    await indexed(
+        auth_harness,
+        token,
+        connector,
+        ("handbook.md", HANDBOOK),
+        ("util.py", b"def alpha(value):\n    return value + 1\n"),
+    )
 
     response = await auth_harness.client.patch(
         f"/api/v1/connectors/{connector['id']}",
@@ -572,6 +579,16 @@ async def test_a_patch_names_the_formats_it_invalidated(
     body = response.json()
     assert body["reindex_required"] is True
     assert body["reindex_formats"] == ["code"]
+    assert body["stale_documents"] == 1
+    again = await auth_harness.client.get(
+        f"/api/v1/connectors/{connector['id']}", headers=auth_harness.bearer(token)
+    )
+    assert again.json()["reindex_required"] is True
+    assert again.json()["reindex_formats"] == ["code"]
+    listed = await auth_harness.client.get("/api/v1/connectors", headers=auth_harness.bearer(token))
+    assert {row["id"]: row["stale_documents"] for row in listed.json()["items"]}[
+        connector["id"]
+    ] == 1
 
 
 async def test_a_reindex_can_be_narrowed_to_the_formats_that_changed(

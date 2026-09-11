@@ -194,7 +194,10 @@ export function summarizationBody(form: SummarizationForm): Record<string, unkno
   }
 }
 
-export function summarizationChanged(form: SummarizationForm, stored: SummarizationConfig): boolean {
+export function summarizationChanged(
+  form: SummarizationForm,
+  stored: SummarizationConfig,
+): boolean {
   const proposed = summarizationBody(form)
   return (
     proposed.mode !== stored.mode ||
@@ -214,33 +217,13 @@ export function summarizationProblem(form: SummarizationForm): string | null {
   if (!Number.isFinite(input) || input < 500 || input > 100000) {
     return 'Input must be between 500 and 100 000 tokens.'
   }
-  if (form.dailyDocumentCap !== '' && (!Number.isFinite(Number(form.dailyDocumentCap)) || Number(form.dailyDocumentCap) < 0)) {
+  if (
+    form.dailyDocumentCap !== '' &&
+    (!Number.isFinite(Number(form.dailyDocumentCap)) || Number(form.dailyDocumentCap) < 0)
+  ) {
     return 'The daily cap must be a whole number, or empty for no cap.'
   }
   return null
-}
-
-/**
- * The warning before saving: what the change will do to the index. Prefix on or off, or a
- * model change while prefixing, re-embeds; anything else is free. Only worth saying when
- * something is indexed.
- */
-export function summarizationWarning(
-  connector: ConnectorResponse,
-  form: SummarizationForm,
-): string | null {
-  const stored = connector.summarization
-  const indexed = connector.counts.indexed ?? 0
-  if (indexed === 0) return null
-  const was = prefixesContext(stored.mode)
-  const will = prefixesContext(form.mode)
-  const modelMoved = will && (form.modelId || null) !== (stored.model_id ?? null)
-  if (was === will && !modelMoved) return null
-  const noun = `${indexed.toLocaleString()} document${indexed === 1 ? '' : 's'}`
-  if (will) {
-    return `Every chunk's embedding will change, so the ${noun} already indexed become stale until you reindex them.`
-  }
-  return `The ${noun} already indexed were embedded with a summary prefix; they become stale until reindexed without it.`
 }
 
 /** The sentence under the Settings select: which link of the chain is answering. */

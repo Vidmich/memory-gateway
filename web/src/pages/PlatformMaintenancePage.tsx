@@ -1,15 +1,11 @@
 import { useState } from 'react'
 
-import { useMaintenance, useRunMaintenance, useSweep } from '@/api/platform'
-import type {
-  MaintenanceRun,
-  PartitionRunway,
-  ReindexRun,
-  SweepResponse,
-} from '@/api/types'
+import { useMaintenance, useReindexRun, useRunMaintenance, useSweep } from '@/api/platform'
+import type { MaintenanceRun, PartitionRunway, ReindexRun, SweepResponse } from '@/api/types'
 import { EmptyState } from '@/components/EmptyState'
 import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { useToast } from '@/components/Toast'
+import { outcomeLine, scopeLabel, triggerLabel } from '@/pages/reprocessing'
 
 /**
  * Platform → Maintenance (task 17).
@@ -54,8 +50,8 @@ export function PlatformMaintenancePage() {
       <header>
         <h1 className="text-xl font-semibold text-slate-900">Maintenance</h1>
         <p className="mt-1 text-sm text-slate-500">
-          The jobs that keep the data lifecycle honest. All of them run nightly; these
-          buttons run one now.
+          The jobs that keep the data lifecycle honest. All of them run nightly; these buttons run
+          one now.
         </p>
       </header>
 
@@ -71,8 +67,8 @@ export function PlatformMaintenancePage() {
           </button>
         </div>
         <p className="mb-4 text-sm text-slate-600">
-          Days of partitions that exist ahead of today. When this reaches zero, request
-          logging stops writing — so it is an alert rather than a statistic.
+          Days of partitions that exist ahead of today. When this reaches zero, request logging
+          stops writing — so it is an alert rather than a statistic.
         </p>
         <ul className="space-y-2">
           {(data.runway ?? []).map((entry) => (
@@ -143,9 +139,9 @@ export function PlatformMaintenancePage() {
           </button>
         </div>
         <p className="mb-4 text-sm text-slate-600">
-          Vectors with no row and stored files with no document. Nothing is deleted until
-          you have seen the list — an upload in flight looks exactly like an orphan, which
-          is why anything written in the last hour is left alone.
+          Vectors with no row and stored files with no document. Nothing is deleted until you have
+          seen the list — an upload in flight looks exactly like an orphan, which is why anything
+          written in the last hour is left alone.
         </p>
         {report ? <SweepReport report={report} onApply={() => runSweep(true)} /> : null}
       </section>
@@ -212,6 +208,10 @@ function format(bytes: number): string {
 
 function ReindexProgress({ run }: { run: ReindexRun }) {
   const targets = run.targets ?? []
+  // Task 104. The single-run read carries the per-connector runs the reindex spawned for
+  // the connectors it is recutting; the maintenance summary does not, so it is fetched.
+  const detail = useReindexRun(run.id)
+  const spawned = detail.data?.reprocessing_runs ?? []
   const done = targets.reduce((sum, target) => sum + target.done_points, 0)
   const expected = targets.reduce((sum, target) => sum + target.total_points, 0)
   const percent = expected ? Math.round((done / expected) * 100) : 0
@@ -238,6 +238,24 @@ function ReindexProgress({ run }: { run: ReindexRun }) {
           </li>
         ))}
       </ul>
+      {spawned.length > 0 ? (
+        <div className="mt-4" data-testid="spawned-runs">
+          <p className="text-xs font-medium text-slate-600">
+            Connectors being recut from object storage
+          </p>
+          <ul className="mt-1 divide-y divide-slate-100">
+            {spawned.map((row) => (
+              <li key={row.id} className="flex justify-between py-2 text-sm">
+                <span className="font-mono text-xs text-slate-600">{row.connector_id}</span>
+                <span className="text-slate-500">
+                  {triggerLabel(row.trigger)} · {scopeLabel(row)} · {row.status} ·{' '}
+                  {outcomeLine(row)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   )
 }

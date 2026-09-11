@@ -47,6 +47,8 @@ from app.services.locks import MemoryLock
 from app.services.memory_db import MemoryDatabase
 from app.services.object_store import MemoryObjectStore
 from app.services.proxy import Prepared
+from app.services.reprocessing import CachedFingerprints, Reprocessor
+from app.services.reprocessing_store import MemoryReprocessingStore
 from app.services.retrieval import MemoryService, Retriever
 from app.services.summarization_store import MemorySummarizationStore
 from app.services.summarizer import SummarizationModelResolver, Summarizer
@@ -193,6 +195,10 @@ class ConnectorFixture:
     summary_models: SummarizationModelResolver
     summary_model: ScriptedSummaryModel
     summary_row: UpstreamModel
+    #: Task 104. The runs, over the same store and queue; and the fingerprint source
+    #: retrieval labels stale chunks with.
+    reprocessor: Reprocessor
+    fingerprints: CachedFingerprints
     user_id: uuid.UUID = field(default_factory=uuid7)
     #: Jobs :meth:`run_jobs_until_parked` set aside because they were waiting on a delay.
     parked: list[JobRequest] = field(default_factory=list)
@@ -337,6 +343,7 @@ def make_document(
         size_bytes=128,
         status=status,
         chunk_count=chunk_count,
+        index_status="current",
     )
 
 
@@ -412,6 +419,12 @@ def build_connectors(
         chunking_metrics=chunking_metrics,
         summarizer=summarizer,
     )
+    reprocessor = Reprocessor(
+        MemoryReprocessingStore(database),
+        connectors=store,
+        expected=pipeline.expected_fingerprints,
+        queue=queue,
+    )
     service = ConnectorService(
         store,
         objects=objects,
@@ -420,18 +433,24 @@ def build_connectors(
         pipeline=pipeline,
         queue=queue,
         settings=limits,
+        reprocessor=reprocessor,
     )
 
-    retriever = Retriever(embedder, vectors)
+    # No TTL: a test that changes a setting and retrieves in the next line wants the
+    # label to follow the change, and the cache is about request-path cost, not truth.
+    fingerprints = CachedFingerprints(store, expected=pipeline.expected_fingerprints, ttl_seconds=0)
+    retriever = Retriever(embedder, vectors, fingerprints=fingerprints)
     dead_letters = MemoryDeadLetters()
 
     # The same two handlers `app.workers.runtime.build_handlers` registers, spelled out
     # rather than imported: this module must not depend on the composition root, and the
     # bodies are one line each.
     async def ingest(payload: Mapping[str, Any]) -> None:
+        run_id = payload.get("run_id")
         await pipeline.ingest(
             organization_id=uuid.UUID(str(payload["organization_id"])),
             document_id=uuid.UUID(str(payload["document_id"])),
+            run_id=uuid.UUID(str(run_id)) if run_id else None,
         )
 
     async def purge(payload: Mapping[str, Any]) -> None:
@@ -480,6 +499,8 @@ def build_connectors(
         summary_models=summary_models,
         summary_model=scripted,
         summary_row=summary_row,
+        reprocessor=reprocessor,
+        fingerprints=fingerprints,
     )
 
 

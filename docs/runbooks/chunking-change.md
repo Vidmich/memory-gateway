@@ -1,9 +1,12 @@
 # Retrieval got worse after a chunking change, or a reindex is taking far longer than its estimate
 
-Not an alert, and it never will be. Chunking is the one knob in this product where a wrong
-value is invisible: nothing fails, no error rate moves, no document goes red. Retrieval
-still returns something — it is just worse, and the report arrives weeks later as "the
-answers used to be better".
+Mostly not an alert. Chunking is the one knob in this product where a wrong value is
+invisible: nothing fails, no error rate moves, no document goes red. Retrieval still returns
+something — it is just worse, and the report arrives weeks later as "the answers used to be
+better". The two alerts that *do* land here (task 104) are about the change not being
+applied rather than being wrong: `DocumentsStaleForADay` — a connector has had documents cut
+under a previous configuration for a day — and `ReprocessingRunsFailing` — a reprocessing run
+finished with documents it could not re-ingest.
 
 ## What actually changed
 
@@ -16,19 +19,41 @@ answers used to be better".
 | Summarization `mode` to or from `contextual`/`both`, or the summarization model while on one of them (task 102) | Every stored **vector** for the affected formats was built with a different prefix. The chunks' text is unchanged; every document reads `stale` until reindexed, and the reindex reuses each document's stored summary rather than paying for it again. |
 | Summarization `mode` to or from `summary_chunk` | Nothing. One point per document is added on its next ingestion, or removed; the source chunks are byte-identical. |
 
-The connector's PATCH response says which: `reindex_required` and `reindex_formats`. The
-document row says what each file was actually cut with — `chunk_strategy`,
-`chunk_fingerprint` and `tokenizer` — and the listing marks `stale` any row whose fingerprint
-no longer matches what ingestion would write now. That is how you tell a connector that is
-half reindexed from one that is not.
+**Since task 104 the connector says so itself, and keeps saying so.** Staleness is a stored
+fact on every document row — `index_status: current | stale | reprocessing` — set by the save
+that caused it and cleared by the ingestion that fixes it, so the answer is the same on the
+PATCH response, on `GET /connectors/{id}` a day later, on the connectors list, on every gateway
+that reads the connector, and on the dashboard once it has been stale for a day:
 
 ```bash
-curl -sS "$GW/api/v1/connectors/$CONNECTOR/documents?limit=200" -H "Authorization: Bearer $TOKEN" \
-  | jq -r '.items[] | "\(.chunk_strategy // "unrecorded")\t\(.tokenizer // "unrecorded")\t\(if .stale then "STALE" else "ok" end)\t\(.source_name)"' | sort | uniq -c
+curl -sS "$GW/api/v1/connectors/$CONNECTOR" -H "Authorization: Bearer $TOKEN" \
+  | jq '{stale: .stale_documents, reprocessing: .reprocessing_documents, unrecorded: .unrecorded_documents, formats: .reindex_formats, run: .reprocessing}'
 ```
 
-Two strategies or two tokenizers in that output means the connector holds two chunkings at
-once. That is a normal transient during a reindex and a problem if it persists.
+The per-row reason is in words: `stale_reason` is `chunking`, `embedding_model`, `tokenizer`,
+`summarization` or `extractor`, and `stale_detail` names the old and new values where the row
+kept them (*"Sized with cl100k_base; the tokenizer is now o200k_base."*). A row with
+`stale_reason: unrecorded` was indexed before the fingerprint existed: not known to be stale,
+never counted as such, and reprocessable under the `unrecorded` scope when you want it recorded.
+
+```bash
+curl -sS "$GW/api/v1/connectors/$CONNECTOR/documents?index_status=stale&limit=200" -H "Authorization: Bearer $TOKEN" \
+  | jq -r '.items[] | "\(.stale_reason)\t\(.source_name)\t\(.stale_detail)"' | sort | uniq -c
+```
+
+The old heuristic — two strategies or two tokenizers in the listing — is replaced by that
+count. A mixed connector is a normal transient while a reprocessing run is going and a problem
+only if `stale_documents` is still above zero with no run in `reprocessing`.
+
+**Is it still going?** The run is a row, not a burst of jobs: `GET
+/connectors/{id}/reprocessing-runs` is the history, newest first, with the trigger, who started
+it, its counters (`total`, `done`, `failed`, `skipped`), the ETA at the observed rate, and
+`estimated_tokens` beside `spent_tokens` — the calibration for the next estimate. A run a worker
+died under is *continued* by the nightly reconciliation (`reconcile_index`) from its counters,
+never restarted; a run that finished `partial` keeps the failed documents' reasons on their
+rows and **Retry failed** (`POST /reprocessing-runs/{id}/retry`) re-enqueues exactly those.
+Sources gone from object storage are counted `skipped`, not failed: nothing can recut bytes
+that no longer exist, and a resync is what removes the row.
 
 **On the tokenizer specifically (task 101).** Before it, every chunk on every deployment was
 measured with `cl100k_base`, whatever the embedding model. After it, `chunk_size` is measured
@@ -77,17 +102,28 @@ should believe.
 
 ## Fix
 
-**Apply a chunking change.** Save, then reindex — and reindex *the formats that changed*,
-which the UI offers by name:
+**Apply a chunking change.** Save, then reprocess — the stale documents, which is the
+default scope and the reason the run exists; the old endpoint could only re-ingest everything:
 
 ```bash
-curl -X POST "$GW/api/v1/connectors/$CONNECTOR/reindex" \
+curl -X POST "$GW/api/v1/connectors/$CONNECTOR/reprocess" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"formats": ["code"]}'
+  -d '{"scope": "stale"}'
 ```
 
-Omit `formats` for everything. This is a re-*ingestion*, not the platform reindex: it reads
-the files again, so it costs extraction as well as embedding.
+`{"scope": "formats", "formats": ["code"]}` narrows to kinds, `{"scope": "all"}` is everything,
+`{"scope": "unrecorded"}` the rows with no fingerprint. One run per connector at a time: a second
+call while one is going returns the running one with `created: false`.
+`POST /connectors/{id}/reindex` is the same run behind the old name, for one release. Either
+way this is a re-*ingestion*, not the platform reindex: it reads the files again, so it costs
+extraction as well as embedding, and the response says what it expects to spend.
+
+**The dashboard says a connector has been stale for a day** (`DocumentsStaleForADay`).
+Somebody saved a change and never pressed **Reprocess**, or the run finished `partial` and
+nobody retried. Open the connector: the header says how many and why, and the button is next
+to the sentence. If the count is above zero with no run and the reasons say `tokenizer` or
+`embedding_model`, the change was a platform one — the tokenizer override, or an adopted
+model — and the same button applies.
 
 **A document `failed` with reason `chunking_embedding`.** Only possible under `semantic`,
 which embeds every sentence to find its boundaries. The message names the embedding

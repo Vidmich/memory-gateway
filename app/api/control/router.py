@@ -24,6 +24,7 @@ from app.api.control import (
     models,
     monitoring,
     platform,
+    reprocessing,
     summarization,
     validation,
 )
@@ -47,6 +48,7 @@ authenticated_router.include_router(models.router)
 authenticated_router.include_router(gateways.router)
 authenticated_router.include_router(limits.router)
 authenticated_router.include_router(connectors.router)
+authenticated_router.include_router(reprocessing.router)
 authenticated_router.include_router(monitoring.router)
 authenticated_router.include_router(end_users.router)
 authenticated_router.include_router(distillation.router)

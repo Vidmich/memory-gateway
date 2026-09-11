@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.db.models import Document
 from app.db.models.connector import CONNECTOR_TYPES
 from app.schemas.connector_config import ChunkingConfig, effective
+from app.schemas.reprocessing import ReprocessingRunResponse
 from app.schemas.summarization import SummarizationConfig
 from app.schemas.summarization import effective as summarization_for
 from app.services.chunking_preview import (
@@ -43,6 +44,7 @@ from app.services.connectors import (
     UploadOutcome,
 )
 from app.services.filetypes import FORMAT_KINDS
+from app.services.index_fingerprint import Reason
 from app.services.ingestion import ResyncSummary
 from app.services.vector_store import Match, Stored
 
@@ -150,12 +152,25 @@ class ConnectorResponse(BaseModel):
     #: The model the connector's summarization setting resolves to, or null when nothing
     #: is configured anywhere. Null on the list, where it is not read.
     summary_model: SummaryModelResponse | None
-    #: True only in the response to the update that caused it. A permanent banner would
-    #: be ignored within a day.
+    #: Task 104: derived from the rows and persistent — true while any document is stale,
+    #: on the PATCH that caused it and on every GET after. The banner it drives is on
+    #: until the reprocess clears it, which is the point.
     reindex_required: bool
-    #: Which formats that update invalidated, so the prompt can say "reindex the 12 code
-    #: files" instead of "reindex everything" when only an override moved.
+    #: The format kinds with stale documents, so the prompt can say "reprocess the 12
+    #: code files" instead of "reprocess everything" when only an override moved.
     reindex_formats: list[str]
+    #: Task 104. Documents by index status. ``stale_documents`` is what the list's badge
+    #: and the header's sentence count; ``reprocessing_documents`` how many a run owns;
+    #: ``unrecorded_documents`` how many indexed rows have no fingerprint to compare —
+    #: shown as such, never as stale.
+    stale_documents: int = 0
+    reprocessing_documents: int = 0
+    unrecorded_documents: int = 0
+    #: What ingestion would write now for a document of each format — the thing every
+    #: row's ``index_fingerprint`` is compared against. Empty on the list.
+    effective_fingerprints: dict[str, str] = {}
+    #: The reprocessing run in flight, or null.
+    reprocessing: ReprocessingRunResponse | None = None
     last_synced_at: datetime | None
     created_at: datetime
 
@@ -193,6 +208,15 @@ class ConnectorResponse(BaseModel):
             total_bytes=view.total_bytes,
             reindex_required=view.reindex_required,
             reindex_formats=sorted(view.reindex_formats),
+            stale_documents=view.stale.stale,
+            reprocessing_documents=view.stale.reprocessing,
+            unrecorded_documents=view.stale.unrecorded,
+            effective_fingerprints=dict(view.effective_fingerprints),
+            reprocessing=(
+                ReprocessingRunResponse.of(view.reprocessing)
+                if view.reprocessing is not None
+                else None
+            ),
             last_synced_at=connector.last_synced_at,
             created_at=connector.created_at,
         )
@@ -226,10 +250,21 @@ class DocumentResponse(BaseModel):
     #: worker whose vocabulary failed to load. ``None`` for a row indexed before it was
     #: recorded, for the same reason as ``chunk_strategy``.
     tokenizer: str | None
-    #: Whether the chunks on disk were cut under a configuration that is no longer the
-    #: current one — settings, embedding model or tokenizer. A comparison the listing
-    #: makes, so a document row alone cannot claim it; false for rows too old to say.
+    #: Task 104. The second status axis: ``current``, ``stale`` (cut under a previous
+    #: configuration) or ``reprocessing`` (a run owns it). A document is ``indexed``
+    #: and ``stale`` at once after a change, and that is the normal state.
+    index_status: str = "current"
+    #: ``stale`` as a boolean, for callers that read it before the axis existed.
     stale: bool = False
+    #: Why the row is stale, as a code — ``chunking``, ``embedding_model``, ``tokenizer``,
+    #: ``summarization``, ``extractor`` — or ``unrecorded`` for an indexed row with no
+    #: fingerprint to compare, which is shown differently because it is not known to be
+    #: wrong. Null on a current row.
+    stale_reason: str | None = None
+    #: The reason as a sentence naming the old and new values where the row kept them.
+    stale_detail: str | None = None
+    #: Everything the stored points depend on, as recorded when the row was indexed.
+    index_fingerprint: str | None = None
     content_hash: str | None
     indexed_at: datetime | None
     created_at: datetime
@@ -246,7 +281,7 @@ class DocumentResponse(BaseModel):
     summarized_at: datetime | None = None
 
     @classmethod
-    def of(cls, document: Document, *, stale: bool = False) -> DocumentResponse:
+    def of(cls, document: Document, *, reason: Reason | None = None) -> DocumentResponse:
         return cls(
             id=document.id,
             connector_id=document.connector_id,
@@ -262,7 +297,11 @@ class DocumentResponse(BaseModel):
             embedding_model=document.embedding_model,
             chunk_strategy=document.chunk_strategy,
             tokenizer=document.tokenizer,
-            stale=stale,
+            index_status=document.index_status or "current",
+            stale=document.index_status == "stale",
+            stale_reason=reason.code if reason is not None else None,
+            stale_detail=reason.sentence if reason is not None else None,
+            index_fingerprint=document.index_fingerprint,
             content_hash=document.content_hash,
             indexed_at=document.indexed_at,
             created_at=document.created_at,

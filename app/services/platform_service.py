@@ -34,7 +34,14 @@ from app.schemas.platform import (
 )
 from app.services.audit import Attribution, Target
 from app.services.erasure import OrganizationEraser
-from app.services.jobs import REINDEX, JobQueue, JobRequest, reindex_key
+from app.services.jobs import (
+    RECONCILE_INDEX,
+    REINDEX,
+    JobQueue,
+    JobRequest,
+    reconcile_key,
+    reindex_key,
+)
 from app.services.maintenance import (
     LOW_RUNWAY_DAYS,
     PARTITIONS,
@@ -256,11 +263,23 @@ class PlatformService:
                 if now:
                     sections["embedding"] = now
 
+        tokenizer_moved = "tokenizer" in (sections.get("embedding") or {})
         view = (
             await self._settings.update(actor, PlatformSettingsPatch.model_validate(sections))
             if sections
             else await self._settings.view()
         )
+        if tokenizer_moved and self._queue is not None:
+            # Task 104. A tokenizer change invalidates every chunk everywhere without a
+            # connector save to mark them, so the marking is a job: every connector's
+            # stored index status recomputed from its fingerprints.
+            await self._queue.enqueue(
+                JobRequest(
+                    name=RECONCILE_INDEX,
+                    payload={"reason": "tokenizer"},
+                    idempotency_key=reconcile_key("tokenizer"),
+                )
+            )
         return SettingsResult(view=view, reindex=run, pending_embedding=_pending(run, view))
 
     async def retention_ceilings(self) -> RetentionCeilings:

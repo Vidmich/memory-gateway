@@ -24,6 +24,7 @@ from app.services.jobs import (
     INGEST_DOCUMENT,
     JOB_NAMES,
     MIGRATE_VECTORS,
+    RECONCILE_INDEX,
     REINDEX,
     SUMMARIZE_DOCUMENT,
 )
@@ -91,6 +92,7 @@ def test_there_is_a_handler_for_every_job_this_build_can_enqueue() -> None:
         DROP_MIGRATION_SOURCE,
         AUDIT_INDEX,
         EVALUATE_SET,
+        RECONCILE_INDEX,
     }
 
 
@@ -100,7 +102,14 @@ def test_a_worker_without_conversation_memory_registers_the_ingestion_handlers()
     there is dead-lettered *by name*: a visible bad deploy rather than a silent one."""
     handlers = build_handlers(_ingestion_of(build_connectors(make_organization())))
 
-    assert set(handlers) == {INGEST_DOCUMENT, DELETE_CONNECTOR, SUMMARIZE_DOCUMENT}
+    # Task 104's reconciliation is part of ingestion: it reads the same rows the
+    # pipeline writes and needs nothing the platform bundle has.
+    assert set(handlers) == {
+        INGEST_DOCUMENT,
+        DELETE_CONNECTOR,
+        SUMMARIZE_DOCUMENT,
+        RECONCILE_INDEX,
+    }
 
 
 async def test_the_reindex_handler_turns_a_string_run_id_back_into_a_uuid() -> None:
@@ -242,6 +251,8 @@ def _ingestion_of(fixture: Any) -> Any:
         pool=ExtractionPool(),
         summaries=fixture.summaries,
         summary_models=fixture.summary_models,
+        reprocessor=fixture.reprocessor,
+        fingerprints=fixture.fingerprints,
     )
 
 

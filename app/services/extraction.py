@@ -42,7 +42,16 @@ from typing import Any, Protocol
 
 from charset_normalizer import from_bytes
 
-from app.services.filetypes import DOCX, PDF, PPTX, XLSX, bom_encoding, extension_of, is_text
+from app.services.filetypes import (
+    DOCX,
+    FORMAT_KINDS,
+    PDF,
+    PPTX,
+    XLSX,
+    bom_encoding,
+    extension_of,
+    is_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -516,6 +525,20 @@ def flatten(value: Any, prefix: str = "") -> Iterator[str]:
 # ---------------------------------------------------------------------------
 
 
+#: Task 104. Which version of each format's extractor this build ships, keyed by
+#: :data:`~app.services.filetypes.FORMAT_KINDS`. Part of every document's index
+#: fingerprint, because an extractor that produces different text produces different
+#: chunks and nothing else would say so. **Bump the number for a format when its
+#: extractor's output changes** — a PDF layout fix, a new table renderer — and every
+#: document of that format reads *stale: extractor upgraded* on the next deploy, while
+#: the formats whose extractor did not change stay current.
+EXTRACTION_VERSIONS: dict[str, int] = dict.fromkeys(FORMAT_KINDS, 1)
+
+
+def extraction_version(kind: str) -> int:
+    return EXTRACTION_VERSIONS.get(kind, 1)
+
+
 @dataclass(frozen=True, slots=True)
 class Registration:
     """One extractor, plus how it is allowed to run."""
@@ -694,6 +717,7 @@ def _clip(value: str) -> str:
 
 
 __all__ = [
+    "EXTRACTION_VERSIONS",
     "Extracted",
     "ExtractionError",
     "Extractor",
@@ -710,6 +734,7 @@ __all__ = [
     "extract_markdown",
     "extract_plain",
     "extract_tsv",
+    "extraction_version",
     "flatten",
     "render_record",
 ]

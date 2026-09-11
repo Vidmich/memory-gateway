@@ -47,6 +47,8 @@ import type {
   SummarizationSettings,
   AuditResponse,
   AuditStatusResponse,
+  ReprocessingRunResponse,
+  StaleAlertResponse,
   ChunkingReportResponse,
   EmbeddingReportResponse,
   EvaluationItemResponse,
@@ -259,6 +261,7 @@ export function makeGateway(overrides: Partial<GatewayResponse> = {}): GatewayRe
       },
     ],
     system_context: null,
+    stale_connectors: [],
     param_overrides: {},
     locked_params: {},
     // The server always answers with the blob filled in, never `{}` — so the fixture
@@ -592,6 +595,11 @@ export function makeConnector(overrides: Partial<ConnectorResponse> = {}): Conne
       }),
     ),
     summary_model: null,
+    stale_documents: 0,
+    reprocessing_documents: 0,
+    unrecorded_documents: 0,
+    effective_fingerprints: {},
+    reprocessing: null,
     ...overrides,
   }
 }
@@ -612,7 +620,11 @@ export function makeDocument(overrides: Partial<DocumentResponse> = {}): Documen
     embedding_model: 'text-embedding-3-small',
     chunk_strategy: 'recursive',
     tokenizer: 'cl100k_base',
+    index_status: 'current',
     stale: false,
+    stale_reason: null,
+    stale_detail: null,
+    index_fingerprint: 'ch=a1;em=b2;tk=c3;sm=-;xv=1',
     content_hash: 'a'.repeat(64),
     indexed_at: NOW,
     created_at: NOW,
@@ -1261,6 +1273,59 @@ export function makeEvaluationRunDetail(
         error: null,
       },
     ],
+    ...overrides,
+  }
+}
+
+// -- task 104: reprocessing ----------------------------------------------------
+
+export function makeReprocessingRun(
+  overrides: Partial<ReprocessingRunResponse> = {},
+): ReprocessingRunResponse {
+  const total = overrides.total ?? 1184
+  const done = overrides.done ?? 312
+  const failed = overrides.failed ?? 2
+  const skipped = overrides.skipped ?? 0
+  const settled = done + failed + skipped
+  return {
+    id: 'rr1',
+    connector_id: 'c1',
+    trigger: 'chunking',
+    scope: 'stale',
+    formats: [],
+    requested_by: 'u1',
+    requested_by_label: 'ops@acme.test',
+    reindex_run_id: null,
+    status: 'running',
+    total,
+    done,
+    failed,
+    skipped,
+    estimated_tokens: 1_200_000,
+    spent_tokens: 310_000,
+    error: null,
+    resumed: 0,
+    report: {},
+    progress: {
+      done: settled,
+      total,
+      fraction: total ? settled / total : 1,
+      eta_seconds: overrides.status && overrides.status !== 'running' ? null : 360,
+    },
+    started_at: '2026-09-06T11:50:00Z',
+    finished_at: null,
+    created: true,
+    ...overrides,
+  }
+}
+
+export function makeStaleAlert(overrides: Partial<StaleAlertResponse> = {}): StaleAlertResponse {
+  return {
+    connector_id: 'c1',
+    connector_name: 'Product docs',
+    stale_documents: 1184,
+    stale_since: '2026-09-05T09:00:00Z',
+    age_hours: 29,
     ...overrides,
   }
 }

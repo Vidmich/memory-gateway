@@ -148,6 +148,12 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         # Backs the per-status counts on the connectors list, which would otherwise be a
         # sequential scan per row on the page.
         Index("ix_documents_connector_id_status", "connector_id", "status"),
+        # Task 104. The stale count per connector, and the document table's filter.
+        Index("ix_documents_connector_id_index_status", "connector_id", "index_status"),
+        CheckConstraint(
+            "index_status IN ('current', 'stale', 'reprocessing')",
+            name="index_status_is_known",
+        ),
     )
 
     #: Denormalised from the connector so every read is scoped by the same column as every
@@ -209,7 +215,29 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: no longer answers "how was this document cut". A connector reindexed halfway holds
     #: two chunkings at once, and without these nothing says which document is which.
     chunk_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Task 20's digest. Kept and still written for one release (expand-contract): the
+    #: readers moved to ``index_fingerprint`` below, and the column goes next.
     chunk_fingerprint: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Task 104. Everything this document's stored points depend on, as five readable
+    #: segments — see :mod:`app.services.index_fingerprint`. Compared with what
+    #: ingestion would write now, it says whether the row is stale and *why*. ``NULL``
+    #: means unrecorded — indexed before this existed — which is shown as such and never
+    #: counted as stale, because it is not known to be wrong.
+    index_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: The second status axis (SPEC §9.5 as amended by task 104): ``current``, ``stale``
+    #: or ``reprocessing``. The fingerprint is the truth and this is the index over it,
+    #: maintained by the connector service on every save and by ingestion on every
+    #: finish, and reconciled against the fingerprints nightly. Stored rather than
+    #: computed so that a connector's stale count is a ``COUNT`` and not a comparison per
+    #: row on every list.
+    index_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="current", server_default="current"
+    )
+    #: The reprocessing run that owns this document while it is ``reprocessing`` — what
+    #: lets a run a dead worker abandoned be continued over exactly its documents.
+    reprocessing_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
     #: Task 101 — what the chunk sizes were *measured* with: ``o200k_base``,
     #: ``approximate:3.6``, or ``words (cl100k_base unavailable)`` when the vocabulary
     #: failed to load. A chunk sized in a different unit is a different chunk, so this is

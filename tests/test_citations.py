@@ -221,6 +221,7 @@ def test_citation_json_carries_what_the_prompt_already_said_and_the_ids() -> Non
         "chunk_strategy": None,
         "kind": "source",
         "matched_text": None,
+        "stale": False,
         "url": (
             "https://ui/connectors/22222222-2222-5222-8222-222222222222"
             "?document=11111111-1111-5111-8111-111111111111&chunk=doc%3A0"

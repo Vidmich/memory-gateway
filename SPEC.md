@@ -570,9 +570,11 @@ token count beside it.
 
 Every chunk carries payload metadata: `org_id, connector_id, document_id, source_name,
 source_uri, page_or_section, chunk_index, ingested_at, content_hash, token_count,
-chunk_strategy, chunk_fingerprint, tokenizer` — the fingerprint for the same reason §9.4
-records the embedding model, and with per-format overrides a stronger one: two documents in
-one connector can legitimately be cut differently. `tokenizer` (task 101) is what
+chunk_strategy, chunk_fingerprint, index_fingerprint, format_kind, tokenizer` — the
+fingerprints for the same reason §9.4 records the embedding model, and with per-format
+overrides a stronger one: two documents in one connector can legitimately be cut differently
+(`chunk_fingerprint` is task 20's digest, kept for one release; `index_fingerprint` is task
+104's structured one, §9.4, and `format_kind` is what retrieval compares it under). `tokenizer` (task 101) is what
 `chunk_size` was *measured* with, by the name the tokenizer gives itself — so a worker whose
 BPE vocabulary failed to load records `words (cl100k_base unavailable)` rather than claiming
 the BPE. It is part of the fingerprint for every strategy: a chunk sized in a different unit is
@@ -633,6 +635,17 @@ mixing models across a tenant silently degrades retrieval.
   downtime.
 - The active embedding model and dimension are recorded on each collection's metadata and on
   every document row, so drift is detectable.
+- **One index fingerprint, defined once (task 104).** Every document row and every stored
+  point carries `index_fingerprint`: five readable segments digesting everything the stored
+  points depend on — the effective chunking settings for the document's format, the embedding
+  model, the tokenizer, the contextual-summarization identity (or none), and the version of
+  the extractor for that format. Nothing else is in it. Comparing a row's fingerprint with
+  the one ingestion would write now says whether the row is stale and *which* input moved;
+  the row keeps the model, tokenizer and strategy in clear so the reason can name old and
+  new. A platform reindex rewrites only the model segment of the rows and points it
+  re-embedded, because that is the one input it changed. A row with no fingerprint —
+  indexed before the column existed — is *unrecorded*: shown as such, reprocessable on
+  request, and never counted as stale, because a blank is not known to be wrong.
 - **The embedding tokenizer is part of the chunking configuration (task 101).** `chunk_size`
   is a promise about the embedding model's input window, so it is measured with that model's
   tokenizer — derived from the provider and model name (`text-embedding-3-*` → `cl100k_base`;
@@ -656,6 +669,29 @@ indexed`, or lands in `failed` / `skipped` with a message. The UI shows per-conn
 live job list, and a retry action for failed documents. `summarizing` (task 102) is present
 only for a connector that summarizes; a document parked on the summarization cap under
 `contextual` reads `pending` with reason `summarization_cap` until the cap resets.
+
+**Two axes (task 104).** Ingestion status is one axis; **index status** is the other:
+`current | stale | reprocessing`. `stale` means the row's index fingerprint is no longer the
+one ingestion would write for its format — the chunking, the embedding model, the tokenizer,
+the summarization or the extractor moved since it was indexed; `reprocessing` means a
+reprocessing run owns it. A document is `indexed` and `stale` at once, and that is the
+normal state after a change, not an error. The status is **stored on the row** — set by the
+connector service on every configuration save (one `UPDATE` per affected format, comparing
+fingerprints, so a reverted setting un-marks them), by ingestion when it finishes, and by
+the platform reindex when it adopts a model — and reconciled from the fingerprints nightly,
+which logs any row the stored status had wrong. The fingerprint is the truth; the status is
+the index over it, so a connector's stale count is a count and every screen agrees: the
+connector header and list badge, the document table (filterable on either axis, with the
+reason per row), the gateways that read the connector, and the dashboard. The change is
+applied by a **reprocessing run**: a tracked, scoped (stale documents by default; a format;
+everything; the unrecorded rows) re-ingestion with exact counters, progress and an ETA, a
+`partial` outcome that keeps the failures and a **Retry failed** over exactly those,
+sources gone from object storage counted as `skipped` rather than failed, continuation
+after a worker death from the counters rather than from the start, and a history per
+connector with who, when, how long, and estimated versus spent tokens. Retrieval keeps
+serving throughout: a stale chunk is still returned, labelled `stale` on the request log
+and the citation, and a document mid-replacement — its new cut is written before its old
+tail is deleted — never returns the same text twice.
 
 `chunking` is a pure CPU step for every strategy but `semantic`, which embeds the document's
 sentences to find its boundaries. So that step can now fail from the outside, and the two
@@ -697,6 +733,11 @@ status:
   is, and a run is a measurement of a known state — but a health signal all the same: the
   dashboard's degraded-state list includes every connector whose last audit raised a red
   finding, because an index that ranks wrong looks healthy on every traffic chart.
+- Reprocessing (task 104, §9.5): `documents_stale{connector}` as a gauge, set by every save
+  and by the nightly reconciliation; `reprocessing_runs_total{outcome}` and
+  `reprocessing_duration_seconds`. An alert on documents stale for longer than a day, pointed
+  at the chunking runbook; the dashboard's degraded-state list names the connector and the
+  age.
 
 ### 10.2 Request logging (configurable per gateway)
 
@@ -852,6 +893,10 @@ POST   /connectors/{id}/upload            POST /connectors/{id}/upload-url
 POST   /connectors/{id}/resync
 GET    /connectors/{id}/documents         DELETE /documents/{id}
 POST   /documents/{id}/reindex
+POST   /connectors/{id}/reprocess         GET  /connectors/{id}/reprocessing-runs   # task 104
+GET    /reprocessing-runs/{id}            POST /reprocessing-runs/{id}/retry
+POST   /connectors/{id}/stale-preview     GET  /reprocessing/alerts
+POST   /connectors/{id}/reindex                             # alias of /reprocess, one release
 
 GET    /gateways              POST /gateways
 GET    /gateways/{id}         PATCH /gateways/{id}         DELETE /gateways/{id}
@@ -910,7 +955,13 @@ documents show the extraction error inline; the document's summary is shown with
 **Validation** section (task 103) has two tabs, *Chunking* and *Embeddings*: the last report,
 its age, a **Run** button (the embedding tab's drift check says what it will spend first), the
 chunk-size histogram, the whole-index numbers per format, and the findings as a list where each
-document opens Compare with that document preselected.
+document opens Compare with that document preselected. The header (task 104) reads *"N of M
+documents indexed under a previous configuration"* with the reasons, a **Reprocess** button
+with a scope selector (stale only / these formats / everything / unrecorded) and the estimate,
+a progress bar with an ETA and the failure count while a run is going, and a history drawer;
+the document table has an index-status column with filter chips, the reason on hover and a
+per-row **Reprocess**; the list has a stale badge with the count; every settings form says
+how many documents saving will mark stale, before saving.
 
 **Gateways** — the most substantial screen. A gateway editor with sections:
 
@@ -921,7 +972,9 @@ document opens Compare with that document preselected.
    expected split.
 3. *Memory* — connector multi-select, retrieval knobs, memory toggles, and a **Try retrieval**
    box where you type a question and immediately see which chunks and facts would be injected,
-   with scores. This is the fastest way to tune a gateway.
+   with scores. This is the fastest way to tune a gateway. A notice (task 104) names each
+   attached connector with stale or reprocessing documents — *answers may be drawn from two
+   chunkings until it is reprocessed* — linking to the connector.
 4. *Prompt* — the gateway system context, param overrides and locks, and a rendered preview of
    the assembled prompt for a sample question.
 5. *Logging* — the §10.2 toggles, retention, redaction patterns, and distillation switch.
@@ -954,7 +1007,10 @@ model configuration and reindex, and platform-wide health.
 
 - Every destructive action (delete a gateway, revoke a key, purge memory) requires typed
   confirmation of the resource name.
-- Configuration changes take effect without restart; the UI states when a change is live.
+- Configuration changes take effect without restart; the UI states when a change is live —
+  and, for a change that reaches the index, *how far from live it is*: the stale count and
+  the reprocessing progress are stored facts shown wherever the consequence is felt (task
+  104), not a banner that only the saving tab ever saw.
 - Empty states are instructional: a new org's connectors page explains what to upload and why.
 
 ---
@@ -976,10 +1032,15 @@ connectors          (id, organization_id, name, type, config_jsonb, chunking_jso
                      summarization_jsonb, storage_prefix, status, last_synced_at, created_at)
 documents           (id, connector_id, organization_id, source_uri, source_name, mime_type,
                      size_bytes, content_hash, status, error, chunk_count,
-                     embedding_model, chunk_strategy, chunk_fingerprint, tokenizer,
+                     embedding_model, chunk_strategy, chunk_fingerprint, index_fingerprint,
+                     index_status, reprocessing_run_id, tokenizer,
                      summary, summary_status, summary_error, summary_model, summary_model_id,
                      summary_prompt_version, summary_tokens_in, summary_tokens_out,
                      summarized_at, indexed_at, created_at)
+reprocessing_runs   (id, organization_id, connector_id, trigger, scope, formats_jsonb,
+                     requested_by, requested_by_label, reindex_run_id, status, total, done,
+                     failed, skipped, estimated_tokens, spent_tokens, error, resumed,
+                     report_jsonb, started_at, finished_at)
 summarization_runs  (id, organization_id, connector_id, document_id, outcome, purpose, reason,
                      model_id, model_name, tokens_in, tokens_out, estimated, duration_ms,
                      created_at)

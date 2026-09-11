@@ -24,13 +24,15 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, Protocol
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import uuid7
 from app.core.tenancy import TenantScope
-from app.db.models import ApiKey, Connector, Gateway, GatewayTarget, UpstreamModel
+from app.db.models import ApiKey, Connector, Document, Gateway, GatewayTarget, UpstreamModel
 from app.db.repositories import (
     ApiKeyRepository,
     ConnectorRepository,
@@ -39,6 +41,7 @@ from app.db.repositories import (
     UpstreamModelRepository,
     model_is_visible,
 )
+from app.db.scoping import scoped
 from app.services.audit import (
     AuditingTransaction,
     MemoryAuditRecorder,
@@ -50,6 +53,16 @@ from app.services.memory_db import MemoryDatabase
 #: dataclass because it crosses the port in one direction only and is unpacked
 #: immediately on the other side.
 type Chain = tuple[UpstreamModel, int]
+
+
+@dataclass(frozen=True, slots=True)
+class StaleConnector:
+    """A connector a gateway reads that is not wholly current (task 104)."""
+
+    id: uuid.UUID
+    name: str
+    stale: int
+    reprocessing: int
 
 
 class GatewayTransaction(AuditingTransaction, Protocol):
@@ -84,6 +97,14 @@ class GatewayTransaction(AuditingTransaction, Protocol):
         Scoped like every other read here, so a connector id from another tenant is
         indistinguishable from one that does not exist.
         """
+        ...
+
+    async def stale_connectors(
+        self, connector_ids: Sequence[uuid.UUID]
+    ) -> Sequence[StaleConnector]:
+        """Task 104. Of these connectors, the ones with documents that are stale or being
+        reprocessed, with counts — what a gateway's Memory section warns about, because
+        the gateway is where answers drawn from two chunkings are felt."""
         ...
 
     async def visible_model(self, model_id: uuid.UUID) -> UpstreamModel | None:
@@ -169,6 +190,30 @@ class PostgresGatewayTransaction(PostgresAuditRecorder):
             self._connectors.select().where(Connector.id.in_(list(connector_ids)))
         )
         return {row.id for row in rows.scalars()}
+
+    async def stale_connectors(
+        self, connector_ids: Sequence[uuid.UUID]
+    ) -> Sequence[StaleConnector]:
+        if not connector_ids:
+            return []
+        statement = (
+            select(
+                Connector.id,
+                Connector.name,
+                func.count().filter(Document.index_status == "stale"),
+                func.count().filter(Document.index_status == "reprocessing"),
+            )
+            .join(Document, Document.connector_id == Connector.id)
+            .where(self._scope.clause(Connector), Connector.id.in_(list(connector_ids)))
+            .group_by(Connector.id, Connector.name)
+            .order_by(Connector.name)
+            .execution_options(**scoped())
+        )
+        return [
+            StaleConnector(id=identifier, name=name, stale=int(stale), reprocessing=int(busy))
+            for identifier, name, stale, busy in (await self._session.execute(statement)).all()
+            if stale or busy
+        ]
 
     async def add_gateway(self, gateway: Gateway) -> Gateway:
         return await self._gateways.add(gateway)
@@ -274,6 +319,28 @@ class MemoryGatewayTransaction(MemoryAuditRecorder):
             if (found := self._db.connectors.get(connector_id)) is not None
             and self._scope.permits(found.organization_id)
         }
+
+    async def stale_connectors(
+        self, connector_ids: Sequence[uuid.UUID]
+    ) -> Sequence[StaleConnector]:
+        found: list[StaleConnector] = []
+        for connector_id in await self.own_connectors(connector_ids):
+            connector = self._db.connectors[connector_id]
+            rows = [
+                document
+                for document in self._db.documents.values()
+                if document.connector_id == connector_id
+            ]
+            stale = sum(1 for row in rows if row.index_status == "stale")
+            busy = sum(1 for row in rows if row.index_status == "reprocessing")
+            if stale or busy:
+                found.append(
+                    StaleConnector(
+                        id=connector.id, name=connector.name, stale=stale, reprocessing=busy
+                    )
+                )
+        found.sort(key=lambda row: row.name)
+        return found
 
     async def visible_model(self, model_id: uuid.UUID) -> UpstreamModel | None:
         found = self._db.upstream_models.get(model_id)
@@ -388,4 +455,5 @@ __all__ = [
     "MemoryGatewayTransaction",
     "PostgresGatewayStore",
     "PostgresGatewayTransaction",
+    "StaleConnector",
 ]

@@ -121,6 +121,23 @@ class VectorStore(Protocol):
         has. A document that shrank has points whose ids the caller no longer knows."""
         ...
 
+    async def replace_document(
+        self, organization_id: uuid.UUID, document_id: uuid.UUID, points: Sequence[ChunkPoint]
+    ) -> None:
+        """Make ``points`` the document's points: upsert them, then delete the document's
+        other points by filter (task 104).
+
+        Upsert *first*, so a reader never sees the document vanish — during a reprocess a
+        connector keeps answering, and a delete-then-upsert has a window in which a
+        document that was indexed a moment ago has nothing to say. The price is the
+        opposite window: between the upsert and the delete a document that got shorter
+        holds its new points and its old tail, both retrievable, and retrieval's dedupe is
+        what keeps one paragraph from being injected twice under two fingerprints. The
+        ids are deterministic over ``(document, index)``, so the points the new cut shares
+        with the old are overwritten in place rather than briefly doubled.
+        """
+        ...
+
     async def delete_connector(
         self, organization_id: uuid.UUID, connector_id: uuid.UUID
     ) -> None: ...
@@ -254,6 +271,21 @@ class MemoryVectorStore:
 
     async def delete_document(self, organization_id: uuid.UUID, document_id: uuid.UUID) -> None:
         self._delete_where(organization_id, "document_id", str(document_id))
+
+    async def replace_document(
+        self, organization_id: uuid.UUID, document_id: uuid.UUID, points: Sequence[ChunkPoint]
+    ) -> None:
+        await self.upsert(organization_id, points)
+        keep = {point.id for point in points}
+        stored = self.collections.get(self.live(organization_id))
+        if stored is None:
+            return
+        for identifier in [
+            pid
+            for pid, p in stored.items()
+            if str(p.payload.get("document_id")) == str(document_id) and pid not in keep
+        ]:
+            del stored[identifier]
 
     async def delete_connector(self, organization_id: uuid.UUID, connector_id: uuid.UUID) -> None:
         self._delete_where(organization_id, "connector_id", str(connector_id))

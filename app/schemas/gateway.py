@@ -146,6 +146,15 @@ class TargetSummary(BaseModel):
     weight: int = 100
 
 
+class StaleConnectorResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    #: Indexed documents cut under a previous configuration.
+    stale: int
+    #: Documents a reprocessing run currently owns.
+    reprocessing: int
+
+
 class GatewayResponse(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
@@ -168,6 +177,10 @@ class GatewayResponse(BaseModel):
     logging_config: LoggingConfig
     limits: LimitsConfig
     key_count: int
+    #: Task 104. Connectors this gateway reads whose documents are stale or being
+    #: reprocessed, so the editor can say "answers may be drawn from two chunkings until
+    #: connector X is reprocessed". Empty on the list.
+    stale_connectors: list[StaleConnectorResponse] = []
     created_at: datetime
     updated_at: datetime
 
@@ -202,6 +215,12 @@ class GatewayResponse(BaseModel):
             logging_config=LoggingConfig.load(gateway.logging_config),
             limits=LimitsConfig.load(gateway.limits),
             key_count=view.key_count,
+            stale_connectors=[
+                StaleConnectorResponse(
+                    id=row.id, name=row.name, stale=row.stale, reprocessing=row.reprocessing
+                )
+                for row in view.stale_connectors
+            ],
             created_at=gateway.created_at,
             updated_at=gateway.updated_at,
         )

@@ -42,6 +42,9 @@ FOREIGN_ITEM = "{item_id}"
 FOREIGN_RUN = "{run_id}"
 FOREIGN_RUN_AGAINST = "{against}"
 AUDIT_KIND = "{kind}"
+#: Task 104's row. Its own parameter name, so it can be a real foreign reprocessing run
+#: rather than the evaluation run the shared ``{run_id}`` would resolve to.
+FOREIGN_REPROCESSING_RUN = "{reprocessing_run_id}"
 
 #: A model owned by nobody. It is *visible* to every organization (SPEC §5.3, the
 #: global catalog), which is exactly why it needs rows of its own here: every write
@@ -233,6 +236,17 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
         note="reading another organization's stored conversations, through their own "
         "distillation model, and writing what it finds into their memory",
     ),
+    # Task 104. A reprocess re-ingests a connector's files; on another tenant's connector
+    # it would spend their embedding budget and rewrite their index.
+    ScopedEndpoint("POST", f"/api/v1/connectors/{FOREIGN_CONNECTOR}/reprocess", {"scope": "all"}),
+    ScopedEndpoint("GET", f"/api/v1/connectors/{FOREIGN_CONNECTOR}/reprocessing-runs"),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/connectors/{FOREIGN_CONNECTOR}/stale-preview",
+        {"chunking": {"chunk_size": 400}},
+    ),
+    ScopedEndpoint("GET", f"/api/v1/reprocessing-runs/{FOREIGN_REPROCESSING_RUN}"),
+    ScopedEndpoint("POST", f"/api/v1/reprocessing-runs/{FOREIGN_REPROCESSING_RUN}/retry"),
 )
 
 #: The global catalog is readable by everyone, so a foreign-id test on ``GET`` would be
@@ -265,6 +279,7 @@ PLACEHOLDERS = (
     FOREIGN_RUN,
     FOREIGN_RUN_AGAINST,
     AUDIT_KIND,
+    FOREIGN_REPROCESSING_RUN,
 )
 
 
@@ -294,6 +309,7 @@ async def foreign_ids(harness: DirectoryHarness) -> dict[str, str]:
         FOREIGN_RUN: str(world.globex_evaluation_run.id),
         FOREIGN_RUN_AGAINST: str(world.globex_evaluation_run.id),
         AUDIT_KIND: "chunking",
+        FOREIGN_REPROCESSING_RUN: str(world.globex_reprocessing_run.id),
     }
 
 

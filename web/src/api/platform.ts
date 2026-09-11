@@ -14,12 +14,7 @@
  * a request every two seconds forever on a screen nobody is looking at.
  */
 
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type UseQueryResult,
-} from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 
 import { useApiClient } from '@/auth/AuthContext'
 import type {
@@ -84,6 +79,20 @@ export function useMaintenance(): UseQueryResult<MaintenanceResponse> {
     queryKey: keys.maintenance,
     queryFn: () => client.get<MaintenanceResponse>('/api/v1/platform/maintenance'),
     refetchInterval: (query) => (query.state.data?.reindex ? LIVE_MS : false),
+  })
+}
+
+/**
+ * One reindex run in full — the target list, and (task 104) the per-connector
+ * reprocessing runs it spawned for the connectors it had to recut. Polled while it runs.
+ */
+export function useReindexRun(runId: string | undefined): UseQueryResult<ReindexRun> {
+  const client = useApiClient()
+  return useQuery({
+    queryKey: [...keys.maintenance, 'reindex', runId ?? ''] as const,
+    queryFn: () => client.get<ReindexRun>(`/api/v1/platform/reindex/${runId}`),
+    enabled: Boolean(runId),
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? LIVE_MS : false),
   })
 }
 
@@ -171,10 +180,7 @@ export function useScheduleDeletion(organizationId: string | undefined) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (body: OrganizationDeletionRequest) =>
-      client.post<ErasureReport>(
-        `/api/v1/platform/organizations/${organizationId}/deletion`,
-        body,
-      ),
+      client.post<ErasureReport>(`/api/v1/platform/organizations/${organizationId}/deletion`, body),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['organizations'] })
     },

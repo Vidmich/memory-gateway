@@ -284,7 +284,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Documents */
+        /**
+         * List Documents
+         * @description Two filters for the two status axes (task 104): ``status`` is the pipeline's
+         *     progression, ``index_status`` whether the chunks are current, stale or being
+         *     reprocessed.
+         */
         get: operations["list_documents_api_v1_connectors__connector_id__documents_get"];
         put?: never;
         post?: never;
@@ -311,11 +316,56 @@ export interface paths {
          *     Not the same operation as ``POST /platform/reindex``, despite the name they share. That
          *     one re-embeds chunks that are still correct under a new model; this one exists because a
          *     changed ``chunk_size`` makes the chunks themselves wrong, and only running the pipeline
-         *     again fixes that. The connector detail screen offers it exactly when ``reindex_required``
-         *     comes back set, and passes ``reindex_formats`` straight back as ``formats`` — so adding
-         *     a per-format override re-runs the files it applies to and leaves the rest indexed.
+         *     again fixes that.
+         *
+         *     **Superseded by ``POST /connectors/{id}/reprocess`` (task 104)** and kept for one
+         *     release as an alias: it now starts the same tracked run over the named formats (or
+         *     everything) and returns how many documents the run claimed. Prefer the new route,
+         *     which scopes to the stale documents by default and returns the run.
          */
         post: operations["reindex_connector_api_v1_connectors__connector_id__reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/reprocess": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reprocess Connector
+         * @description Start a run over the connector's stale documents (or the scope named), or return
+         *     the one already going. 202 either way: the work is the worker's.
+         */
+        post: operations["reprocess_connector_api_v1_connectors__connector_id__reprocess_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/reprocessing-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Reprocessing Runs
+         * @description The connector's history, newest first: trigger, who, when, duration, outcome, and
+         *     the estimate beside what was actually spent.
+         */
+        get: operations["list_reprocessing_runs_api_v1_connectors__connector_id__reprocessing_runs_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -356,6 +406,27 @@ export interface paths {
          * @description Debug-only semantic search over one connector's chunks.
          */
         post: operations["search_api_v1_connectors__connector_id__search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/stale-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stale Preview
+         * @description How many indexed documents saving this patch would mark stale, per format — what
+         *     every configuration form says before its Save button. Writes nothing.
+         */
+        post: operations["stale_preview_api_v1_connectors__connector_id__stale_preview_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1861,6 +1932,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reprocessing-runs/{reprocessing_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Reprocessing Run */
+        get: operations["read_reprocessing_run_api_v1_reprocessing_runs__reprocessing_run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reprocessing-runs/{reprocessing_run_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Failed
+         * @description **Retry failed**: a new run over exactly the documents this one left failed.
+         */
+        post: operations["retry_failed_api_v1_reprocessing_runs__reprocessing_run_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reprocessing/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Stale Alerts
+         * @description The dashboard's degraded state: connectors whose documents have been stale for
+         *     longer than the threshold (a day by default), with the age.
+         */
+        get: operations["list_stale_alerts_api_v1_reprocessing_alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/retention-ceilings": {
         parameters: {
             query?: never;
@@ -2540,6 +2669,13 @@ export interface components {
             effective_chunking: {
                 [key: string]: components["schemas"]["ChunkingConfig"];
             };
+            /**
+             * Effective Fingerprints
+             * @default {}
+             */
+            effective_fingerprints: {
+                [key: string]: string;
+            };
             /** Effective Summarization */
             effective_summarization: {
                 [key: string]: components["schemas"]["SummarizationConfig"];
@@ -2559,6 +2695,17 @@ export interface components {
             reindex_formats: string[];
             /** Reindex Required */
             reindex_required: boolean;
+            reprocessing?: components["schemas"]["ReprocessingRunResponse"] | null;
+            /**
+             * Reprocessing Documents
+             * @default 0
+             */
+            reprocessing_documents: number;
+            /**
+             * Stale Documents
+             * @default 0
+             */
+            stale_documents: number;
             /** Status */
             status: string;
             /** Storage Prefix */
@@ -2569,6 +2716,11 @@ export interface components {
             total_bytes: number;
             /** Type */
             type: string;
+            /**
+             * Unrecorded Documents
+             * @default 0
+             */
+            unrecorded_documents: number;
         };
         /** ConnectorSpendResponse */
         ConnectorSpendResponse: {
@@ -2825,6 +2977,13 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Index Fingerprint */
+            index_fingerprint?: string | null;
+            /**
+             * Index Status
+             * @default current
+             */
+            index_status: string;
             /** Indexed At */
             indexed_at: string | null;
             /** Mime Type */
@@ -2844,6 +3003,10 @@ export interface components {
              * @default false
              */
             stale: boolean;
+            /** Stale Detail */
+            stale_detail?: string | null;
+            /** Stale Reason */
+            stale_reason?: string | null;
             /** Status */
             status: string;
             /** Summarized At */
@@ -3498,6 +3661,11 @@ export interface components {
             routing_mode: string;
             /** Slug */
             slug: string;
+            /**
+             * Stale Connectors
+             * @default []
+             */
+            stale_connectors: components["schemas"]["StaleConnectorResponse"][];
             /** System Context */
             system_context: string | null;
             /** Targets */
@@ -5132,6 +5300,8 @@ export interface components {
             id: string;
             /** Organization Id */
             organization_id?: string | null;
+            /** Reprocessing Runs */
+            reprocessing_runs?: components["schemas"]["ReprocessingRunResponse"][];
             /** Scope */
             scope: string;
             /**
@@ -5186,6 +5356,97 @@ export interface components {
             status: string;
             /** Total Points */
             total_points: number;
+        };
+        /**
+         * ReprocessRequest
+         * @description Which documents to reprocess. The default is the stale ones, which is the reason
+         *     the run exists: reprocessing current documents is a waste the old endpoint could not
+         *     avoid.
+         */
+        ReprocessRequest: {
+            /** Formats */
+            formats?: string[];
+            /**
+             * Scope
+             * @default stale
+             */
+            scope: string;
+        };
+        /** ReprocessingProgress */
+        ReprocessingProgress: {
+            /** Done */
+            done: number;
+            /** Eta Seconds */
+            eta_seconds: number | null;
+            /** Fraction */
+            fraction: number;
+            /** Total */
+            total: number;
+        };
+        /** ReprocessingRunList */
+        ReprocessingRunList: {
+            /** Items */
+            items: components["schemas"]["ReprocessingRunResponse"][];
+        };
+        /** ReprocessingRunResponse */
+        ReprocessingRunResponse: {
+            /**
+             * Connector Id
+             * Format: uuid
+             */
+            connector_id: string;
+            /**
+             * Created
+             * @default true
+             */
+            created: boolean;
+            /** Done */
+            done: number;
+            /** Error */
+            error: string | null;
+            /** Estimated Tokens */
+            estimated_tokens: number;
+            /** Failed */
+            failed: number;
+            /** Finished At */
+            finished_at: string | null;
+            /** Formats */
+            formats: string[];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            progress: components["schemas"]["ReprocessingProgress"];
+            /** Reindex Run Id */
+            reindex_run_id: string | null;
+            /** Report */
+            report: {
+                [key: string]: unknown;
+            };
+            /** Requested By */
+            requested_by: string | null;
+            /** Requested By Label */
+            requested_by_label: string | null;
+            /** Resumed */
+            resumed: number;
+            /** Scope */
+            scope: string;
+            /** Skipped */
+            skipped: number;
+            /** Spent Tokens */
+            spent_tokens: number;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Status */
+            status: string;
+            /** Total */
+            total: number;
+            /** Trigger */
+            trigger: string;
         };
         /**
          * RequestDetailResponse
@@ -5490,6 +5751,56 @@ export interface components {
             updated_by?: string | null;
             /** Updated By Label */
             updated_by_label?: string | null;
+        };
+        /** StaleAlertList */
+        StaleAlertList: {
+            /** Items */
+            items: components["schemas"]["StaleAlertResponse"][];
+        };
+        /** StaleAlertResponse */
+        StaleAlertResponse: {
+            /** Age Hours */
+            age_hours: number;
+            /**
+             * Connector Id
+             * Format: uuid
+             */
+            connector_id: string;
+            /** Connector Name */
+            connector_name: string;
+            /** Stale Documents */
+            stale_documents: number;
+            /**
+             * Stale Since
+             * Format: date-time
+             */
+            stale_since: string;
+        };
+        /** StaleConnectorResponse */
+        StaleConnectorResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Reprocessing */
+            reprocessing: number;
+            /** Stale */
+            stale: number;
+        };
+        /**
+         * StalePreviewResponse
+         * @description What a save of the given patch would mark stale, per format, before saving.
+         */
+        StalePreviewResponse: {
+            /** Formats */
+            formats: {
+                [key: string]: number;
+            };
+            /** Total */
+            total: number;
         };
         /**
          * StorageCaps
@@ -6564,6 +6875,7 @@ export interface operations {
         parameters: {
             query?: {
                 status?: string | null;
+                index_status?: string | null;
                 cursor?: string | null;
                 limit?: number | null;
             };
@@ -6630,6 +6942,74 @@ export interface operations {
             };
         };
     };
+    reprocess_connector_api_v1_connectors__connector_id__reprocess_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ReprocessRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReprocessingRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_reprocessing_runs_api_v1_connectors__connector_id__reprocessing_runs_get: {
+        parameters: {
+            query?: {
+                limit?: number | null;
+            };
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReprocessingRunList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     resync_api_v1_connectors__connector_id__resync_post: {
         parameters: {
             query?: never;
@@ -6683,6 +7063,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stale_preview_api_v1_connectors__connector_id__stale_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StalePreviewResponse"];
                 };
             };
             /** @description Validation Error */
@@ -9446,6 +9861,99 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VectorBackendsResponse"];
+                };
+            };
+        };
+    };
+    read_reprocessing_run_api_v1_reprocessing_runs__reprocessing_run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reprocessing_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReprocessingRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_failed_api_v1_reprocessing_runs__reprocessing_run_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reprocessing_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReprocessingRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_stale_alerts_api_v1_reprocessing_alerts_get: {
+        parameters: {
+            query?: {
+                older_than_hours?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StaleAlertList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -208,6 +208,26 @@ async def test_a_provider_change_alone_is_an_ordinary_save(
     assert directory.world.platform.queue.submitted == []
 
 
+async def test_a_tokenizer_change_queues_the_index_reconciliation(
+    directory: DirectoryHarness,
+) -> None:
+    """Task 104. A tokenizer change invalidates every chunk everywhere with no connector
+    save to mark them, so the save queues the pass that recomputes every connector's
+    stored index status from its fingerprints — one job, deduplicated, not a reindex."""
+    response = await directory.as_user(
+        directory.world.superadmin,
+        "PATCH",
+        f"{API}/platform/settings",
+        json_body={"embedding": {"tokenizer": {"name": "approximate", "ratio": 3.5}}},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["reindex"] is None
+    submitted = directory.world.platform.queue.submitted
+    assert [job.name for job in submitted] == ["reconcile_index"]
+    assert submitted[0].payload == {"reason": "tokenizer"}
+
+
 async def test_a_second_reindex_while_one_is_running_is_a_409(
     directory: DirectoryHarness,
 ) -> None:

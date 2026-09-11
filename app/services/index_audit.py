@@ -131,8 +131,11 @@ class PointRecord:
             text=text,
             kind=KIND_SUMMARY if payload.get("kind") == KIND_SUMMARY else KIND_SOURCE,
             section=(str(payload["page_or_section"]) if payload.get("page_or_section") else None),
+            # Task 104's structured fingerprint where the point has one; task 20's digest
+            # for a point written before it, so an old index still audits as one cutting.
             fingerprint=(
-                str(payload["chunk_fingerprint"]) if payload.get("chunk_fingerprint") else None
+                str(payload.get("index_fingerprint") or payload.get("chunk_fingerprint") or "")
+                or None
             ),
             tokenizer=str(payload["tokenizer"]) if payload.get("tokenizer") else None,
             vector=tuple(float(value) for value in vector),
@@ -225,7 +228,7 @@ class ChunkingReport:
     histogram: Histogram
     formats: tuple[FormatReport, ...]
     findings: tuple[Finding, ...]
-    #: Distinct ``chunk_fingerprint`` values and how many points carry each.
+    #: Distinct ``index_fingerprint`` values and how many points carry each.
     fingerprints: Mapping[str, int]
 
     @property

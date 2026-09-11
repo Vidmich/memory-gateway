@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 
 import { ApiError } from '@/api/client'
 import { useConnectors } from '@/api/connectors'
+import { staleAmong, staleConnectorNotice } from '@/pages/reprocessing'
 import { usePromptPreview, useTryRetrieval } from '@/api/gateways'
 import { AddToEvaluationSet } from '@/pages/GatewayEvaluation'
 import type {
@@ -68,6 +69,10 @@ export function MemorySection({
   const problem = memoryProblem(form)
   const warning = memoryWarning(form)
   const options = attachable(connectors?.items ?? [])
+  // Task 104. The gateway is where a stale connector is felt and the one place nobody
+  // would think to look: read off the rows the form has attached, so it follows an
+  // unsaved selection too.
+  const stale = staleConnectorNotice(staleAmong(connectors?.items ?? [], form.connectorIds))
 
   const set = <K extends keyof MemoryForm>(key: K, value: MemoryForm[K]) =>
     onChange({ ...form, [key]: value })
@@ -84,15 +89,14 @@ export function MemorySection({
     <section className="mb-8 rounded-lg border border-slate-200 bg-white p-5">
       <h2 className="text-sm font-semibold text-slate-900">Memory</h2>
       <p className="mb-4 mt-1 text-sm text-slate-500">
-        Which of your documents this endpoint may read, and how much of them ends up in
-        each prompt.
+        Which of your documents this endpoint may read, and how much of them ends up in each prompt.
       </p>
 
       <fieldset className="mb-4">
         <legend className="mb-1 text-sm font-medium text-slate-700">Connectors</legend>
         <p className="mb-2 text-xs text-slate-500">
-          Only connectors in this organization. With none attached, this gateway does no
-          retrieval at all and costs nothing extra per request.
+          Only connectors in this organization. With none attached, this gateway does no retrieval
+          at all and costs nothing extra per request.
         </p>
         {options.length === 0 ? (
           <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">
@@ -129,6 +133,21 @@ export function MemorySection({
       {warning ? (
         <p className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           {warning}
+        </p>
+      ) : null}
+
+      {stale ? (
+        <p
+          role="status"
+          data-testid="stale-connectors"
+          className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+        >
+          {stale}{' '}
+          {staleAmong(connectors?.items ?? [], form.connectorIds).map((row) => (
+            <Link key={row.id} to={`/connectors/${row.id}`} className="ml-1 font-medium underline">
+              Open {row.name}
+            </Link>
+          ))}
         </p>
       ) : null}
 
@@ -301,9 +320,7 @@ function ConversationMemory({
           className="mt-1 rounded border-slate-300"
         />
         <span>
-          <span className="text-sm font-medium text-slate-700">
-            Remember the person asking
-          </span>
+          <span className="text-sm font-medium text-slate-700">Remember the person asking</span>
           <span className="block text-xs text-slate-500">{conversationSummary(form)}</span>
         </span>
       </label>
@@ -369,13 +386,13 @@ function ConversationMemory({
 
           <div className="grid gap-4 sm:grid-cols-2">
             <p className="mb-4 text-sm text-slate-500">
-              How much is remembered about one person, and which model does the
-              remembering, are set once for the whole organization —{' '}
+              How much is remembered about one person, and which model does the remembering, are set
+              once for the whole organization —{' '}
               <Link to="/settings" className="font-medium underline">
                 Settings → Organization
               </Link>
-              . A person reaches you through however many gateways you have, and a
-              per-endpoint cap on how much may be known about them is not a cap.
+              . A person reaches you through however many gateways you have, and a per-endpoint cap
+              on how much may be known about them is not a cap.
             </p>
             <div className="mb-4 self-end">
               <label className="flex items-start gap-2">
@@ -390,9 +407,9 @@ function ConversationMemory({
                     Remember unidentified callers too
                   </span>
                   <span className="block text-xs text-slate-500">
-                    Identifies them by API key and IP address. Everyone behind one office
-                    network becomes one person, and one person on two networks becomes two.
-                    Off unless you have decided you want that.
+                    Identifies them by API key and IP address. Everyone behind one office network
+                    becomes one person, and one person on two networks becomes two. Off unless you
+                    have decided you want that.
                   </span>
                 </span>
               </label>
@@ -454,8 +471,8 @@ function TryRetrieval({
     <div className="mt-6 rounded-md border border-slate-200 bg-slate-50 p-4">
       <h3 className="text-sm font-semibold text-slate-900">Try retrieval</h3>
       <p className="mb-3 mt-0.5 text-xs text-slate-500">
-        Ask something these documents should answer. Nothing is sent to the model and
-        nothing is saved.
+        Ask something these documents should answer. Nothing is sent to the model and nothing is
+        saved.
       </p>
 
       <label htmlFor="try-retrieval-query" className="sr-only">
@@ -607,9 +624,7 @@ function PromptResult({ preview }: { preview: PromptPreviewResponse }) {
           {preview.total_tokens} tokens
           {/* Task 101: the unit. The same chunk is a different size under a different
               model, and the number is only meaningful with its tokenizer beside it. */}
-          {preview.tokenizer ? (
-            <span className="font-mono"> ({preview.tokenizer})</span>
-          ) : null}
+          {preview.tokenizer ? <span className="font-mono"> ({preview.tokenizer})</span> : null}
           {preview.context_window ? (
             <>
               {' '}
@@ -619,8 +634,8 @@ function PromptResult({ preview }: { preview: PromptPreviewResponse }) {
           ) : (
             <>
               {' '}
-              · {preview.model_name ?? 'this model'} has no context window set, so no
-              overflow guard runs
+              · {preview.model_name ?? 'this model'} has no context window set, so no overflow guard
+              runs
             </>
           )}
         </p>
@@ -628,8 +643,8 @@ function PromptResult({ preview }: { preview: PromptPreviewResponse }) {
 
       {preview.overflowed ? (
         <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
-          This message already fills the context window, so no memory was injected. The
-          request would still be sent — without its documents.
+          This message already fills the context window, so no memory was injected. The request
+          would still be sent — without its documents.
         </p>
       ) : null}
 
@@ -667,11 +682,7 @@ function PromptResult({ preview }: { preview: PromptPreviewResponse }) {
  * carry, not a mock-up. The mode the form currently has is marked; the other two are
  * shown anyway, because the point of the panel is to choose between them.
  */
-function CitationExamples({
-  citations,
-}: {
-  citations: PromptPreviewResponse['citations']
-}) {
+function CitationExamples({ citations }: { citations: PromptPreviewResponse['citations'] }) {
   const current = (mode: string) =>
     citations.mode === mode ? (
       <span className="ml-2 rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white">
@@ -689,8 +700,8 @@ function CitationExamples({
         <div className="rounded border border-slate-200 bg-slate-50 p-2">
           <dt className="font-medium text-slate-700">off{current('off')}</dt>
           <dd className="mt-1 text-slate-600">
-            The client receives the answer exactly as the model wrote it. The request log
-            still records which chunks it cited.
+            The client receives the answer exactly as the model wrote it. The request log still
+            records which chunks it cited.
           </dd>
         </div>
         <div className="rounded border border-slate-200 bg-slate-50 p-2">
@@ -698,8 +709,8 @@ function CitationExamples({
           <dd className="mt-1">
             {citations.metadata.length === 0 ? (
               <span className="text-slate-600">
-                Nothing is injected for this question, so the <code>citations</code> array
-                would be empty.
+                Nothing is injected for this question, so the <code>citations</code> array would be
+                empty.
               </span>
             ) : (
               <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-slate-700">

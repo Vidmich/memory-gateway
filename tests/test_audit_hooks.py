@@ -55,7 +55,11 @@ AUDITED: dict[tuple[str, str], str] = {
     ): "vector_backend.cancel",
     ("PATCH", f"{API}/connectors/{{connector_id}}"): "connector.update",
     ("DELETE", f"{API}/connectors/{{connector_id}}"): "connector.delete",
-    ("POST", f"{API}/connectors/{{connector_id}}/reindex"): "connector.reindex",
+    # Task 104. The reindex alias now starts the same tracked run the new route does, so
+    # both record the run; a retry is a run too.
+    ("POST", f"{API}/connectors/{{connector_id}}/reindex"): "connector.reprocess",
+    ("POST", f"{API}/connectors/{{connector_id}}/reprocess"): "connector.reprocess",
+    ("POST", f"{API}/reprocessing-runs/{{reprocessing_run_id}}/retry"): "connector.reprocess",
     # Task 103. An audit is a decision about the connector, and the embedding audit can
     # spend at the provider; the evaluation tables are configuration a person curates,
     # and a run or a generation is a spend.
@@ -132,6 +136,11 @@ UNAUDITED: dict[tuple[str, str], str] = {
     ),
     ("POST", f"{API}/connectors/{{connector_id}}/search"): (
         "A read that takes a body because the query is one. Nothing is written."
+    ),
+    ("POST", f"{API}/connectors/{{connector_id}}/stale-preview"): (
+        "Counts the indexed documents a configuration patch *would* mark stale, per "
+        "format, and writes nothing — the number every settings form shows before its "
+        "Save button (task 104). A body because the patch is one."
     ),
     ("POST", f"{API}/connectors/{{connector_id}}/chunking/preview"): (
         "Runs candidate chunkings over one document and writes nothing — no vectors, no "
@@ -547,6 +556,31 @@ async def tour(directory: DirectoryHarness) -> list[str]:
         )
     )
     ok(await directory.as_user(admin, "POST", f"{API}/connectors/{connector['id']}/reindex"))
+    # Task 104. The run the alias above started is still open (its jobs are queued, not
+    # run, under this harness), so the new route returns it; the retry needs a finished
+    # run, so the queue is drained first and a retry over its failures is then a run.
+    ok(
+        await directory.as_user(
+            admin,
+            "POST",
+            f"{API}/connectors/{connector['id']}/reprocess",
+            json_body={"scope": "all"},
+        ),
+        expect=(202,),
+    )
+    connectors_fixture = directory.world.auth.connectors
+    assert connectors_fixture is not None
+    await connectors_fixture.run_jobs()
+    finished = await directory.as_user(
+        admin, "GET", f"{API}/connectors/{connector['id']}/reprocessing-runs"
+    )
+    ok(finished)
+    ok(
+        await directory.as_user(
+            admin, "POST", f"{API}/reprocessing-runs/{finished.json()['items'][0]['id']}/retry"
+        ),
+        expect=(202,),
+    )
     ok(await directory.as_user(admin, "POST", f"{API}/connectors/{connector['id']}/resync"))
     ok(
         await directory.as_user(

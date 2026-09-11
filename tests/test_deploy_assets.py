@@ -41,6 +41,8 @@ NOT_A_METRIC = frozenset(
         "by",
         "clamp_min",
         "clamp_max",
+        "min_over_time",
+        "max_over_time",
         "histogram_quantile",
         "le",
         "increase",

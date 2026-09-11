@@ -243,6 +243,23 @@ class SummarizationMetrics:
 
 
 @dataclass(frozen=True)
+class ReprocessingMetrics:
+    """Stale documents and the runs that fix them, as three numbers (task 104).
+
+    ``stale`` is a gauge per connector, which is the one per-tenant-resource label in this
+    process and is here on purpose: the alert is "documents have been stale for a day",
+    and a total across connectors cannot say which one to open. Connectors number in the
+    hundreds, not the millions, and the gauge is set by the nightly pass and by each save
+    rather than on the request path. ``runs`` by outcome is what an alert on
+    ``partial`` fires on; ``duration`` is what the ETA is calibrated against.
+    """
+
+    stale: Gauge
+    runs: Counter
+    duration: Histogram
+
+
+@dataclass(frozen=True)
 class RateLimitMetrics:
     """Throttling, as four numbers (SPEC §11, task 14).
 
@@ -334,6 +351,7 @@ class Metrics:
     chunking: ChunkingMetrics
     distillation: DistillationMetrics
     summarization: SummarizationMetrics
+    reprocessing: ReprocessingMetrics
     rate_limits: RateLimitMetrics
     audit: AuditMetrics
     maintenance: MaintenanceMetrics
@@ -385,6 +403,7 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         chunking=build_chunking_metrics(registry),
         distillation=build_distillation_metrics(registry),
         summarization=build_summarization_metrics(registry),
+        reprocessing=build_reprocessing_metrics(registry),
         rate_limits=build_rate_limit_metrics(registry),
         audit=build_audit_metrics(registry),
         maintenance=build_maintenance_metrics(registry),
@@ -539,6 +558,29 @@ def build_summarization_metrics(registry: CollectorRegistry) -> SummarizationMet
             "summarization_duration_seconds",
             "How long one document summarization took, model call included.",
             buckets=(0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 60.0),
+            registry=registry,
+        ),
+    )
+
+
+def build_reprocessing_metrics(registry: CollectorRegistry) -> ReprocessingMetrics:
+    return ReprocessingMetrics(
+        stale=Gauge(
+            "documents_stale",
+            "Indexed documents whose chunks were cut under a previous configuration.",
+            labelnames=("connector",),
+            registry=registry,
+        ),
+        runs=Counter(
+            "reprocessing_runs_total",
+            "Reprocessing runs finished, by outcome: succeeded, partial, failed.",
+            labelnames=("outcome",),
+            registry=registry,
+        ),
+        duration=Histogram(
+            "reprocessing_duration_seconds",
+            "How long a reprocessing run took from start to its last document.",
+            buckets=(5.0, 15.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0, 14400.0),
             registry=registry,
         ),
     )

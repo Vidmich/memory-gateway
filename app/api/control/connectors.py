@@ -28,6 +28,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 
 from app.api.control.deps import CurrentActor, get_connector_service, require_capability
+from app.core.errors import Validation
+from app.db.models.reprocessing import INDEX_STATUSES
 from app.schemas.common import Page
 from app.schemas.connector import (
     ChunkingPreviewRequest,
@@ -131,15 +133,29 @@ async def list_documents(
     actor: CurrentActor,
     service: _Service,
     status_filter: Annotated[str | None, Query(alias="status", max_length=16)] = None,
+    index_status: Annotated[str | None, Query(max_length=16)] = None,
     cursor: _Cursor = None,
     limit: _Limit = None,
 ) -> Page[DocumentResponse]:
+    """Two filters for the two status axes (task 104): ``status`` is the pipeline's
+    progression, ``index_status`` whether the chunks are current, stale or being
+    reprocessed."""
+    if index_status is not None and index_status not in INDEX_STATUSES:
+        raise Validation(
+            f"'{index_status}' is not an index status. Available: {', '.join(INDEX_STATUSES)}.",
+            param="index_status",
+        )
     page = await service.list_documents(
-        actor, connector_id, status=status_filter, cursor=cursor, limit=limit
+        actor,
+        connector_id,
+        status=status_filter,
+        index_status=index_status,
+        cursor=cursor,
+        limit=limit,
     )
     return Page(
         items=[
-            DocumentResponse.of(document, stale=document.id in page.stale)
+            DocumentResponse.of(document, reason=page.reasons.get(document.id))
             for document in page.items
         ],
         next_cursor=page.next_cursor,
@@ -277,9 +293,12 @@ async def reindex_connector(
     Not the same operation as ``POST /platform/reindex``, despite the name they share. That
     one re-embeds chunks that are still correct under a new model; this one exists because a
     changed ``chunk_size`` makes the chunks themselves wrong, and only running the pipeline
-    again fixes that. The connector detail screen offers it exactly when ``reindex_required``
-    comes back set, and passes ``reindex_formats`` straight back as ``formats`` — so adding
-    a per-format override re-runs the files it applies to and leaves the rest indexed.
+    again fixes that.
+
+    **Superseded by ``POST /connectors/{id}/reprocess`` (task 104)** and kept for one
+    release as an alias: it now starts the same tracked run over the named formats (or
+    everything) and returns how many documents the run claimed. Prefer the new route,
+    which scopes to the stale documents by default and returns the run.
     """
     return ReindexSummary(
         documents=await service.reindex_connector(

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -579,3 +581,105 @@ async def test_a_reindexer_with_no_recutter_refuses_rather_than_copying(actor: A
     assert finished.status == FAILED
     assert "recut" in (finished.error or "")
     assert await platform.index.live_collection(organization) == versioned(organization, 1)
+
+
+# ---------------------------------------------------------------------------
+# the runs a recut leaves behind (task 104)
+# ---------------------------------------------------------------------------
+
+
+class RecordingTracker:
+    """The port the reindexer reports its recuts to, recording every call."""
+
+    def __init__(self) -> None:
+        self.opened: list[dict[str, Any]] = []
+        self.settled: list[dict[str, Any]] = []
+        self.adopted: list[tuple[uuid.UUID, str]] = []
+
+    async def open_for_reindex(self, **kwargs: Any) -> Any:
+        self.opened.append(kwargs)
+        return SimpleNamespace(id=uuid7())
+
+    async def settle_recut(self, **kwargs: Any) -> None:
+        self.settled.append(kwargs)
+
+    async def adopt_embedding_model(self, organization_id: uuid.UUID, embedding_model: str) -> None:
+        self.adopted.append((organization_id, embedding_model))
+
+
+async def test_a_platform_reindex_opens_a_run_per_recut_connector_and_adopts_at_the_swap(
+    actor: Actor,
+) -> None:
+    """The connector's own screen shows the platform operation's progress for its
+    documents: one run per recut connector, trigger ``embedding_model``, every document
+    settled — the broken one as failed — and at the swap every tenant's rows re-marked
+    under the model the platform now uses."""
+    recutter = RecordingRecutter(per_document=3)
+    tracker = RecordingTracker()
+    platform = build_platform(recutter=recutter, tracker=tracker)
+    organization = await seed(platform, chunks=2)
+    semantic, documents = add_connector(platform, organization, strategy="semantic", documents=2)
+    add_connector(platform, organization, strategy="recursive")
+    recutter.broken = {documents[1]}
+
+    run = await platform.reindexer.start(
+        actor, choice=EmbeddingChoice(provider="hash", name="hash-next", dimension=DIMENSION)
+    )
+    finished = await platform.reindexer.run(run.id)
+
+    assert finished.status == SUCCEEDED
+    [opened] = tracker.opened
+    assert opened["connector_id"] == semantic and opened["reindex_run_id"] == run.id
+    assert sorted(opened["documents"]) == sorted(documents)
+    outcomes = {entry["document_id"]: entry["outcome"] for entry in tracker.settled}
+    assert outcomes == {documents[0]: "done", documents[1]: "failed"}
+    done = next(entry for entry in tracker.settled if entry["outcome"] == "done")
+    assert done["chunk_count"] == 3
+    assert tracker.adopted == [(organization, "hash-next")]
+
+
+async def test_a_copied_point_carries_the_model_it_was_re_embedded_with(actor: Actor) -> None:
+    """The copy changes exactly one segment of a point's index fingerprint; a point
+    without one is copied as it was."""
+    from app.services.index_fingerprint import with_embedding_model
+
+    platform = build_platform()
+    organization = await seed(platform, chunks=0)
+    document = uuid7()
+    recorded = "ch=abc;em=old;tk=t;sm=-;xv=1"
+    await platform.vectors.ensure_collection(organization, dimension=DIMENSION)
+    vectors = await platform.embedder.embed(["with", "without"])
+    await platform.vectors.upsert(
+        organization,
+        [
+            ChunkPoint(
+                id=point_id(document, 0),
+                vector=list(vectors[0]),
+                payload={
+                    "text": "with",
+                    "document_id": str(document),
+                    "chunk_index": 0,
+                    "index_fingerprint": recorded,
+                },
+            ),
+            ChunkPoint(
+                id=point_id(document, 1),
+                vector=list(vectors[1]),
+                payload={"text": "without", "document_id": str(document), "chunk_index": 1},
+            ),
+        ],
+    )
+
+    run = await platform.reindexer.start(
+        actor, choice=EmbeddingChoice(provider="hash", name="hash-next", dimension=DIMENSION)
+    )
+    await platform.reindexer.run(run.id)
+
+    live = await platform.index.live_collection(organization)
+    assert live is not None
+    by_text = {
+        str(point.payload.get("text")): point.payload
+        for point in (await platform.index.scroll(live, cursor=None, limit=10)).points
+    }
+    assert by_text["with"]["index_fingerprint"] == with_embedding_model(recorded, "hash-next")
+    assert "index_fingerprint" not in by_text["without"]

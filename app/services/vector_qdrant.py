@@ -183,6 +183,35 @@ class QdrantVectorStore:
     async def delete_document(self, organization_id: uuid.UUID, document_id: uuid.UUID) -> None:
         await self._delete_by(organization_id, "document_id", str(document_id))
 
+    async def replace_document(
+        self, organization_id: uuid.UUID, document_id: uuid.UUID, points: Sequence[ChunkPoint]
+    ) -> None:
+        await self.upsert(organization_id, points)
+        name = collection_for(organization_id)
+        if not await self._present(name):
+            return
+        # The document's points that are not among the ones just written: a filter on
+        # the document plus `must_not has_id`, which Qdrant evaluates server-side, so a
+        # document of a thousand chunks is one request rather than a scroll and a diff.
+        await self._client.delete(
+            collection_name=name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="document_id", match=models.MatchValue(value=str(document_id))
+                        )
+                    ],
+                    must_not=(
+                        [models.HasIdCondition(has_id=[point.id for point in points])]
+                        if points
+                        else None
+                    ),
+                )
+            ),
+            wait=True,
+        )
+
     async def delete_connector(self, organization_id: uuid.UUID, connector_id: uuid.UUID) -> None:
         await self._delete_by(organization_id, "connector_id", str(connector_id))
 

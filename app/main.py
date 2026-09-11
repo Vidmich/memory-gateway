@@ -190,6 +190,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             metrics=metrics.extraction,
             chunking_metrics=metrics.chunking,
             summarization_metrics=metrics.summarization,
+            reprocessing_metrics=metrics.reprocessing,
             embedding=platform_settings.snapshot.embedding,
             # The chunker's unit follows the embedding model, read from the live snapshot
             # per document rather than frozen at startup (task 101).
@@ -254,7 +255,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Retrieval reads the same index ingestion writes, through the same two ports —
         # which is what makes "did my upload become searchable" and "does the gateway see
         # it" the same question rather than two systems that agree by convention.
-        retriever = Retriever(ingestion.embedder, ingestion.vectors, metrics=metrics.retrieval)
+        retriever = Retriever(
+            ingestion.embedder,
+            ingestion.vectors,
+            metrics=metrics.retrieval,
+            # Task 104: what a retrieved chunk's fingerprint is compared with to label it
+            # stale, cached per connector so the request path pays a dict lookup.
+            fingerprints=ingestion.fingerprints,
+        )
 
         # Conversation memory (SPEC §6.1 B). Its own store, its own collection, and its
         # own resolver in front — identity is not memory, so a gateway that has memory
@@ -291,7 +299,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             pipeline=ingestion.pipeline,
             queue=ingestion.queue,
             settings=ingestion.settings,
+            reprocessor=ingestion.reprocessor,
         )
+        # Task 104. The runs the connector screen starts and polls, over the same store
+        # and queue the worker's pipeline counts into.
+        app.state.reprocessor = ingestion.reprocessor
 
         directory_store = PostgresDirectoryStore(clients.session_factory)
         app.state.distillation_service = DistillationService(

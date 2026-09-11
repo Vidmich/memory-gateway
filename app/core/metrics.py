@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
+from app.services.tokenizers import DriftWindow
+
 _LATENCY_BUCKETS = (
     0.005,
     0.01,
@@ -106,6 +108,15 @@ class ProxyMetrics:
     citations_resolved: Counter
     citations_unresolved: Counter
     uncited_requests: Counter
+    #: Task 101. The provider's prompt-token count over ours, per upstream model, over
+    #: the last few hundred requests this process served. ``1.0`` is a tokenizer that
+    #: matches; ``1.15`` is one the model page is already warning about. A gauge so a
+    #: deployment that wants an alert on it can have one; the authoritative number is the
+    #: request log's, which the screen reads.
+    tokenizer_drift: Gauge
+    #: The window behind the gauge. ``None`` switches the gauge off, which is what a
+    #: metrics bundle built without one gets.
+    drift: DriftWindow | None = None
 
 
 @dataclass(frozen=True)
@@ -411,6 +422,15 @@ def build_proxy_metrics(registry: CollectorRegistry) -> ProxyMetrics:
             labelnames=("gateway",),
             registry=registry,
         ),
+        tokenizer_drift=Gauge(
+            "tokenizer_drift_ratio",
+            "Provider-reported prompt tokens over the gateway's own estimate, by upstream "
+            "model, over a rolling window of recent requests. 1.0 means the tokenizer "
+            "matches (task 101).",
+            labelnames=("model",),
+            registry=registry,
+        ),
+        drift=DriftWindow(),
     )
 
 

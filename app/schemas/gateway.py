@@ -429,6 +429,8 @@ class RetrievalPreviewResponse(BaseModel):
     chunks: list[RetrievedChunkResponse]
     injected_tokens: int
     doc_max_tokens: int
+    #: The tokenizer the sizes were measured with (task 101).
+    tokenizer: str
 
     @classmethod
     def of(cls, preview: RetrievalPreview) -> Self:
@@ -440,6 +442,7 @@ class RetrievalPreviewResponse(BaseModel):
             chunks=[RetrievedChunkResponse.of(item) for item in preview.chunks],
             injected_tokens=preview.injected_tokens,
             doc_max_tokens=preview.doc_max_tokens,
+            tokenizer=preview.tokenizer,
         )
 
 
@@ -470,6 +473,8 @@ class PromptPreviewResponse(BaseModel):
     overflowed: bool
     retrieval: RetrievalPreviewResponse
     citations: CitationsPreviewResponse
+    #: The tokenizer every count on this screen was measured with (task 101).
+    tokenizer: str
 
     @classmethod
     def of(cls, preview: PromptPreview) -> Self:
@@ -487,6 +492,7 @@ class PromptPreviewResponse(BaseModel):
             overflowed=preview.overflowed,
             retrieval=RetrievalPreviewResponse.of(preview.retrieval),
             citations=CitationsPreviewResponse.of(preview.citations),
+            tokenizer=preview.tokenizer,
         )
 
 

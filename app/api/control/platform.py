@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from app.api.control.deps import CurrentActor, get_platform_service, require_capability
 from app.core.errors import NotFound, Validation
 from app.schemas.platform import (
+    EffectiveTokenizerResponse,
     ErasureReport,
     MaintenanceResponse,
     MaintenanceRunResponse,
@@ -339,6 +340,9 @@ def _settings_of(result: SettingsResult) -> PlatformSettingsResponse:
         from_environment=list(result.view.from_environment),
         reindex=_reindex_of(result.reindex) if result.reindex is not None else None,
         pending_embedding=result.pending_embedding,
+        embedding_tokenizer=EffectiveTokenizerResponse.of(
+            result.view.settings.embedding.effective_tokenizer()
+        ),
     )
 
 

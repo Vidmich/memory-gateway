@@ -13,7 +13,7 @@ assertions against MinIO and Qdrant, which is what keeps that claim true.
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -218,6 +218,9 @@ def build_connectors(
     #: a step that can call one, so "the embedding provider is down" is now a thing that
     #: happens *before* a document is indexed as well as during.
     embedder: Embedder | None = None,
+    #: Task 101: a tokenizer, or a function returning the current one, for the tests that
+    #: move it under a running pipeline. Defaults to the word tokenizer like everything.
+    tokenizer: Tokenizer | Callable[[], Tokenizer] | None = None,
 ) -> ConnectorFixture:
     settings = settings or get_settings()
     database = database or MemoryDatabase()
@@ -235,7 +238,7 @@ def build_connectors(
         objects=objects,
         vectors=vectors,
         embedder=embedder,
-        tokenizer=TOKENIZER,
+        tokenizer=tokenizer or TOKENIZER,
         registry=registry,
         queue=queue,
         lock=lock,

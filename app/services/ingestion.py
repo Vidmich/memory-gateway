@@ -37,7 +37,7 @@ import hashlib
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -83,6 +83,13 @@ from app.services.jobs import (
 from app.services.locks import Lock
 from app.services.object_store import ObjectRef, ObjectStore
 from app.services.tokenizer import Tokenizer
+
+#: Where the pipeline gets its tokenizer from — see ``IngestionPipeline.__init__``.
+type TokenizerSource = Callable[[], Tokenizer]
+
+
+def _constant(tokenizer: Tokenizer) -> TokenizerSource:
+    return lambda: tokenizer
 from app.services.vector_store import ChunkPoint, VectorStore, point_id
 
 logger = logging.getLogger(__name__)
@@ -137,6 +144,9 @@ class IngestOutcome:
     #: what the connector's top-level setting says.
     chunk_strategy: str | None = None
     chunk_fingerprint: str | None = None
+    #: What ``chunk_size`` was measured with (task 101), by the tokenizer's own name — so
+    #: a vocabulary that failed to load is recorded as the word fallback it actually was.
+    tokenizer: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +192,7 @@ class IngestionPipeline:
         objects: ObjectStore,
         vectors: VectorStore,
         embedder: Embedder,
-        tokenizer: Tokenizer,
+        tokenizer: Tokenizer | TokenizerSource,
         registry: ExtractorRegistry,
         queue: JobQueue,
         lock: Lock,
@@ -195,7 +205,14 @@ class IngestionPipeline:
         self._objects = objects
         self._vectors = vectors
         self._embedder = embedder
-        self._tokenizer = tokenizer
+        #: A tokenizer, or a function that returns the current one. Production passes the
+        #: function (task 101): the tokenizer is the embedding model's, the embedding model
+        #: is a platform setting cached per worker, and a change to it mid-run is exactly
+        #: the case that has to be recorded per document rather than per process. A test
+        #: passes the object.
+        self._tokenizers: TokenizerSource = (
+            tokenizer if callable(tokenizer) else _constant(tokenizer)
+        )
         self._registry = registry
         self._queue = queue
         self._lock = lock
@@ -288,9 +305,14 @@ class IngestionPipeline:
         # have been sniffed — which is the whole point of per-format overrides: a
         # connector is a source, and what is in it is discovered one file at a time.
         cutting = effective(chunking, format_label(read.media_type))
-        cut = fingerprint(cutting, embedding_model=self._embedder.model)
+        # Read once per document, so the fingerprint, the cut and the row agree even if
+        # the platform setting moves while this file is in flight.
+        tokenizer = self.tokenizer
+        cut = fingerprint(cutting, embedding_model=self._embedder.model, tokenizer=tokenizer.name)
         try:
-            chunks = await self._chunk(extracted, cutting, media_type=read.media_type)
+            chunks = await self._chunk(
+                extracted, cutting, media_type=read.media_type, tokenizer=tokenizer
+            )
         except EmbeddingError as error:
             if error.retryable:
                 # The world is bad, not the document. This file will chunk perfectly in
@@ -358,6 +380,7 @@ class IngestionPipeline:
             chunks=chunks,
             config=cutting,
             cut=cut,
+            tokenizer=tokenizer.name,
         )
 
         outcome = IngestOutcome(
@@ -366,6 +389,7 @@ class IngestionPipeline:
             page_count=extracted.page_count,
             chunk_strategy=cutting.strategy,
             chunk_fingerprint=cut,
+            tokenizer=tokenizer.name,
         )
         await self._finish(
             scope,
@@ -382,6 +406,7 @@ class IngestionPipeline:
                 "chunks": len(chunks),
                 "embedding_model": self._embedder.model,
                 "chunk_strategy": cutting.strategy,
+                "tokenizer": tokenizer.name,
             },
         )
         return outcome
@@ -395,6 +420,7 @@ class IngestionPipeline:
         *,
         media_type: str,
         embedder: Embedder | None = None,
+        tokenizer: Tokenizer | None = None,
     ) -> list[Chunk]:
         """Cut one document up, computing the boundary signal first where one is needed.
 
@@ -426,7 +452,7 @@ class IngestionPipeline:
                 chunks = chunk_document(
                     extracted,
                     config,
-                    tokenizer=self._tokenizer,
+                    tokenizer=tokenizer or self.tokenizer,
                     media_type=media_type,
                     signal=signal,
                 )
@@ -460,6 +486,7 @@ class IngestionPipeline:
         chunks: Sequence[Chunk],
         config: ChunkingConfig,
         cut: str,
+        tokenizer: str,
         vectors: Sequence[Sequence[float]],
     ) -> list[ChunkPoint]:
         """Chunks and their vectors, as points. The one place a payload is built.
@@ -491,6 +518,7 @@ class IngestionPipeline:
                     "text": chunk.text,
                     "chunk_strategy": config.strategy,
                     "chunk_fingerprint": cut,
+                    "tokenizer": tokenizer,
                     **_window_payload(chunk, config),
                 },
             )
@@ -509,6 +537,7 @@ class IngestionPipeline:
         chunks: Sequence[Chunk],
         config: ChunkingConfig,
         cut: str,
+        tokenizer: str,
     ) -> None:
         await self._vectors.ensure_collection(organization_id, dimension=self._embedder.dimension)
         # `embedded_text`, not `text`. They are the same string under every strategy but
@@ -524,6 +553,7 @@ class IngestionPipeline:
             chunks=chunks,
             config=config,
             cut=cut,
+            tokenizer=tokenizer,
             vectors=await self._embedder.embed([chunk.embedded_text for chunk in chunks]),
         )
 
@@ -536,11 +566,11 @@ class IngestionPipeline:
 
     @property
     def tokenizer(self) -> Tokenizer:
-        """The one this pipeline chunks with. Exposed so a preview measures chunks the
-        same way ingestion does — two tokenizers would make the sizes on the comparison
-        screen wrong by roughly a third, which is the gap between tiktoken and the
-        word-count fallback."""
-        return self._tokenizer
+        """The one this pipeline chunks with *now* — the embedding model's (task 101).
+        Exposed so a preview measures chunks the same way ingestion does: two tokenizers
+        would make the sizes on the comparison screen wrong by roughly a third, which is
+        the gap between a BPE and the word-count fallback."""
+        return self._tokenizers()
 
     async def read_document(
         self, *, organization_id: uuid.UUID, document_id: uuid.UUID, cap: int | None = None
@@ -610,8 +640,13 @@ class IngestionPipeline:
         """
         read = await self.read_document(organization_id=organization_id, document_id=document_id)
         config = effective(read.chunking, format_label(read.media_type))
+        tokenizer = self.tokenizer
         chunks = await self._chunk(
-            read.extracted, config, media_type=read.media_type, embedder=embedder
+            read.extracted,
+            config,
+            media_type=read.media_type,
+            embedder=embedder,
+            tokenizer=tokenizer,
         )
         return self._points(
             organization_id=organization_id,
@@ -622,7 +657,8 @@ class IngestionPipeline:
             content_hash=read.content_hash,
             chunks=chunks,
             config=config,
-            cut=fingerprint(config, embedding_model=embedder.model),
+            cut=fingerprint(config, embedding_model=embedder.model, tokenizer=tokenizer.name),
+            tokenizer=tokenizer.name,
             vectors=await embedder.embed([chunk.embedded_text for chunk in chunks]),
         )
 
@@ -975,6 +1011,7 @@ class IngestionPipeline:
                 document.content_hash = content_hash
             document.chunk_strategy = outcome.chunk_strategy
             document.chunk_fingerprint = outcome.chunk_fingerprint
+            document.tokenizer = outcome.tokenizer
             if outcome.status == "indexed":
                 document.embedding_model = self._embedder.model
                 document.indexed_at = datetime.now(UTC)

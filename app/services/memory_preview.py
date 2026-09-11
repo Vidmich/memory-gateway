@@ -44,6 +44,7 @@ from app.services.gateway_store import GatewayStore
 from app.services.prompt import Layer, assemble, fit_documents, render_entry
 from app.services.retrieval import Chunk, MemoryService, Recall, Retrieval
 from app.services.tokenizer import Tokenizer, WordTokenizer, count
+from app.services.tokenizers import effective, stored
 
 #: Same answer as everywhere else for "no such gateway" and "belongs to another
 #: organization" — see ``tests/test_cross_tenant.py``.
@@ -87,6 +88,10 @@ class RetrievalPreview:
     #: Tokens the injected chunks would add, block boilerplate included.
     injected_tokens: int
     doc_max_tokens: int
+    #: What the sizes above were measured with — the primary target's tokenizer, so the
+    #: screen can say why the same chunk is a different size under a different model
+    #: (task 101).
+    tokenizer: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +128,7 @@ class PromptPreview:
     overflowed: bool
     retrieval: RetrievalPreview
     citations: CitationsPreview
+    tokenizer: str = ""
 
 
 class MemoryPreview:
@@ -136,6 +142,8 @@ class MemoryPreview:
     ) -> None:
         self._store = store
         self._memory = memory
+        #: The fallback for a gateway with no usable target. With one, the preview
+        #: measures with that model's tokenizer, exactly as a request would (task 101).
         self._tokenizer = tokenizer or WordTokenizer()
         #: For the links in the citation examples — the same address the data plane puts
         #: on a real citation, so the preview shows what a client would actually get.
@@ -150,9 +158,9 @@ class MemoryPreview:
         memory_config: Mapping[str, Any] | None = None,
     ) -> RetrievalPreview:
         text = _check_query(query)
-        gateway, config, _ = await self._load(actor, gateway_id, memory_config)
+        gateway, config, model = await self._load(actor, gateway_id, memory_config)
         recall = await self._recall(gateway, config, text)
-        return self._preview(recall.documents, config)
+        return self._preview(recall.documents, config, self._tokenizer_for(model))
 
     async def preview_prompt(
         self,
@@ -165,6 +173,7 @@ class MemoryPreview:
         text = _check_query(message)
         gateway, config, model = await self._load(actor, gateway_id, memory_config)
         recall = await self._recall(gateway, config, text)
+        tokenizer = self._tokenizer_for(model)
 
         assembled = assemble(
             [ChatMessage(role="user", content=text)],
@@ -175,7 +184,7 @@ class MemoryPreview:
             doc_max_tokens=config.doc_max_tokens,
             memory_max_tokens=config.memory_max_tokens,
             context_window=model.context_window if model is not None else None,
-            tokenizer=self._tokenizer,
+            tokenizer=tokenizer,
         )
         return PromptPreview(
             layers=assembled.layers,
@@ -184,8 +193,9 @@ class MemoryPreview:
             context_window=model.context_window if model is not None else None,
             model_name=model.name if model is not None else None,
             overflowed=assembled.overflowed,
-            retrieval=self._preview(recall.documents, config),
+            retrieval=self._preview(recall.documents, config, tokenizer),
             citations=self._citations(config, assembled.injected),
+            tokenizer=tokenizer.name,
         )
 
     # -- internals --------------------------------------------------------
@@ -223,10 +233,17 @@ class MemoryPreview:
             messages=[ChatMessage(role="user", content=text)],
         )
 
-    def _preview(self, retrieval: Retrieval, config: MemoryConfig) -> RetrievalPreview:
-        budgeted = fit_documents(
-            retrieval.chunks, budget=config.doc_max_tokens, tokenizer=self._tokenizer
-        )
+    def _tokenizer_for(self, model: UpstreamModel | None) -> Tokenizer:
+        """The primary target's tokenizer, which is what a request through this gateway
+        budgets with — derived from the model or overridden on it (task 101)."""
+        if model is None:
+            return self._tokenizer
+        return effective(model.dialect, model.upstream_model_id, stored(model.tokenizer)).tokenizer
+
+    def _preview(
+        self, retrieval: Retrieval, config: MemoryConfig, tokenizer: Tokenizer
+    ) -> RetrievalPreview:
+        budgeted = fit_documents(retrieval.chunks, budget=config.doc_max_tokens, tokenizer=tokenizer)
         survivors = {chunk.id for chunk in budgeted.kept}
         return RetrievalPreview(
             query=retrieval.query,
@@ -237,13 +254,14 @@ class MemoryPreview:
                 PreviewChunk(
                     chunk=chunk,
                     injected=chunk.id in survivors,
-                    tokens=count(self._tokenizer, render_entry(index, chunk)),
+                    tokens=count(tokenizer, render_entry(index, chunk)),
                     handle=index,
                 )
                 for index, chunk in enumerate(retrieval.chunks, start=1)
             ),
             injected_tokens=budgeted.tokens,
             doc_max_tokens=config.doc_max_tokens,
+            tokenizer=tokenizer.name,
         )
 
     def _citations(self, config: MemoryConfig, injected: Sequence[Chunk]) -> CitationsPreview:

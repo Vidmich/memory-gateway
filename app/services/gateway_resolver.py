@@ -45,6 +45,7 @@ from app.db.models import Gateway, GatewayTarget
 from app.db.scoping import unscoped
 from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig
 from app.services.request_log import LogPolicy
+from app.services.tokenizers import effective, stored
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,9 @@ VERSION_TTL_SECONDS = 7 * 24 * 3600
 #: 08 raised it to 3 by adding the per-target weights that A/B selection needs; task 10
 #: raised it to 4 by adding the memory configuration and each target's context window;
 #: task 14 raised it to 5 by adding the limits blob, whether the chain reaches a global
-#: catalog model, and the distillation half of the logging policy.
-PAYLOAD_VERSION = 5
+#: catalog model, and the distillation half of the logging policy; task 101 raised it to
+#: 6 by adding each target's resolved tokenizer.
+PAYLOAD_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -415,6 +417,12 @@ def _encode_target(target: GatewayTarget) -> dict[str, Any]:
         "default_params": dict(model.default_params or {}),
         "timeout_seconds": model.timeout_seconds,
         "context_window": model.context_window,
+        # Resolved here, once per payload, so the data plane never runs the derivation
+        # table per request — and so a model's override reaches every gateway that
+        # points at it on the next request after the catalog invalidates the cache.
+        "tokenizer": effective(
+            model.dialect, model.upstream_model_id, stored(model.tokenizer)
+        ).key,
     }
 
 
@@ -470,6 +478,7 @@ def _decode_target(item: Mapping[str, Any], decrypt: Any) -> UpstreamTarget:
         default_params=dict(item.get("default_params") or {}),
         timeout_seconds=item["timeout_seconds"],
         context_window=item.get("context_window"),
+        tokenizer=item.get("tokenizer"),
     )
 
 

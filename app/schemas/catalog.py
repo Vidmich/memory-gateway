@@ -24,8 +24,26 @@ from typing import Annotated, Any, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.db.models.upstream_model import AUTH_TYPES, DEFAULT_TIMEOUT_SECONDS, DIALECTS, SCOPES
-from app.services.catalog import UNSET, Maybe, ModelDraft, ModelPatch, ModelView
+from app.schemas.platform import EffectiveTokenizerResponse
+from app.services.catalog import (
+    UNSET,
+    Maybe,
+    ModelCalibration,
+    ModelDraft,
+    ModelPatch,
+    ModelView,
+    tokenizer_of,
+)
 from app.services.model_probe import ProbeResult
+from app.services.tokenizers import (
+    DERIVATIONS,
+    DRIFT_WARNING,
+    FALLBACK,
+    MAX_RATIO,
+    MIN_RATIO,
+    TOKENIZER_NAMES,
+    TokenizerSpec,
+)
 
 #: Bounds chosen so a mistyped value is a 422 on the form rather than a row that makes
 #: every later read expensive. None of them is a provider limit — those live in
@@ -118,6 +136,11 @@ class ModelResponse(BaseModel):
     #: ``None`` means the window is not known, not that it is unlimited — see the column's
     #: docstring. The gateway's overflow guard is skipped for such a model.
     context_window: int | None
+    #: Task 101. The stored override, or ``None`` for *derived*; and what is actually in
+    #: effect, with its origin. Both, the way task 20 returns ``effective_chunking``: the
+    #: form shows the derived value greyed until somebody overrides it.
+    tokenizer: TokenizerSpec | None
+    effective_tokenizer: EffectiveTokenizerResponse
     enabled: bool
     #: Whether *this* caller may change it. Answered by the server so the UI and the API
     #: cannot disagree about who owns a row.
@@ -147,6 +170,8 @@ class ModelResponse(BaseModel):
             default_params=dict(model.default_params or {}),
             timeout_seconds=model.timeout_seconds,
             context_window=model.context_window,
+            tokenizer=TokenizerSpec.model_validate(model.tokenizer) if model.tokenizer else None,
+            effective_tokenizer=EffectiveTokenizerResponse.of(tokenizer_of(model)),
             enabled=model.enabled,
             editable=view.editable,
             created_at=model.created_at,
@@ -169,6 +194,8 @@ class ModelCreateRequest(BaseModel):
     default_params: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: Timeout = DEFAULT_TIMEOUT_SECONDS
     context_window: ContextWindow | None = None
+    #: Task 101. Omitted or ``null`` derives the tokenizer from the dialect and model id.
+    tokenizer: TokenizerSpec | None = None
     enabled: bool = True
     #: ``org`` by default. Writing ``global`` needs ``platform:administer``, which the
     #: service checks — the route is open to anyone with ``resources:write``.
@@ -193,6 +220,7 @@ class ModelCreateRequest(BaseModel):
             default_params=self.default_params,
             timeout_seconds=self.timeout_seconds,
             context_window=self.context_window,
+            tokenizer=self.tokenizer,
             enabled=self.enabled,
             scope=self.scope,
         )
@@ -235,6 +263,9 @@ class ModelUpdateRequest(BaseModel):
     #: an operator says "I no longer claim to know this model's window", which switches
     #: the overflow guard back off.
     context_window: ContextWindow | None = None
+    #: Nullable in the same sense: ``null`` removes the override and the model goes back
+    #: to derivation, which the response then says.
+    tokenizer: TokenizerSpec | None = None
     enabled: bool | None = None
 
     _check_url = field_validator("base_url")(_validate_base_url)
@@ -271,7 +302,75 @@ class ModelUpdateRequest(BaseModel):
             default_params=maybe("default_params"),
             timeout_seconds=maybe("timeout_seconds"),
             context_window=maybe("context_window"),
+            tokenizer=maybe("tokenizer"),
             enabled=maybe("enabled"),
+        )
+
+
+class CalibrationResponse(BaseModel):
+    """Task 101: our count against the provider's, for one model.
+
+    ``ratio`` is provider ÷ ours over the window — ``1.04`` reads "we undercount by four
+    percent". ``proposed`` is the ``approximate`` ratio **Calibrate** would store, present
+    only when the tokenizer is approximate and there is something to calibrate from.
+    """
+
+    model_id: uuid.UUID
+    tokenizer: EffectiveTokenizerResponse
+    estimated: int
+    reported: int
+    samples: int
+    ratio: float | None
+    #: Beyond :data:`DRIFT_WARNING` — the model page and the gateway show a warning.
+    warns: bool
+    proposed: TokenizerSpec | None
+
+    @classmethod
+    def of(cls, entry: ModelCalibration) -> Self:
+        calibration = entry.calibration
+        return cls(
+            model_id=entry.model_id,
+            tokenizer=EffectiveTokenizerResponse.of(entry.tokenizer),
+            estimated=calibration.estimated if calibration else 0,
+            reported=calibration.reported if calibration else 0,
+            samples=calibration.samples if calibration else 0,
+            ratio=calibration.ratio if calibration else None,
+            warns=calibration.warns if calibration else False,
+            proposed=entry.proposed,
+        )
+
+
+class DerivationResponse(BaseModel):
+    """One row of the derivation table, for the form to match while somebody types."""
+
+    dialect: str | None
+    prefix: str
+    spec: TokenizerSpec
+
+
+class TokenizersResponse(BaseModel):
+    """The closed registry and the derivation table (task 101). Served rather than
+    duplicated in the web bundle, so the two cannot disagree."""
+
+    names: list[str]
+    derivations: list[DerivationResponse]
+    fallback: TokenizerSpec
+    min_ratio: float
+    max_ratio: float
+    drift_warning: float
+
+    @classmethod
+    def current(cls) -> Self:
+        return cls(
+            names=list(TOKENIZER_NAMES),
+            derivations=[
+                DerivationResponse(dialect=row.dialect, prefix=row.prefix, spec=row.spec)
+                for row in DERIVATIONS
+            ],
+            fallback=FALLBACK,
+            min_ratio=MIN_RATIO,
+            max_ratio=MAX_RATIO,
+            drift_warning=DRIFT_WARNING,
         )
 
 

@@ -35,6 +35,7 @@ from app.services.limits_service import LimitsService
 from app.services.login_throttle import LoginThrottle, MemoryThrottleStore
 from app.services.memory_db import MemoryDatabase
 from app.services.memory_preview import MemoryPreview
+from app.services.metrics_store import MemoryMetricsRepository
 from app.services.model_probe import Probe
 from app.services.monitoring import MonitoringService
 from tests.catalog_support import FakeProbe
@@ -201,6 +202,9 @@ def build_auth(
         # No limiter: rate limiting is asserted directly in tests/test_rate_limit.py, and
         # a counter shared across a test module would make every other test order-dependent.
         settings=settings,
+        # The same rows the request log writes, so a calibration test (task 101) can seed
+        # traffic and read the ratio the model page would show.
+        metrics=MemoryMetricsRepository(database),
     )
     logs = build_logs(database=database)
     monitoring = build_monitoring(database)

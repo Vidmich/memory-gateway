@@ -164,7 +164,9 @@ def test_the_fallback_is_used_when_tiktoken_cannot_load() -> None:
     larger than asked for, which costs retrieval quality; raising would cost the feature."""
     counter = TiktokenCounter("a-vocabulary-that-does-not-exist")
 
-    assert counter.name == "words"
+    # The name says so (task 101): a document row cut this way must not claim the BPE.
+    assert counter.name == "words (a-vocabulary-that-does-not-exist unavailable)"
+    assert counter.degraded
     assert counter.offsets(SAMPLE) == WordTokenizer().offsets(SAMPLE)
 
 

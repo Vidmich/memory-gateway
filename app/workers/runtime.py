@@ -49,7 +49,7 @@ from app.services.erasure import OrganizationEraser
 from app.services.extraction import ExtractorRegistry, build_registry
 from app.services.extraction_pool import ExtractionPool
 from app.services.fact_vectors import FactVectorStore
-from app.services.ingestion import IngestionPipeline, IngestionSettings
+from app.services.ingestion import IngestionPipeline, IngestionSettings, TokenizerSource
 from app.services.job_queue import ArqJobQueue
 from app.services.job_store import PostgresDeadLetters
 from app.services.jobs import (
@@ -75,7 +75,8 @@ from app.services.proxy import ProxyService
 from app.services.reconciliation import Reconciler
 from app.services.reindex import Reindexer
 from app.services.reindex_store import PostgresReindexStore
-from app.services.tokenizer import Tokenizer, build_tokenizer
+from app.services.tokenizer import Tokenizer
+from app.services.tokenizers import resolve
 from app.services.vector_backends import (
     RoutingFactVectorStore,
     RoutingVectorStore,
@@ -97,7 +98,9 @@ class Ingestion:
     objects: ObjectStore
     vectors: VectorStore
     embedder: Embedder
-    tokenizer: Tokenizer
+    #: A function, not a tokenizer: the embedding model's, read from the platform
+    #: snapshot per document (task 101). See ``embedding_tokenizer``.
+    tokenizer: TokenizerSource
     registry: ExtractorRegistry
     queue: JobQueue
     lock: Lock
@@ -135,6 +138,16 @@ def embedding_settings(
     )
 
 
+def embedding_tokenizer(choice: EmbeddingChoice) -> Tokenizer:
+    """The tokenizer ``chunk_size`` is measured with: the embedding model's (task 101).
+
+    Derived from the platform's embedding choice unless the operator overrode it there,
+    and resolved through the cached registry, so reading it per document costs a
+    dictionary lookup rather than a vocabulary load.
+    """
+    return resolve(choice.effective_tokenizer().spec)
+
+
 async def build_vector_backends(clients: Clients, settings: Settings) -> VectorBackends:
     """Every configured vector backend, bound to the table that says who is on which.
 
@@ -169,6 +182,7 @@ def build_ingestion(
     metrics: ExtractionMetrics | None = None,
     chunking_metrics: ChunkingMetrics | None = None,
     embedding: EmbeddingChoice | None = None,
+    tokenizer: TokenizerSource | None = None,
 ) -> Ingestion:
     limits = ingestion_settings(settings)
     store = PostgresConnectorStore(clients.session_factory)
@@ -180,9 +194,12 @@ def build_ingestion(
     # `internal`, not `http`: the embedding endpoint is the operator's own and is
     # routinely on a private address, which the guarded pool exists to refuse.
     embedder = build_embedder(embedding_settings(settings, embedding), clients.internal)
-    # One tokenizer for the process. Loading the BPE vocabulary is expensive and the
-    # object is stateless once loaded.
-    tokenizer = build_tokenizer()
+    # The tokenizer follows the embedding model (task 101). Callers pass a function over
+    # the live platform snapshot; the fallback here freezes whatever choice was given at
+    # build time, which is what a process without a settings service can do. Resolution is
+    # cached, so the vocabulary is loaded once per process either way.
+    chosen = embedding or EmbeddingChoice()
+    tokenizers = tokenizer or (lambda: embedding_tokenizer(chosen))
     registry = build_registry()
     lock = RedisLock(clients.redis)
     pool = ExtractionPool(
@@ -198,7 +215,7 @@ def build_ingestion(
         objects=objects,
         vectors=vectors,
         embedder=embedder,
-        tokenizer=tokenizer,
+        tokenizer=tokenizers,
         registry=registry,
         queue=queue,
         lock=lock,
@@ -207,7 +224,7 @@ def build_ingestion(
             objects=objects,
             vectors=vectors,
             embedder=embedder,
-            tokenizer=tokenizer,
+            tokenizer=tokenizers,
             registry=registry,
             queue=queue,
             lock=lock,
@@ -540,6 +557,7 @@ __all__ = [
     "build_queue",
     "build_runner",
     "embedding_settings",
+    "embedding_tokenizer",
     "ingestion_settings",
     "retry_policy",
 ]

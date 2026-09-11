@@ -109,4 +109,9 @@ class UpstreamModel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: two orders of magnitude across providers — so the honest states are "known" and
     #: "not known", and this column is which one holds.
     context_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Task 101. An override of the tokenizer counts for this model are measured with —
+    #: ``{"name": "approximate", "ratio": 3.4}`` — or ``NULL`` for *derived from the
+    #: dialect and model id*, which is what every row meant before the column existed and
+    #: what nearly every row should keep meaning. See :mod:`app.services.tokenizers`.
+    tokenizer: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

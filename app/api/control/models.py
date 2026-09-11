@@ -21,11 +21,13 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.api.control.deps import CurrentActor, get_catalog_service, require_capability
 from app.schemas.catalog import (
+    CalibrationResponse,
     ModelCreateRequest,
     ModelResponse,
     ModelTestRequest,
     ModelUpdateRequest,
     ProbeResponse,
+    TokenizersResponse,
 )
 from app.schemas.common import Page
 from app.services.catalog import CatalogService
@@ -89,6 +91,24 @@ async def test_draft(
     return ProbeResponse.of(await service.test_draft(actor, body.to_draft()))
 
 
+@router.get("/models/calibration", dependencies=[_reads])
+async def list_calibrations(actor: CurrentActor, service: _Service) -> list[CalibrationResponse]:
+    """Every visible model's tokenizer drift (task 101), in one round trip.
+
+    One list rather than a per-model endpoint: the gateway editor needs its targets'
+    rows and the model page needs one, and both are answered from a single grouped query
+    over the window. Declared before ``/models/{model_id}`` so ``calibration`` is not
+    parsed as an id.
+    """
+    return [CalibrationResponse.of(entry) for entry in await service.calibrations(actor)]
+
+
+@router.get("/tokenizers", dependencies=[_reads])
+async def list_tokenizers() -> TokenizersResponse:
+    """The tokenizer registry and the derivation table (task 101)."""
+    return TokenizersResponse.current()
+
+
 @router.get("/models/{model_id}", dependencies=[_reads])
 async def get_model(
     model_id: uuid.UUID,
@@ -122,6 +142,14 @@ async def delete_model(
 ) -> None:
     """409 with the referencing gateways named if one points at this model."""
     await service.delete_model(actor, model_id)
+
+
+@router.post("/models/{model_id}/calibrate", dependencies=[_writes])
+async def calibrate_model(
+    model_id: uuid.UUID, actor: CurrentActor, service: _Service
+) -> ModelResponse:
+    """Store the ratio the window measured as this model's tokenizer override."""
+    return ModelResponse.of(await service.calibrate(actor, model_id))
 
 
 @router.post("/models/{model_id}/test", dependencies=[_writes])

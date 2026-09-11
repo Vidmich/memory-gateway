@@ -70,6 +70,8 @@ def metadata_row(record: RequestRecord) -> dict[str, Any]:
         "retrieved_fact_ids": list(record.retrieved_fact_ids),
         "cited_chunk_ids": list(record.cited_chunk_ids),
         "citations_unresolved": record.citations_unresolved,
+        "tokenizer": record.tokenizer,
+        "estimated_prompt_tokens": record.estimated_prompt_tokens,
         "failover_attempts": list(record.failover_attempts),
         "dropped_params": list(record.dropped_params),
         "request_id": record.request_id,

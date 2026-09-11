@@ -173,6 +173,10 @@ class RequestRecord:
     #: citing chunks it was never shown is making things up in the one place it was
     #: asked not to.
     citations_unresolved: int = 0
+    #: Task 101. What the prompt was measured with and what it measured, beside the
+    #: provider's own ``prompt_tokens``: the calibration is the ratio of the two.
+    tokenizer: str | None = None
+    estimated_prompt_tokens: int | None = None
     failover_attempts: list[Any] = field(default_factory=list)
     #: Generation parameters the target's dialect could not carry, so they never reached
     #: the provider (SPEC §8.3). Empty for an OpenAI-shaped upstream, which is every
@@ -265,7 +269,14 @@ class RequestRecorder:
         if self._record.policy.request_body:
             self._record.request_body = _messages(request.messages)
 
-    def prepared(self, messages: Sequence[ChatMessage], target: UpstreamTarget) -> None:
+    def prepared(
+        self,
+        messages: Sequence[ChatMessage],
+        target: UpstreamTarget,
+        *,
+        tokenizer: str | None = None,
+        estimated_tokens: int | None = None,
+    ) -> None:
         """What is about to go upstream, after assembly and the parameter merge.
 
         Called once per routing attempt, not once per request: two targets can carry
@@ -282,6 +293,8 @@ class RequestRecorder:
         self._record.upstream_model_id = target.id
         self._record.model_name = target.name
         self._record.dropped_params = _dropped(target, self._asked_for)
+        self._record.tokenizer = tokenizer
+        self._record.estimated_prompt_tokens = estimated_tokens
 
     def end_user(self, *, end_user_id: uuid.UUID | None, session_id: str | None) -> None:
         """Who this request belongs to, and which conversation (SPEC §6.2).
@@ -459,8 +472,30 @@ class RequestRecorder:
                 overhead = max(0, record.latency_total_ms - record.latency_upstream_ms)
                 self._metrics.overhead.labels(gateway=self._gateway).observe(overhead / 1000)
             self._observe_citations(record)
+            self._observe_drift(record)
         except Exception:  # pragma: no cover - a metrics failure is not a request failure
             logger.warning("could not record proxy metrics", exc_info=True)
+
+    def _observe_drift(self, record: RequestRecord) -> None:
+        """Task 101's gauge: the provider's count over ours, per model, over a rolling
+        window of recent requests. Only when both numbers exist — the same rule the
+        metrics store's calibration query applies, so the gauge and the screen agree."""
+        if self._metrics is None or self._metrics.drift is None:
+            return
+        if (
+            record.status_code >= 400
+            or record.estimated_prompt_tokens is None
+            or record.prompt_tokens is None
+            or record.model_name is None
+        ):
+            return
+        ratio = self._metrics.drift.add(
+            record.model_name,
+            estimated=record.estimated_prompt_tokens,
+            reported=record.prompt_tokens,
+        )
+        if ratio is not None:
+            self._metrics.tokenizer_drift.labels(model=record.model_name).set(ratio)
 
     def _observe_citations(self, record: RequestRecord) -> None:
         """Task 100's three counters.

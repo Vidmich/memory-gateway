@@ -163,6 +163,14 @@ class RequestLog(Base):
     citations_unresolved: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    #: Task 101. Our own count of the prompt that went upstream, and the tokenizer that
+    #: made it. Beside ``prompt_tokens`` — the provider's count — these are the
+    #: calibration: the ratio of the two, summed per model over a window, is how far the
+    #: tokenizer we measure budgets with is from the one the provider bills with. Null
+    #: when nothing was assembled (a refused request) or, for the estimate, when the
+    #: upstream never reported usage (a stream the client did not ask usage for).
+    tokenizer: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    estimated_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: One entry per attempted target — ``{target_id, model_name, status, error_code,
     #: latency_ms, retryable}`` — written only when more than one target was involved.
     #: Empty is the common case and means the row's own ``upstream_model_id`` and

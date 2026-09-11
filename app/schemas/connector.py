@@ -181,13 +181,22 @@ class DocumentResponse(BaseModel):
     #: the connector's own setting. ``None`` for a document indexed before this was
     #: recorded — a blank rather than a guess, which is what makes it usable as drift.
     chunk_strategy: str | None
+    #: What ``chunk_size`` was measured with when this document was cut (task 101):
+    #: ``o200k_base``, ``approximate:3.6``, or ``words (cl100k_base unavailable)`` for a
+    #: worker whose vocabulary failed to load. ``None`` for a row indexed before it was
+    #: recorded, for the same reason as ``chunk_strategy``.
+    tokenizer: str | None
+    #: Whether the chunks on disk were cut under a configuration that is no longer the
+    #: current one — settings, embedding model or tokenizer. A comparison the listing
+    #: makes, so a document row alone cannot claim it; false for rows too old to say.
+    stale: bool = False
     content_hash: str | None
     indexed_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
     @classmethod
-    def of(cls, document: Document) -> DocumentResponse:
+    def of(cls, document: Document, *, stale: bool = False) -> DocumentResponse:
         return cls(
             id=document.id,
             connector_id=document.connector_id,
@@ -202,6 +211,8 @@ class DocumentResponse(BaseModel):
             page_count=document.page_count,
             embedding_model=document.embedding_model,
             chunk_strategy=document.chunk_strategy,
+            tokenizer=document.tokenizer,
+            stale=stale,
             content_hash=document.content_hash,
             indexed_at=document.indexed_at,
             created_at=document.created_at,

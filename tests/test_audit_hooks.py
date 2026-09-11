@@ -78,6 +78,9 @@ AUDITED: dict[tuple[str, str], str] = {
     ("DELETE", f"{API}/memory-facts/{{fact_id}}"): "memory_fact.delete",
     ("POST", f"{API}/models"): "model.create",
     ("PATCH", f"{API}/models/{{model_id}}"): "model.update",
+    # Task 101's Calibrate button is a PATCH of the tokenizer override wearing a verb, and
+    # it goes through the same update path, so its event is the update's.
+    ("POST", f"{API}/models/{{model_id}}/calibrate"): "model.update",
     ("DELETE", f"{API}/models/{{model_id}}"): "model.delete",
     ("POST", f"{API}/organizations"): "organization.create",
     ("PATCH", f"{API}/organizations/{{organization_id}}"): "organization.update",

@@ -33,6 +33,7 @@ from app.workers.runtime import (
     build_dead_letters,
     build_distillation,
     build_ingestion,
+    embedding_tokenizer,
     build_platform,
     build_platform_settings,
     build_runner,
@@ -89,6 +90,7 @@ async def startup(context: dict[str, Any]) -> None:
         metrics=metrics.extraction,
         chunking_metrics=metrics.chunking,
         embedding=platform_settings.snapshot.embedding,
+        tokenizer=lambda: embedding_tokenizer(platform_settings.snapshot.embedding),
     )
     # Conversation memory's write half. Built here as well as in the API, from the same
     # function, so the pass a worker runs and the pass "Distil now" runs are the same pass.

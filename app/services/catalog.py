@@ -41,6 +41,7 @@ import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.adapters import known_dialects
@@ -53,11 +54,27 @@ from app.core.ssrf import check_url
 from app.core.tenancy import Actor
 from app.db.models import UpstreamModel
 from app.db.models.upstream_model import DEFAULT_TIMEOUT_SECONDS
+
+#: How far back the calibration looks. Long enough that a quiet model accumulates a
+#: window, short enough that a provider changing its tokenizer shows up within a month.
+CALIBRATION_WINDOW_DAYS = 30
+#: Models the calibration listing covers. A catalog is tens of rows; this is a bound, not
+#: a page.
+MAX_CALIBRATED_MODELS = 500
 from app.services.audit_snapshots import subject
 from app.services.catalog_store import CatalogStore, CatalogTransaction
 from app.services.gateway_resolver import ConfigCache
 from app.services.model_probe import Probe, ProbeResult
+from app.services.metrics_store import CalibrationRow, MetricsRepository
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
+from app.services.tokenizers import (
+    Calibration,
+    Effective,
+    TokenizerSpec,
+    calibrated,
+    effective,
+    stored,
+)
 from app.services.params import validate_params
 from app.services.permissions import Capability, allows
 from app.services.rate_limit import FixedWindowLimiter
@@ -107,6 +124,8 @@ class ModelDraft:
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     #: ``None`` means unknown, which switches off the assembler's overflow guard.
     context_window: int | None = None
+    #: Task 101. ``None`` derives the tokenizer from the dialect and model id.
+    tokenizer: TokenizerSpec | None = None
     enabled: bool = True
     #: ``org`` or ``global``. Only a platform administrator may write ``global``.
     scope: str = "org"
@@ -132,7 +151,29 @@ class ModelPatch:
     default_params: Maybe[Mapping[str, Any]] = UNSET
     timeout_seconds: Maybe[int] = UNSET
     context_window: Maybe[int | None] = UNSET
+    #: Sending ``null`` clears the override, which puts the model back on derivation.
+    tokenizer: Maybe[TokenizerSpec | None] = UNSET
     enabled: Maybe[bool] = UNSET
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCalibration:
+    """How far a model's tokenizer is from the provider's count (task 101).
+
+    ``calibration`` is ``None`` when no request in the window carried both counts — a
+    new model, or one whose clients never ask for usage on streams.
+    """
+
+    model_id: uuid.UUID
+    tokenizer: Effective
+    calibration: Calibration | None
+
+    @property
+    def proposed(self) -> TokenizerSpec | None:
+        """The ratio **Calibrate** would store, when there is one to store."""
+        if self.calibration is None:
+            return None
+        return calibrated(self.tokenizer.spec, self.calibration)
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +217,7 @@ class CatalogService:
         cache: ConfigCache | None = None,
         test_limiter: FixedWindowLimiter | None = None,
         settings: Settings | None = None,
+        metrics: MetricsRepository | None = None,
     ) -> None:
         self._store = store
         self._secret_box = secret_box
@@ -183,6 +225,10 @@ class CatalogService:
         self._cache = cache
         self._limiter = test_limiter
         self._settings = settings or get_settings()
+        #: The request log, for the calibration (task 101). Optional because the catalog
+        #: is built in places with no log to read — a calibration then reads as "no
+        #: samples", which is true.
+        self._metrics = metrics
 
     # -- reads ------------------------------------------------------------
 
@@ -256,6 +302,7 @@ class CatalogService:
                 default_params=params,
                 timeout_seconds=draft.timeout_seconds,
                 context_window=draft.context_window,
+                tokenizer=_tokenizer_row(draft.tokenizer),
                 enabled=draft.enabled,
             )
             self._store_credential(model, draft.credential)
@@ -315,6 +362,8 @@ class CatalogService:
             _apply(model, "timeout_seconds", patch.timeout_seconds)
             _apply(model, "context_window", patch.context_window)
             _apply(model, "enabled", patch.enabled)
+            if not isinstance(patch.tokenizer, _Unset):
+                model.tokenizer = _tokenizer_row(patch.tokenizer)
             if not isinstance(patch.upstream_model_id, _Unset):
                 model.upstream_model_id = patch.upstream_model_id.strip()
             if not isinstance(patch.extra_headers, _Unset):
@@ -373,6 +422,84 @@ class CatalogService:
                 "audit_action": "model.delete",
             },
         )
+
+    # -- tokenizer calibration (task 101) ----------------------------------
+
+    async def calibrations(self, actor: Actor) -> list[ModelCalibration]:
+        """Every model this caller can see, with its tokenizer's measured drift.
+
+        One grouped query over the window rather than one per model: the gateway editor
+        asks for its targets and the model page for one row, and both are served from the
+        same list. Samples are matched on the tokenizer *name* the request recorded, so a
+        model whose override just changed starts its window afresh rather than inheriting
+        the old unit's error.
+        """
+        async with self._store.begin(actor.scope) as transaction:
+            # The listing's own page query, at a size no catalog reaches: a bounded read
+            # rather than a second unbounded one on the same table.
+            models = await transaction.models(after=None, limit=MAX_CALIBRATED_MODELS)
+        rows = await self._calibration_rows(actor)
+        by_key = {(row.upstream_model_id, row.tokenizer): row for row in rows}
+        result: list[ModelCalibration] = []
+        for model in models:
+            resolved = tokenizer_of(model)
+            row = by_key.get((model.id, resolved.name))
+            result.append(
+                ModelCalibration(
+                    model_id=model.id,
+                    tokenizer=resolved,
+                    calibration=(
+                        Calibration(
+                            estimated=row.estimated, reported=row.reported, samples=row.samples
+                        )
+                        if row is not None
+                        else None
+                    ),
+                )
+            )
+        return result
+
+    async def calibrate(self, actor: Actor, model_id: uuid.UUID) -> ModelView:
+        """Store the ratio the window measured as this model's override.
+
+        A button and not a background job, deliberately: a ratio that moves by itself
+        moves the chunk fingerprint by itself (for the embedding tokenizer) and the
+        budgets by itself (for a chat model), and both should happen when somebody is
+        looking. Only an ``approximate`` tokenizer can be calibrated — a BPE's count is
+        what it is, and the fix for a drifting BPE is a different tokenizer.
+        """
+        async with self._store.begin(actor.scope) as transaction:
+            # Ownership first, so a model the caller may only read answers 404 the way
+            # every other write does, rather than leaking what its tokenizer is.
+            await self._writable(transaction, model_id)
+        found = next(
+            (entry for entry in await self.calibrations(actor) if entry.model_id == model_id),
+            None,
+        )
+        if found is None:
+            raise NotFound("No such model.")
+        if not found.tokenizer.approximate:
+            raise Validation(
+                f"'{found.tokenizer.name}' is a fixed vocabulary; only an approximate "
+                "tokenizer can be calibrated. Override the tokenizer to 'approximate' first.",
+                param="tokenizer",
+            )
+        proposed = found.proposed
+        if proposed is None:
+            raise Validation(
+                "Nothing to calibrate from yet: no request through this model has carried "
+                "both our estimate and the provider's count.",
+                param="tokenizer",
+            )
+        return await self.update_model(actor, model_id, ModelPatch(tokenizer=proposed))
+
+    async def _calibration_rows(self, actor: Actor) -> Sequence[CalibrationRow]:
+        if self._metrics is None:
+            return ()
+        end = datetime.now(UTC)
+        start = end - timedelta(days=CALIBRATION_WINDOW_DAYS)
+        async with self._metrics.begin(actor.scope) as transaction:
+            return await transaction.calibration(start, end)
 
     # -- connectivity -----------------------------------------------------
 
@@ -639,6 +766,16 @@ def _picked[T](value: Maybe[T], current: T) -> T:
 def _apply(model: UpstreamModel, attribute: str, value: Maybe[Any]) -> None:
     if not isinstance(value, _Unset):
         setattr(model, attribute, value)
+
+
+def _tokenizer_row(spec: TokenizerSpec | None) -> dict[str, Any] | None:
+    return spec.model_dump(exclude_none=True) if spec is not None else None
+
+
+def tokenizer_of(model: UpstreamModel) -> Effective:
+    """The tokenizer this model's counts are measured with: derived from its dialect
+    and id unless the row carries an override (task 101)."""
+    return effective(model.dialect, model.upstream_model_id, stored(model.tokenizer))
 
 
 def _in_use_message(gateways: Sequence[Any]) -> str:

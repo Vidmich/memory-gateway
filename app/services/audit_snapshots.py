@@ -139,6 +139,7 @@ def model_subject(model: UpstreamModel) -> Subject:
             "default_params": dict(model.default_params or {}),
             "timeout_seconds": model.timeout_seconds,
             "context_window": model.context_window,
+            "tokenizer": dict(model.tokenizer) if model.tokenizer else None,
             "enabled": model.enabled,
         },
     )

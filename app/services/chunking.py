@@ -732,6 +732,7 @@ def _split(text: str, offsets: list[int], config: ChunkingConfig) -> list[str]:
         guard -= 1
         limit = token_span(offsets, start, config.chunk_size)
         end = len(text) if limit >= len(text) else _boundary(text, start, limit, snap=snap)
+        end = _off_word(text, start, end)
 
         piece = text[start:end].strip()
         if piece:
@@ -739,12 +740,54 @@ def _split(text: str, offsets: list[int], config: ChunkingConfig) -> list[str]:
         if end >= len(text):
             break
 
-        following = token_span(offsets, end, -config.overlap)
+        # With no overlap the next chunk starts exactly where this one stopped. Asking the
+        # tokenizer for "zero tokens back" would instead return the start of the token
+        # *containing* the cut, which under a sub-word tokenizer is the middle of the word
+        # the cut was just walked off — see `_off_word`.
+        following = (
+            end
+            if config.overlap <= 0
+            else _word_start(text, token_span(offsets, end, -config.overlap))
+        )
         # Progress, unconditionally: overlap that reaches back past this chunk's start
         # would re-split the same window forever.
         start = following if following > start else end
 
     return chunks
+
+
+def _off_word(text: str, start: int, end: int) -> int:
+    """Never inside a word, whatever the tokenizer said.
+
+    A token boundary is not a word boundary for any tokenizer whose tokens are shorter
+    than words — ``cl100k_base`` cuts ``extraordinary`` in two, and task 101's
+    ``approximate`` cuts every ``ratio`` characters. A chunk that opens with the second
+    half of a word embeds a word that is not in the document, so a cut that lands mid-word
+    is walked back to the start of that word and the word goes whole into the next chunk.
+    A no-op for :class:`~app.services.tokenizer.WordTokenizer`, whose boundaries are word
+    starts already, and for a window that is one enormous word, which has nowhere else
+    to cut.
+    """
+    if end >= len(text) or end <= start:
+        return end
+    if not (_is_word(text[end - 1]) and _is_word(text[end])):
+        return end
+    cursor = end - 1
+    while cursor > start and _is_word(text[cursor - 1]):
+        cursor -= 1
+    return cursor if cursor > start else end
+
+
+def _word_start(text: str, position: int) -> int:
+    """``position``, walked back to the start of the word it is inside, if it is inside
+    one. The overlap's opening cut, held to the same rule as the closing one."""
+    while 0 < position < len(text) and _is_word(text[position - 1]) and _is_word(text[position]):
+        position -= 1
+    return position
+
+
+def _is_word(character: str) -> bool:
+    return character.isalnum() or character == "_"
 
 
 def _boundary(text: str, start: int, limit: int, *, snap: bool) -> int:

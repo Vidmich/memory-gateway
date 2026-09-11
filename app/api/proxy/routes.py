@@ -464,7 +464,16 @@ def _record_prompt(recorder: RequestRecorder) -> Callable[[Prepared], None]:
     """
 
     def record(prepared: Prepared) -> None:
-        recorder.prepared(prepared.request.messages, prepared.target)
+        recorder.prepared(
+            prepared.request.messages,
+            prepared.target,
+            # Task 101: our count and its unit, beside the provider's count once it
+            # arrives. The estimate is the assembly's own — no second pass.
+            tokenizer=prepared.tokenizer_name,
+            estimated_tokens=(
+                prepared.assembly.prompt_tokens if prepared.assembly is not None else None
+            ),
+        )
         if prepared.assembly is not None:
             recorder.injected(
                 tokens=prepared.assembly.memory_tokens,

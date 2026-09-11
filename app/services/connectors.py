@@ -38,7 +38,12 @@ from app.core.tenancy import Actor
 from app.db.models import Connector, Document
 from app.db.models.connector import CONNECTOR_TYPES, TERMINAL_DOCUMENT_STATUSES
 from app.schemas.config import merge_config
-from app.schemas.connector_config import ChunkingConfig, changed_formats
+from app.schemas.connector_config import (
+    ChunkingConfig,
+    changed_formats,
+    effective,
+    fingerprint,
+)
 from app.services.audit import Target, summarize
 from app.services.audit_snapshots import subject, target_of
 from app.services.chunking_preview import (
@@ -112,6 +117,18 @@ class ConnectorPatch:
     name: str | None = None
     description: str | None = None
     chunking: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentPage(Page[Document]):
+    """A page of documents plus which of them are stale (task 101).
+
+    The staleness is a *comparison* — the fingerprint on the row against the one ingestion
+    would write now — so it belongs with the listing that has both halves in hand, and not
+    on the row, which cannot know what "now" is.
+    """
+
+    stale: frozenset[uuid.UUID] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,14 +265,39 @@ class ConnectorService:
         status: str | None = None,
         cursor: str | None = None,
         limit: int | None = None,
-    ) -> Page[Document]:
+    ) -> DocumentPage:
         size = clamp_limit(limit)
         async with self._store.begin(actor.scope) as transaction:
-            await self._require(transaction, connector_id)
+            connector = await self._require(transaction, connector_id)
             rows = await transaction.documents(
                 connector_id, after=decode_cursor(cursor), limit=size, status=status
             )
-        return page_of(rows, limit=size, cursor_of=lambda row: row.id)
+        page = page_of(rows, limit=size, cursor_of=lambda row: row.id)
+        chunking = ChunkingConfig.load(connector.chunking)
+        return DocumentPage(
+            items=page.items,
+            next_cursor=page.next_cursor,
+            stale=frozenset(row.id for row in page.items if self._stale(chunking, row)),
+        )
+
+    def _stale(self, chunking: ChunkingConfig, document: Document) -> bool:
+        """Whether this document's chunks were cut under a configuration that is no
+        longer the current one — the connector's settings, the embedding model where the
+        strategy depends on it, or the tokenizer (task 101).
+
+        Compared on the fingerprint the document recorded against the one ingestion would
+        write *now*, which is the same function with the same inputs. A row without a
+        fingerprint — indexed before task 20 recorded one — is not stale, it is unknown,
+        and a blank is the honest answer there.
+        """
+        if document.status != "indexed" or not document.chunk_fingerprint:
+            return False
+        current = fingerprint(
+            effective(chunking, format_label(document.mime_type or "")),
+            embedding_model=self._embedder.model,
+            tokenizer=self._pipeline.tokenizer.name,
+        )
+        return document.chunk_fingerprint != current
 
     # -- writes ----------------------------------------------------------
 

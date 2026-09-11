@@ -243,11 +243,18 @@ class PlatformService:
                     )
                 run = await self._reindexer.start(actor, choice=proposed)
                 await self._enqueue(run)
-                if proposed.provider != current.provider:
-                    # The half of the change that needs no reindex still lands now, so a
-                    # move that is both a new endpoint and a new model does not leave the
-                    # endpoint waiting behind the re-embed.
-                    sections["embedding"] = {"provider": proposed.provider}
+                # The halves of the change that need no reindex still land now, so a
+                # move that is both a new endpoint and a new model does not leave the
+                # endpoint waiting behind the re-embed. The tokenizer override (task 101)
+                # is one of them: it invalidates chunks through the fingerprint, which the
+                # connectors report on their own terms, not through this run.
+                now = {
+                    key: value
+                    for key, value in embedding.items()
+                    if key in ("provider", "tokenizer")
+                }
+                if now:
+                    sections["embedding"] = now
 
         view = (
             await self._settings.update(actor, PlatformSettingsPatch.model_validate(sections))

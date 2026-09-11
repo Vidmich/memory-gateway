@@ -10,20 +10,27 @@ one a splitter actually asks. Working in character offsets throughout means the 
 can snap a boundary to a paragraph break and still know exactly how many tokens it just
 took, without a second encode of every candidate.
 
-Two implementations. :class:`TiktokenCounter` is what production uses — the real BPE the
-embedding model uses. :class:`WordTokenizer` is the fallback, and it exists because
-``tiktoken`` fetches its vocabulary over the network on first use: an air-gapped
-deployment, a locked-down CI runner, or a cold container with no egress would otherwise
-turn a missing download into a worker that cannot ingest anything. Degrading to an
-approximate count and saying so in the log is the better failure — chunks come out
-roughly 30% larger than asked for, which costs retrieval quality, where the alternative
-costs the whole feature.
+Three implementations. :class:`TiktokenCounter` is the real BPE, for the models whose
+vocabulary ships with ``tiktoken``. :class:`ApproximateTokenizer` is a characters-per-token
+ratio for the models whose vocabulary does not — Claude, Llama, Mistral, a self-hosted
+embedding endpoint — calibrated against the count the provider reports (task 101).
+:class:`WordTokenizer` is the fallback, and it exists because ``tiktoken`` fetches its
+vocabulary over the network on first use: an air-gapped deployment, a locked-down CI
+runner, or a cold container with no egress would otherwise turn a missing download into a
+worker that cannot ingest anything. Degrading to an approximate count and saying so — in
+the log, and since task 101 in the tokenizer's own ``name`` — is the better failure:
+chunks come out roughly 30% larger than asked for, which costs retrieval quality, where
+the alternative costs the whole feature.
+
+Which of the three a given count uses is decided in :mod:`app.services.tokenizers`, from
+the model the tokens are for. Nothing in this module chooses.
 """
 
 from __future__ import annotations
 
 import bisect
 import logging
+import math
 import re
 import threading
 from typing import Protocol
@@ -80,12 +87,86 @@ class WordTokenizer:
         return [*found, len(text)]
 
 
+class ApproximateTokenizer:
+    """A token every ``ratio`` characters, snapped to the nearest word start.
+
+    The count is the point and the snapping is a courtesy. The count is
+    ``len(text) / ratio`` to within one, whatever the text, because that is the quantity
+    the calibration measures and corrects — a snap that merged two boundaries into one
+    word start would make the count depend on word length and the ratio stop meaning
+    "characters per token". So the reach is *under half a token*: two ideal offsets can
+    never both snap to the same word start, and every ideal produces exactly one token.
+    Within that reach a boundary moves to the start of a word, which is where a BPE's
+    boundaries mostly fall anyway.
+
+    It follows that boundaries *do* land inside words — any tokenizer whose tokens are
+    shorter than words has that property, and ``cl100k_base`` splits ``extraordinary`` in
+    two as well. The chunker, not the tokenizer, is what keeps a chunk from opening
+    mid-word: see ``_off_word`` in :mod:`app.services.chunking`.
+
+    The ratio is part of the name because two approximations with different ratios cut
+    different chunks, and the chunk fingerprint has to say so.
+    """
+
+    def __init__(self, ratio: float) -> None:
+        if not ratio >= 1:
+            raise ValueError("characters per token must be at least one")
+        self._ratio = float(ratio)
+        #: Strictly under half the smallest spacing between two ideals (which is
+        #: ``floor(ratio)``, since ideals are truncated), so no two of them can reach the
+        #: same word start — which is what keeps the count exact.
+        self._reach = max(0, (math.floor(self._ratio) - 1) // 2)
+
+    @property
+    def ratio(self) -> float:
+        return self._ratio
+
+    @property
+    def name(self) -> str:
+        return f"approximate:{self._ratio:g}"
+
+    def offsets(self, text: str) -> list[int]:
+        length = len(text)
+        if length == 0:
+            return [0]
+        starts = [0]
+        target = self._ratio
+        while target < length:
+            ideal = int(target)
+            snapped = self._word_start_near(text, ideal)
+            position = ideal if snapped is None else snapped
+            # Two ideals can snap to the same word start; a repeated offset would be a
+            # zero-width token, which the chunker turns into an empty chunk.
+            if position > starts[-1]:
+                starts.append(position)
+            target += self._ratio
+        return [*starts, length]
+
+    def _word_start_near(self, text: str, position: int) -> int | None:
+        """The closest offset within reach that begins a word, if any."""
+        if self._reach == 0:
+            return None
+        best: int | None = None
+        low = max(1, position - self._reach)
+        high = min(len(text) - 1, position + self._reach)
+        for candidate in range(low, high + 1):
+            if text[candidate - 1].isspace() and not text[candidate].isspace():
+                if best is None or abs(candidate - position) < abs(best - position):
+                    best = candidate
+        return best
+
+
 class TiktokenCounter:
     """The real BPE, loaded once per process and shared.
 
     The vocabulary load is lazy and guarded by a lock: `tiktoken` fetches and caches it on
     first use, and a worker starting eight jobs at once should make one download, not
     eight. A failure is recorded so the fallback is not re-attempted on every document.
+
+    A counter that had to fall back says so in its :attr:`name` — ``words (cl100k_base
+    unavailable)`` — so the degradation lands on the document row and on the model page
+    instead of only in a log line. A row claiming ``cl100k_base`` for chunks that were cut
+    by word count would be a wrong fingerprint that agrees with itself.
     """
 
     def __init__(self, encoding_name: str = DEFAULT_ENCODING) -> None:
@@ -97,7 +178,14 @@ class TiktokenCounter:
 
     @property
     def name(self) -> str:
-        return self._encoding_name if self._load() is not None else self._fallback.name
+        if self._load() is not None:
+            return self._encoding_name
+        return f"{self._fallback.name} ({self._encoding_name} unavailable)"
+
+    @property
+    def degraded(self) -> bool:
+        """Whether the vocabulary failed to load and counts are the word fallback's."""
+        return self._load() is None
 
     def offsets(self, text: str) -> list[int]:
         encoding = self._load()
@@ -188,6 +276,7 @@ def build_tokenizer(name: str = DEFAULT_ENCODING) -> Tokenizer:
 
 __all__ = [
     "DEFAULT_ENCODING",
+    "ApproximateTokenizer",
     "TiktokenCounter",
     "Tokenizer",
     "WordTokenizer",

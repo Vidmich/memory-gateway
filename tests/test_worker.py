@@ -221,7 +221,7 @@ def _ingestion_of(fixture: Any) -> Any:
         objects=fixture.objects,
         vectors=fixture.vectors,
         embedder=fixture.embedder,
-        tokenizer=fixture.pipeline._tokenizer,
+        tokenizer=fixture.pipeline.tokenizer,
         registry=fixture.registry,
         queue=fixture.queue,
         lock=fixture.lock,

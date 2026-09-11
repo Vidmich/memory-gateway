@@ -78,6 +78,7 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ScopedEndpoint("PATCH", f"/api/v1/models/{FOREIGN_MODEL}", {"name": "owned"}),
     ScopedEndpoint("DELETE", f"/api/v1/models/{FOREIGN_MODEL}"),
     ScopedEndpoint("POST", f"/api/v1/models/{FOREIGN_MODEL}/test"),
+    ScopedEndpoint("POST", f"/api/v1/models/{FOREIGN_MODEL}/calibrate"),
     ScopedEndpoint("GET", f"/api/v1/gateways/{FOREIGN_GATEWAY}"),
     ScopedEndpoint("PATCH", f"/api/v1/gateways/{FOREIGN_GATEWAY}", {"name": "Owned"}),
     ScopedEndpoint("DELETE", f"/api/v1/gateways/{FOREIGN_GATEWAY}"),
@@ -188,6 +189,7 @@ GLOBAL_MODEL_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ScopedEndpoint("PATCH", f"/api/v1/models/{GLOBAL_MODEL}", {"name": "owned"}),
     ScopedEndpoint("DELETE", f"/api/v1/models/{GLOBAL_MODEL}"),
     ScopedEndpoint("POST", f"/api/v1/models/{GLOBAL_MODEL}/test"),
+    ScopedEndpoint("POST", f"/api/v1/models/{GLOBAL_MODEL}/calibrate"),
 )
 
 

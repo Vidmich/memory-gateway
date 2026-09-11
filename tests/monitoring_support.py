@@ -174,6 +174,8 @@ def make_log_row(
         "retrieved_fact_ids": [],
         "cited_chunk_ids": [],
         "citations_unresolved": 0,
+        "tokenizer": None,
+        "estimated_prompt_tokens": None,
         "failover_attempts": [],
         "response_truncated": False,
     }
@@ -287,6 +289,11 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
                 prompt_tokens=15,
                 completion_tokens=7,
                 session_id="sess-7" if index == 0 else None,
+                # Task 101: our own count beside the provider's, on half the rows — the
+                # other half stand for streams whose client never asked for usage and
+                # so must not enter the calibration.
+                tokenizer="o200k_base",
+                estimated_prompt_tokens=12 if index % 2 == 0 else None,
             )
         )
 
@@ -339,6 +346,10 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
                 upstream_model_id=mini_model_id,
                 model_name="acme-mini",
                 completion_tokens=10 if status == 200 else None,
+                # Task 101 again: all three carry an estimate and none a report — streams
+                # whose client never asked for usage — so none of them is a sample.
+                tokenizer="approximate:3.5",
+                estimated_prompt_tokens=100,
             )
         )
 

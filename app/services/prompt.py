@@ -111,6 +111,14 @@ class Assembled:
     #: Tokens contributed by layers 3 and 4 together — the whole rendered blocks, which
     #: is what the provider actually charges for.
     memory_tokens: int = 0
+    #: Everything the provider is being asked to read, in the tokenizer's own count:
+    #: the client's messages, the system layers and the memory blocks. The limiter's
+    #: estimate (SPEC §11) and one half of task 101's calibration, taken from the counts
+    #: assembly already made rather than a second pass over the same text.
+    prompt_tokens: int = 0
+    #: Which tokenizer made every count above, by name. Recorded on the request log so
+    #: the calibration can group samples by the unit they were measured in.
+    tokenizer: str = ""
     #: The client's own messages left no room, so nothing was injected. SPEC §7's warning
     #: flag: the request still goes upstream, because refusing it would be a worse answer
     #: than answering without documents.
@@ -397,6 +405,8 @@ def assemble(
         injected_facts=memory.kept,
         dropped_facts=tuple((fact, memory_reason) for fact in memory.dropped),
         memory_tokens=documents.tokens + memory.tokens,
+        prompt_tokens=base_tokens + documents.tokens + memory.tokens,
+        tokenizer=tokenizer.name,
         overflowed=overflowed,
     )
 

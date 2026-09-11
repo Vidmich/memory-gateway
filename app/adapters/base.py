@@ -51,6 +51,11 @@ class UpstreamTarget:
     #: Read only by the prompt assembler's overflow guard (SPEC §7); ``None`` disables it,
     #: because a guessed window would drop memory from requests that would have been fine.
     context_window: int | None = None
+    #: The tokenizer this model's counts are measured with (task 101), as the registry
+    #: key — ``o200k_base``, ``approximate:3.5`` — already resolved from the catalog row
+    #: when the gateway payload was built. ``None`` means the process default, which is
+    #: what a target built by hand in a test gets.
+    tokenizer: str | None = None
 
     def __repr__(self) -> str:
         # The default dataclass repr would put the decrypted credential into any log line

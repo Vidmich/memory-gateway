@@ -137,7 +137,10 @@ async def list_documents(
         actor, connector_id, status=status_filter, cursor=cursor, limit=limit
     )
     return Page(
-        items=[DocumentResponse.of(document) for document in page.items],
+        items=[
+            DocumentResponse.of(document, stale=document.id in page.stale)
+            for document in page.items
+        ],
         next_cursor=page.next_cursor,
     )
 

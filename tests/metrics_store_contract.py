@@ -573,6 +573,27 @@ async def filtering_by_uncited_is_over_the_injected_denominator(fixture: Fixture
     assert uncited == []
 
 
+async def the_calibration_sums_both_counts_per_model_and_tokenizer(fixture: Fixture) -> None:
+    """Task 101. Ten of the twenty ``acme-gpt`` rows carry an estimate (12 against a
+    reported 15); the other ten, and all three ``acme-mini`` rows, have an estimate and
+    no report — streams whose client never asked for usage — and are skipped rather than
+    guessed."""
+    window = fixture.window()
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        rows = await transaction.calibration(window.start, window.end)
+
+    assert [(row.tokenizer, row.estimated, row.reported, row.samples) for row in rows] == [
+        ("o200k_base", 120, 150, 10)
+    ]
+
+
+async def the_calibration_is_scoped_to_one_organization(fixture: Fixture) -> None:
+    window = fixture.window()
+    async with fixture.repository.begin(fixture.globex_scope) as transaction:
+        rows = await transaction.calibration(window.start, window.end)
+    assert rows == []
+
+
 Check = Callable[[Fixture], Awaitable[None]]
 
 #: Every check, in one list, so neither implementation can be given a shorter exam.
@@ -677,6 +698,8 @@ CHECKS: tuple[Check, ...] = (
     memory_tokens_are_summed_separately_from_the_rest,
     the_uncited_rate_counts_only_requests_that_were_given_documents,
     filtering_by_uncited_is_over_the_injected_denominator,
+    the_calibration_sums_both_counts_per_model_and_tokenizer,
+    the_calibration_is_scoped_to_one_organization,
     throttled_callers_are_ranked_by_how_often_they_were_refused,
     throttling_is_scoped_to_one_organization,
     an_unidentified_caller_is_not_a_row_on_the_list,

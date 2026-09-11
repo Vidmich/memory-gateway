@@ -201,6 +201,12 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: two chunkings at once, and without these nothing says which document is which.
     chunk_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
     chunk_fingerprint: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: Task 101 — what the chunk sizes were *measured* with: ``o200k_base``,
+    #: ``approximate:3.6``, or ``words (cl100k_base unavailable)`` when the vocabulary
+    #: failed to load. A chunk sized in a different unit is a different chunk, so this is
+    #: part of the fingerprint above as well; it is stored in clear beside it so the
+    #: document list can say it without reversing a hash.
+    tokenizer: Mapped[str | None] = mapped_column(String(64), nullable=True)
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     connector: Mapped[Connector] = relationship(back_populates="documents")

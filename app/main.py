@@ -81,6 +81,7 @@ from app.services.tokenizer import build_tokenizer
 from app.workers.runtime import (
     build_distillation,
     build_ingestion,
+    embedding_tokenizer,
     build_platform,
     build_platform_settings,
     build_queue,
@@ -187,6 +188,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             metrics=metrics.extraction,
             chunking_metrics=metrics.chunking,
             embedding=platform_settings.snapshot.embedding,
+            # The chunker's unit follows the embedding model, read from the live snapshot
+            # per document rather than frozen at startup (task 101).
+            tokenizer=lambda: embedding_tokenizer(platform_settings.snapshot.embedding),
         )
         app.state.ingestion = ingestion
         # Conversation memory's write half, from the same builder the worker uses. Built
@@ -357,6 +361,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 window_seconds=settings.model_test_window_seconds,
             ),
             settings=settings,
+            # The request log, for the tokenizer calibration (task 101): our estimate
+            # against the provider's count, per model.
+            metrics=metrics_repository,
         )
         gateway_store = PostgresGatewayStore(clients.session_factory)
         # The Limits screen and the dashboard's near-limit card. The configuration comes

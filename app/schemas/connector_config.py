@@ -199,7 +199,12 @@ def depends_on_embedding_model(config: ChunkingConfig) -> bool:
     )
 
 
-def fingerprint(config: ChunkingConfig, *, embedding_model: str | None = None) -> str:
+def fingerprint(
+    config: ChunkingConfig,
+    *,
+    embedding_model: str | None = None,
+    tokenizer: str | None = None,
+) -> str:
     """A short stable digest of one *effective* configuration.
 
     Recorded in every chunk's payload and on the document row, for exactly the reason SPEC
@@ -209,16 +214,28 @@ def fingerprint(config: ChunkingConfig, *, embedding_model: str | None = None) -
     The embedding model is folded in only for the strategies whose boundaries depend on
     it. Including it unconditionally would make every model change look like a chunking
     change for connectors whose chunks are in fact still correct.
+
+    The tokenizer (task 101) is folded in for *every* strategy, because every strategy
+    measures ``chunk_size`` with it: a chunk sized in ``o200k_base`` and one sized in
+    ``approximate:3.6`` are different chunks even when the number is the same. ``None``
+    — a caller from before the tokenizer was recorded — leaves the digest as it was, so
+    rows written under the old formula still compare equal to themselves.
     """
     payload: dict[str, Any] = {name: getattr(config, name) for name in REINDEX_TRIGGERS}
     if config.strategy in MODEL_DEPENDENT_STRATEGIES and embedding_model:
         payload["embedding_model"] = embedding_model
+    if tokenizer:
+        payload["tokenizer"] = tokenizer
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def changed_formats(
-    before: ChunkingConfig, after: ChunkingConfig, *, model_changed: bool = False
+    before: ChunkingConfig,
+    after: ChunkingConfig,
+    *,
+    model_changed: bool = False,
+    tokenizer_changed: bool = False,
 ) -> frozenset[str]:
     """Which format kinds' stored chunks are invalidated by moving between the two.
 
@@ -228,6 +245,9 @@ def changed_formats(
 
     ``model_changed`` is not a formality either: under ``semantic`` the embedding model is
     part of the chunking configuration, because the boundaries came out of it.
+
+    ``tokenizer_changed`` (task 101) invalidates every kind: a chunk sized in a different
+    unit is a different chunk, whatever the strategy.
     """
     changed: set[str] = set()
     for kind in _kinds_in(before) | _kinds_in(after):
@@ -240,16 +260,24 @@ def changed_formats(
         # changed, and the chunks are stale anyway, because the model that decided where
         # to cut is not the model that will answer.
         model_matters = model_changed and other.strategy in MODEL_DEPENDENT_STRATEGIES
-        if settings_differ or model_matters:
+        if settings_differ or model_matters or tokenizer_changed:
             changed.add(kind)
     return frozenset(changed)
 
 
 def requires_reindex(
-    before: ChunkingConfig, after: ChunkingConfig, *, model_changed: bool = False
+    before: ChunkingConfig,
+    after: ChunkingConfig,
+    *,
+    model_changed: bool = False,
+    tokenizer_changed: bool = False,
 ) -> bool:
     """Whether moving from one configuration to the other invalidates any stored chunk."""
-    return bool(changed_formats(before, after, model_changed=model_changed))
+    return bool(
+        changed_formats(
+            before, after, model_changed=model_changed, tokenizer_changed=tokenizer_changed
+        )
+    )
 
 
 def _kinds_in(config: ChunkingConfig) -> set[str]:

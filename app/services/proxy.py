@@ -42,6 +42,7 @@ from app.services.prompt import Assembled, assemble, prompt_tokens
 from app.services.retrieval import Chunk, Recall
 from app.services.sse import DONE, format_event
 from app.services.tokenizer import Tokenizer, WordTokenizer
+from app.services.tokenizers import resolve
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,11 @@ class Prepared:
     @property
     def memory_tokens(self) -> int:
         return self.assembly.memory_tokens if self.assembly is not None else 0
+
+    @property
+    def tokenizer_name(self) -> str | None:
+        """What every count on this attempt was measured with (task 101)."""
+        return self.assembly.tokenizer if self.assembly is not None else None
 
     @property
     def injected_chunks(self) -> int:
@@ -144,10 +150,11 @@ class ProxyService:
         ui_base_url: str | None = None,
     ) -> None:
         self._http = http
-        # The same tokenizer the chunker used, so the budget a gateway sets in tokens is
-        # measured in the same tokens the index was built with. A different one here would
-        # make `doc_max_tokens` mean something slightly different from `chunk_size`, which
-        # is the sort of discrepancy nobody finds by reading.
+        # The fallback for a target that names no tokenizer — one built by hand, outside
+        # the resolver. Since task 101 the real answer comes from the target: the model's
+        # own tokenizer, derived from its dialect and id or overridden in the catalog, so
+        # `doc_max_tokens` and `tokens_per_minute` are measured in the unit the provider
+        # bills in rather than in whichever one the process happened to load.
         self._tokenizer = tokenizer or WordTokenizer()
         #: Where the control plane's chunk inspector lives, for the link a citation
         #: carries. ``None`` means citations are delivered without one.
@@ -199,7 +206,7 @@ class ProxyService:
             doc_max_tokens=memory.doc_max_tokens,
             memory_max_tokens=memory.memory_max_tokens,
             context_window=target.context_window,
-            tokenizer=self._tokenizer,
+            tokenizer=self.tokenizer_for(target),
         )
         params = resolve_params(
             model_defaults=target.default_params,
@@ -221,19 +228,33 @@ class ProxyService:
             citations=memory.citations,
         )
 
+    def tokenizer_for(self, target: UpstreamTarget) -> Tokenizer:
+        """The tokenizer a target's counts are measured with (task 101).
+
+        The resolver put the registry key on the target when it built the payload;
+        resolving it is a cached lookup. A target without one — built outside the
+        resolver — gets the process fallback, which is what every target got before.
+        """
+        return resolve(target.tokenizer) if target.tokenizer else self._tokenizer
+
     def estimate_tokens(self, prepared: Prepared) -> int:
         """Prompt tokens for an assembled request, injected memory included (SPEC §11).
 
-        Measured with the *same* tokenizer :meth:`prepare` budgeted with, which is what
+        Measured with the *same* tokenizer :meth:`prepare` budgeted with — read off the
+        assembly rather than counted again, so the two cannot disagree — which is what
         makes a gateway's ``tokens_per_minute`` and its ``doc_max_tokens`` two numbers in
         one unit rather than two units with one name.
 
         An estimate, and not apologetically so: the provider's tokenizer is its own, and
         the only exact count is the one it reports afterwards. Task 14 settles against
         that; this is what has to be known *before* the request is sent, which no exact
-        method can give.
+        method can give. Task 101 records the two side by side and shows the gap.
         """
-        return prompt_tokens(prepared.request.messages, tokenizer=self._tokenizer)
+        if prepared.assembly is not None:
+            return prepared.assembly.prompt_tokens
+        return prompt_tokens(
+            prepared.request.messages, tokenizer=self.tokenizer_for(prepared.target)
+        )
 
     # -- non-streaming -------------------------------------------------------
 

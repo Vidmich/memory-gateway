@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.config import ConfigBlob
 from app.schemas.gateway_config import LoggingConfig, Quota
+from app.services.tokenizers import Effective, TokenizerSpec, effective
 
 #: Section names, which are also the ``platform_settings.key`` values. Derived from the
 #: model below rather than repeated, so a section cannot be added to one and not the other.
@@ -51,6 +52,12 @@ class EmbeddingChoice(BaseModel):
     #: be serving anything, and an allowlist here would be a list to maintain forever.
     name: str = Field(default="hash-bow", min_length=1, max_length=200)
     dimension: int = Field(default=256, ge=8, le=8192)
+    #: Task 101. What ``chunk_size`` is measured with. ``None`` derives it from the
+    #: provider and model name — ``cl100k_base`` for ``text-embedding-3-*``, an
+    #: approximation for anything we do not ship a vocabulary for. This is the one
+    #: tokenizer setting that *changes chunking*: it is part of every document's chunk
+    #: fingerprint, and a change to it marks every document stale.
+    tokenizer: TokenizerSpec | None = None
 
     def same_as(self, other: EmbeddingChoice) -> bool:
         """Whether a change to ``other`` would need a reindex.
@@ -59,8 +66,18 @@ class EmbeddingChoice(BaseModel):
         OpenAI-compatible endpoints — a self-hosted deployment, a different region —
         produces the same vectors, and forcing a re-embed of the whole corpus for that
         would be an expensive way to change a base URL.
+
+        Neither is the tokenizer: it changes how documents are *cut*, not how their text
+        embeds, so it invalidates chunks (through the fingerprint) without invalidating a
+        collection. That is a recut of what is stale, on the connectors' own terms, not a
+        platform re-embed of everything.
         """
         return self.name == other.name and self.dimension == other.dimension
+
+    def effective_tokenizer(self) -> Effective:
+        """Derived from the provider and model unless overridden — the same rule an
+        upstream model follows, so the two screens read the same way."""
+        return effective(self.provider, self.name, self.tokenizer)
 
 
 class RetentionCeilings(BaseModel):
@@ -190,6 +207,41 @@ class PlatformSettingsResponse(BaseModel):
     #: and a screen showing the new one would be describing a state that does not exist
     #: yet. See :mod:`app.services.reindex`.
     pending_embedding: EmbeddingChoice | None = None
+    #: Task 101. The tokenizer chunking measures with right now, resolved: what the
+    #: embedding section shows beside its greyed-out derived value. Filled by the route,
+    #: because it is a fact about the process (a vocabulary that failed to load says so
+    #: here) rather than about the stored row.
+    embedding_tokenizer: EffectiveTokenizerResponse | None = None
+
+
+class EffectiveTokenizerResponse(BaseModel):
+    """A resolved tokenizer and where it came from (task 101). Shared by the model page
+    and the platform embedding section, so the two read identically."""
+
+    #: The stored form, for the form's override fields.
+    spec: TokenizerSpec
+    #: ``derived`` or ``override``.
+    origin: str
+    #: What the tokenizer says it is — ``o200k_base``, ``approximate:3.5``, or
+    #: ``words (cl100k_base unavailable)`` when a vocabulary failed to load.
+    name: str
+    #: One line for the screen: ``o200k_base (derived)``.
+    label: str
+    #: True exactly when ``name`` is not what ``spec`` asked for.
+    degraded: bool
+    #: True for ``approximate`` — the one kind a calibration can move.
+    approximate: bool
+
+    @classmethod
+    def of(cls, resolved: Effective) -> EffectiveTokenizerResponse:
+        return cls(
+            spec=resolved.spec,
+            origin=resolved.origin,
+            name=resolved.name,
+            label=resolved.label(),
+            degraded=resolved.degraded,
+            approximate=resolved.approximate,
+        )
 
 
 class PlatformSettingsPatch(BaseModel):

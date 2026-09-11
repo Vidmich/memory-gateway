@@ -97,6 +97,23 @@ class LogFilters:
 
 
 @dataclass(frozen=True, slots=True)
+class CalibrationRow:
+    """Our prompt-token estimate against the provider's count, summed per model and per
+    tokenizer over a window (task 101).
+
+    Grouped by the tokenizer *name* as well as the model, because samples taken under
+    ``approximate:3.5`` say nothing about ``approximate:3.2`` — an override moves the
+    unit, and the window has to start again in the new one.
+    """
+
+    upstream_model_id: uuid.UUID
+    tokenizer: str
+    estimated: int
+    reported: int
+    samples: int
+
+
+@dataclass(frozen=True, slots=True)
 class Percentiles:
     """``None`` throughout when no row in the window carried the measurement."""
 
@@ -280,6 +297,16 @@ class MetricsTransaction(Protocol):
         Rows with no ``end_user_id`` are excluded rather than grouped as "anonymous". A
         gateway that identifies nobody would otherwise produce one enormous bar that is
         not a caller and cannot be acted on.
+        """
+
+    async def calibration(self, start: datetime, end: datetime) -> Sequence[CalibrationRow]:
+        """Estimated versus reported prompt tokens per (model, tokenizer) in the window.
+
+        Only rows that carry *both* numbers count: a refused request has no estimate, and
+        a stream whose client did not ask for usage has no report. Skipping is the honest
+        treatment — a sample invented for either side would be the ratio measuring
+        itself. Failed requests are left out too; a 4xx from the provider reports no
+        usage worth trusting.
         """
 
     async def erase_transcripts(self, end_user_id: uuid.UUID) -> int:
@@ -500,6 +527,37 @@ class PostgresMetricsTransaction:
             for row in rows
         ]
 
+    async def calibration(self, start: datetime, end: datetime) -> Sequence[CalibrationRow]:
+        rows = (
+            await self._session.execute(
+                select(
+                    RequestLog.upstream_model_id,
+                    RequestLog.tokenizer,
+                    func.sum(RequestLog.estimated_prompt_tokens),
+                    func.sum(RequestLog.prompt_tokens),
+                    func.count(),
+                )
+                .where(
+                    self._scope.clause(RequestLog),
+                    RequestLog.created_at >= start,
+                    RequestLog.created_at < end,
+                    *_calibratable(),
+                )
+                .group_by(RequestLog.upstream_model_id, RequestLog.tokenizer)
+                .execution_options(**scoped())
+            )
+        ).all()
+        return [
+            CalibrationRow(
+                upstream_model_id=row[0],
+                tokenizer=row[1],
+                estimated=int(row[2] or 0),
+                reported=int(row[3] or 0),
+                samples=int(row[4]),
+            )
+            for row in rows
+        ]
+
     async def erase_transcripts(self, end_user_id: uuid.UUID) -> int:
         # Two statements rather than a correlated delete: `request_logs` and
         # `transcripts` are both partitioned, and PostgreSQL plans a `DELETE ... USING`
@@ -687,6 +745,33 @@ class MemoryMetricsTransaction:
                 rejections=rejections,
             )
             for end_user_id, rejections in ordered[:limit]
+        ]
+
+    async def calibration(self, start: datetime, end: datetime) -> Sequence[CalibrationRow]:
+        sums: dict[tuple[uuid.UUID, str], list[int]] = {}
+        for row in self._db.request_logs.values():
+            if not self._scope.permits(row.organization_id):
+                continue
+            if not (start <= _aware(row.created_at) < end):
+                continue
+            if not _calibratable_row(row):
+                continue
+            assert row.upstream_model_id is not None and row.tokenizer is not None
+            entry = sums.setdefault((row.upstream_model_id, row.tokenizer), [0, 0, 0])
+            entry[0] += int(row.estimated_prompt_tokens or 0)
+            entry[1] += int(row.prompt_tokens or 0)
+            entry[2] += 1
+        return [
+            CalibrationRow(
+                upstream_model_id=model_id,
+                tokenizer=tokenizer,
+                estimated=estimated,
+                reported=reported,
+                samples=samples,
+            )
+            for (model_id, tokenizer), (estimated, reported, samples) in sorted(
+                sums.items(), key=lambda item: (str(item[0][0]), item[0][1])
+            )
         ]
 
     async def erase_transcripts(self, end_user_id: uuid.UUID) -> int:
@@ -889,6 +974,27 @@ def _injected() -> Any:
 
 def _uncited() -> Any:
     return func.jsonb_array_length(RequestLog.cited_chunk_ids) == 0
+
+
+def _calibratable() -> list[Any]:
+    """Task 101: a row carries both counts, names its tokenizer, and succeeded."""
+    return [
+        RequestLog.status_code < 400,
+        RequestLog.upstream_model_id.is_not(None),
+        RequestLog.tokenizer.is_not(None),
+        RequestLog.estimated_prompt_tokens.is_not(None),
+        RequestLog.prompt_tokens.is_not(None),
+    ]
+
+
+def _calibratable_row(row: RequestLog) -> bool:
+    return (
+        row.status_code < 400
+        and row.upstream_model_id is not None
+        and row.tokenizer is not None
+        and row.estimated_prompt_tokens is not None
+        and row.prompt_tokens is not None
+    )
 
 
 def _injected_row(row: RequestLog) -> bool:

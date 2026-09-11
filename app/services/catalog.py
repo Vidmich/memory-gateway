@@ -54,19 +54,15 @@ from app.core.ssrf import check_url
 from app.core.tenancy import Actor
 from app.db.models import UpstreamModel
 from app.db.models.upstream_model import DEFAULT_TIMEOUT_SECONDS
-
-#: How far back the calibration looks. Long enough that a quiet model accumulates a
-#: window, short enough that a provider changing its tokenizer shows up within a month.
-CALIBRATION_WINDOW_DAYS = 30
-#: Models the calibration listing covers. A catalog is tens of rows; this is a bound, not
-#: a page.
-MAX_CALIBRATED_MODELS = 500
 from app.services.audit_snapshots import subject
 from app.services.catalog_store import CatalogStore, CatalogTransaction
 from app.services.gateway_resolver import ConfigCache
-from app.services.model_probe import Probe, ProbeResult
 from app.services.metrics_store import CalibrationRow, MetricsRepository
+from app.services.model_probe import Probe, ProbeResult
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
+from app.services.params import validate_params
+from app.services.permissions import Capability, allows
+from app.services.rate_limit import FixedWindowLimiter
 from app.services.tokenizers import (
     Calibration,
     Effective,
@@ -75,11 +71,15 @@ from app.services.tokenizers import (
     effective,
     stored,
 )
-from app.services.params import validate_params
-from app.services.permissions import Capability, allows
-from app.services.rate_limit import FixedWindowLimiter
 
 logger = logging.getLogger(__name__)
+
+#: How far back the calibration looks. Long enough that a quiet model accumulates a
+#: window, short enough that a provider changing its tokenizer shows up within a month.
+CALIBRATION_WINDOW_DAYS = 30
+#: Models the calibration listing covers. A catalog is tens of rows; this is a bound, not
+#: a page.
+MAX_CALIBRATED_MODELS = 500
 
 #: Same answer for "no such model", "belongs to another organization" and "global, and
 #: you are not the platform". Distinguishing them is what turns an id into an oracle.

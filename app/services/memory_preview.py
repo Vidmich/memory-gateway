@@ -243,7 +243,9 @@ class MemoryPreview:
     def _preview(
         self, retrieval: Retrieval, config: MemoryConfig, tokenizer: Tokenizer
     ) -> RetrievalPreview:
-        budgeted = fit_documents(retrieval.chunks, budget=config.doc_max_tokens, tokenizer=tokenizer)
+        budgeted = fit_documents(
+            retrieval.chunks, budget=config.doc_max_tokens, tokenizer=tokenizer
+        )
         survivors = {chunk.id for chunk in budgeted.kept}
         return RetrievalPreview(
             query=retrieval.query,

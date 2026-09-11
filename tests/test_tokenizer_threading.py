@@ -309,9 +309,11 @@ async def test_the_registry_and_the_derivation_table_are_served(directory) -> No
     response = await directory.as_user(directory.world.acme_viewer, "GET", "/api/v1/tokenizers")
     body = response.json()
     assert body["names"] == ["cl100k_base", "o200k_base", "p50k_base", "approximate", "words"]
-    assert {"dialect": "openai", "prefix": "gpt-4o", "spec": {"name": "o200k_base", "ratio": None}} in (
-        body["derivations"]
-    )
+    assert {
+        "dialect": "openai",
+        "prefix": "gpt-4o",
+        "spec": {"name": "o200k_base", "ratio": None},
+    } in (body["derivations"])
     assert body["fallback"] == {"name": "approximate", "ratio": 4.0}
 
 

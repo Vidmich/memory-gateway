@@ -97,7 +97,7 @@ class TokenizerSpec(BaseModel):
 
     @classmethod
     def approximate(cls, ratio: float) -> TokenizerSpec:
-        return cls(name=APPROXIMATE, ratio=round(float(ratio), 3))
+        return cls(name="approximate", ratio=round(float(ratio), 3))
 
     @classmethod
     def parse(cls, key: str) -> TokenizerSpec:
@@ -312,7 +312,7 @@ class Calibration:
 def calibrated(spec: TokenizerSpec, calibration: Calibration) -> TokenizerSpec | None:
     """The ``approximate`` ratio that would have matched the provider over the window.
 
-    Characters are estimated × old ratio; the new ratio is characters ÷ reported. Only an
+    Characters are estimated times old ratio; the new ratio is characters over reported. Only an
     approximation can be moved this way — a BPE's count is what it is, and the fix for a
     drifting BPE is a different tokenizer, not a scaled one. ``None`` when there is
     nothing to calibrate from.

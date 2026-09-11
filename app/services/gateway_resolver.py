@@ -420,9 +420,7 @@ def _encode_target(target: GatewayTarget) -> dict[str, Any]:
         # Resolved here, once per payload, so the data plane never runs the derivation
         # table per request — and so a model's override reaches every gateway that
         # points at it on the next request after the catalog invalidates the cache.
-        "tokenizer": effective(
-            model.dialect, model.upstream_model_id, stored(model.tokenizer)
-        ).key,
+        "tokenizer": effective(model.dialect, model.upstream_model_id, stored(model.tokenizer)).key,
     }
 
 

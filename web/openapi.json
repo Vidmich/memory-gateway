@@ -374,6 +374,68 @@
         "title": "BucketResponse",
         "type": "object"
       },
+      "CalibrationResponse": {
+        "description": "Task 101: our count against the provider's, for one model.\n\n``ratio`` is provider \u00f7 ours over the window \u2014 ``1.04`` reads \"we undercount by four\npercent\". ``proposed`` is the ``approximate`` ratio **Calibrate** would store, present\nonly when the tokenizer is approximate and there is something to calibrate from.",
+        "properties": {
+          "estimated": {
+            "title": "Estimated",
+            "type": "integer"
+          },
+          "model_id": {
+            "format": "uuid",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "proposed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenizerSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ratio"
+          },
+          "reported": {
+            "title": "Reported",
+            "type": "integer"
+          },
+          "samples": {
+            "title": "Samples",
+            "type": "integer"
+          },
+          "tokenizer": {
+            "$ref": "#/components/schemas/EffectiveTokenizerResponse"
+          },
+          "warns": {
+            "title": "Warns",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "model_id",
+          "tokenizer",
+          "estimated",
+          "reported",
+          "samples",
+          "ratio",
+          "warns",
+          "proposed"
+        ],
+        "title": "CalibrationResponse",
+        "type": "object"
+      },
       "ChangeKind": {
         "enum": [
           "added",
@@ -1012,6 +1074,36 @@
         "title": "CredentialStatus",
         "type": "object"
       },
+      "DerivationResponse": {
+        "description": "One row of the derivation table, for the form to match while somebody types.",
+        "properties": {
+          "dialect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dialect"
+          },
+          "prefix": {
+            "title": "Prefix",
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/TokenizerSpec"
+          }
+        },
+        "required": [
+          "dialect",
+          "prefix",
+          "spec"
+        ],
+        "title": "DerivationResponse",
+        "type": "object"
+      },
       "DistillationConfig": {
         "description": "SPEC \u00a76.4's knobs, per organization.",
         "properties": {
@@ -1471,9 +1563,25 @@
             "title": "Source Uri",
             "type": "string"
           },
+          "stale": {
+            "default": false,
+            "title": "Stale",
+            "type": "boolean"
+          },
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "tokenizer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokenizer"
           },
           "updated_at": {
             "format": "date-time",
@@ -1495,12 +1603,51 @@
           "page_count",
           "embedding_model",
           "chunk_strategy",
+          "tokenizer",
           "content_hash",
           "indexed_at",
           "created_at",
           "updated_at"
         ],
         "title": "DocumentResponse",
+        "type": "object"
+      },
+      "EffectiveTokenizerResponse": {
+        "description": "A resolved tokenizer and where it came from (task 101). Shared by the model page\nand the platform embedding section, so the two read identically.",
+        "properties": {
+          "approximate": {
+            "title": "Approximate",
+            "type": "boolean"
+          },
+          "degraded": {
+            "title": "Degraded",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "origin": {
+            "title": "Origin",
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/TokenizerSpec"
+          }
+        },
+        "required": [
+          "spec",
+          "origin",
+          "name",
+          "label",
+          "degraded",
+          "approximate"
+        ],
+        "title": "EffectiveTokenizerResponse",
         "type": "object"
       },
       "EmbeddingChoice": {
@@ -1528,6 +1675,16 @@
             ],
             "title": "Provider",
             "type": "string"
+          },
+          "tokenizer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenizerSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "EmbeddingChoice",
@@ -3568,6 +3725,16 @@
             "title": "Timeout Seconds",
             "type": "integer"
           },
+          "tokenizer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenizerSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "upstream_model_id": {
             "maxLength": 200,
             "minLength": 1,
@@ -3654,6 +3821,9 @@
             "title": "Editable",
             "type": "boolean"
           },
+          "effective_tokenizer": {
+            "$ref": "#/components/schemas/EffectiveTokenizerResponse"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
@@ -3705,6 +3875,16 @@
             "title": "Timeout Seconds",
             "type": "integer"
           },
+          "tokenizer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenizerSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
@@ -3731,6 +3911,8 @@
           "default_params",
           "timeout_seconds",
           "context_window",
+          "tokenizer",
+          "effective_tokenizer",
           "enabled",
           "editable",
           "created_at",
@@ -3843,6 +4025,16 @@
             "minimum": 1.0,
             "title": "Timeout Seconds",
             "type": "integer"
+          },
+          "tokenizer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenizerSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "upstream_model_id": {
             "maxLength": 200,
@@ -4047,6 +4239,16 @@
               }
             ],
             "title": "Timeout Seconds"
+          },
+          "tokenizer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenizerSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "upstream_model_id": {
             "anyOf": [
@@ -4802,6 +5004,16 @@
             "title": "Attribution",
             "type": "array"
           },
+          "embedding_tokenizer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffectiveTokenizerResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "from_environment": {
             "items": {
               "type": "string"
@@ -5092,6 +5304,10 @@
             "title": "System Message",
             "type": "string"
           },
+          "tokenizer": {
+            "title": "Tokenizer",
+            "type": "string"
+          },
           "total_tokens": {
             "title": "Total Tokens",
             "type": "integer"
@@ -5105,7 +5321,8 @@
           "model_name",
           "overflowed",
           "retrieval",
-          "citations"
+          "citations",
+          "tokenizer"
         ],
         "title": "PromptPreviewResponse",
         "type": "object"
@@ -5939,6 +6156,10 @@
           "query": {
             "title": "Query",
             "type": "string"
+          },
+          "tokenizer": {
+            "title": "Tokenizer",
+            "type": "string"
           }
         },
         "required": [
@@ -5948,7 +6169,8 @@
           "error",
           "chunks",
           "injected_tokens",
-          "doc_max_tokens"
+          "doc_max_tokens",
+          "tokenizer"
         ],
         "title": "RetrievalPreviewResponse",
         "type": "object"
@@ -6555,6 +6777,87 @@
           "items"
         ],
         "title": "ThrottledEndUsersResponse",
+        "type": "object"
+      },
+      "TokenizerName": {
+        "enum": [
+          "cl100k_base",
+          "o200k_base",
+          "p50k_base",
+          "approximate",
+          "words"
+        ],
+        "type": "string"
+      },
+      "TokenizerSpec": {
+        "additionalProperties": false,
+        "description": "The stored form: a name from the closed registry, and a ratio for ``approximate``.\n\n``approximate`` requires the ratio and every other name rejects one, both as\nvalidation errors \u2014 a ratio on ``o200k_base`` is a misunderstanding worth stopping,\nnot a field to ignore.",
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/TokenizerName"
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ratio"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "TokenizerSpec",
+        "type": "object"
+      },
+      "TokenizersResponse": {
+        "description": "The closed registry and the derivation table (task 101). Served rather than\nduplicated in the web bundle, so the two cannot disagree.",
+        "properties": {
+          "derivations": {
+            "items": {
+              "$ref": "#/components/schemas/DerivationResponse"
+            },
+            "title": "Derivations",
+            "type": "array"
+          },
+          "drift_warning": {
+            "title": "Drift Warning",
+            "type": "number"
+          },
+          "fallback": {
+            "$ref": "#/components/schemas/TokenizerSpec"
+          },
+          "max_ratio": {
+            "title": "Max Ratio",
+            "type": "number"
+          },
+          "min_ratio": {
+            "title": "Min Ratio",
+            "type": "number"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          }
+        },
+        "required": [
+          "names",
+          "derivations",
+          "fallback",
+          "min_ratio",
+          "max_ratio",
+          "drift_warning"
+        ],
+        "title": "TokenizersResponse",
         "type": "object"
       },
       "TranscriptResponse": {
@@ -10708,6 +11011,32 @@
         ]
       }
     },
+    "/api/v1/models/calibration": {
+      "get": {
+        "description": "Every visible model's tokenizer drift (task 101), in one round trip.\n\nOne list rather than a per-model endpoint: the gateway editor needs its targets'\nrows and the model page needs one, and both are answered from a single grouped query\nover the window. Declared before ``/models/{model_id}`` so ``calibration`` is not\nparsed as an id.",
+        "operationId": "list_calibrations_api_v1_models_calibration_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CalibrationResponse"
+                  },
+                  "title": "Response List Calibrations Api V1 Models Calibration Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Calibrations",
+        "tags": [
+          "models"
+        ]
+      }
+    },
     "/api/v1/models/test": {
       "post": {
         "description": "Probe a configuration that has not been saved.\n\nDeclared before ``/models/{model_id}`` so ``test`` is not swallowed as an id \u2014 FastAPI\nmatches in declaration order, and ``uuid.UUID`` would reject it with a 422 that reads\nlike the endpoint is broken.",
@@ -10875,6 +11204,50 @@
           }
         },
         "summary": "Update Model",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/v1/models/{model_id}/calibrate": {
+      "post": {
+        "description": "Store the ratio the window measured as this model's tokenizer override.",
+        "operationId": "calibrate_model_api_v1_models__model_id__calibrate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Model Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Calibrate Model",
         "tags": [
           "models"
         ]
@@ -11789,6 +12162,28 @@
         "summary": "Read Retention Ceilings",
         "tags": [
           "platform"
+        ]
+      }
+    },
+    "/api/v1/tokenizers": {
+      "get": {
+        "description": "The tokenizer registry and the derivation table (task 101).",
+        "operationId": "list_tokenizers_api_v1_tokenizers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenizersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Tokenizers",
+        "tags": [
+          "models"
         ]
       }
     },

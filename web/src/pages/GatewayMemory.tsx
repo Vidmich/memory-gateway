@@ -589,6 +589,11 @@ function PromptResult({ preview }: { preview: PromptPreviewResponse }) {
         <h4 className="text-xs font-semibold text-slate-900">Assembled system message</h4>
         <p className="text-xs text-slate-500">
           {preview.total_tokens} tokens
+          {/* Task 101: the unit. The same chunk is a different size under a different
+              model, and the number is only meaningful with its tokenizer beside it. */}
+          {preview.tokenizer ? (
+            <span className="font-mono"> ({preview.tokenizer})</span>
+          ) : null}
           {preview.context_window ? (
             <>
               {' '}

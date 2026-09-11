@@ -3,13 +3,21 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { ApiError } from '@/api/client'
 import {
+  useCalibrateModel,
+  useCalibrations,
   useCreateModel,
   useModel,
   useTestDraft,
   useTestModel,
+  useTokenizers,
   useUpdateModel,
 } from '@/api/models'
-import type { ModelResponse, ProbeResponse } from '@/api/types'
+import type {
+  CalibrationResponse,
+  ModelResponse,
+  ProbeResponse,
+  TokenizerSpec,
+} from '@/api/types'
 import { useAuth } from '@/auth/AuthContext'
 import { can } from '@/auth/capabilities'
 import { Field, Form, Select, SubmitButton, TextArea, TextInput } from '@/components/Form'
@@ -17,6 +25,8 @@ import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { useToast } from '@/components/Toast'
 import { PRESETS, presetById, presetFor } from '@/pages/providerPresets'
 import { ObjectAudit } from '@/pages/ObjectAudit'
+import { TokenizerField } from '@/pages/TokenizerField'
+import { deriveTokenizer, describeCalibration, formatRatio } from '@/pages/tokenizers'
 
 const DIALECTS = [
   { value: 'openai', label: 'OpenAI-compatible' },
@@ -60,6 +70,9 @@ type FormState = {
   //  not know this model's window", which is a different thing from zero and is what
   //  switches the gateway's overflow guard off.
   contextWindow: string
+  //  `null` is "derived from the dialect and model id", which is the default and what
+  //  nearly every model should keep (task 101).
+  tokenizer: TokenizerSpec | null
   enabled: boolean
   scope: string
 }
@@ -76,6 +89,7 @@ const BLANK: FormState = {
   defaultParams: '{}',
   timeoutSeconds: 60,
   contextWindow: '',
+  tokenizer: null,
   enabled: true,
   scope: 'org',
 }
@@ -113,6 +127,10 @@ export function ModelFormPage() {
   const update = useUpdateModel(modelId)
   const testSaved = useTestModel()
   const testDraft = useTestDraft()
+  const tokenizers = useTokenizers()
+  //  Only for a saved model: a draft has no requests to have been measured on.
+  const calibrations = useCalibrations(!isNew)
+  const calibrate = useCalibrateModel()
 
   const [state, setState] = useState<FormState>(BLANK)
   const [preset, setPreset] = useState('openai')
@@ -185,6 +203,9 @@ export function ModelFormPage() {
       //  `null` rather than omitted, so clearing the field is a change the PATCH applies
       //  — the field is genuinely nullable, unlike the rest of this body.
       context_window: state.contextWindow ? Number(state.contextWindow) : null,
+      //  Same shape of nullability: `null` clears the override and the model goes back
+      //  to derivation, which the response then says.
+      tokenizer: state.tokenizer,
       enabled: state.enabled,
     }
 
@@ -486,6 +507,34 @@ export function ModelFormPage() {
               </Field>
             </div>
 
+            {tokenizers.data ? (
+              <TokenizerField
+                namePrefix="tokenizer"
+                derived={deriveTokenizer(tokenizers.data, state.dialect, state.upstreamModelId)}
+                effective={model?.effective_tokenizer}
+                value={state.tokenizer}
+                onChange={(tokenizer) => set('tokenizer', tokenizer)}
+                names={tokenizers.data.names}
+                disabled={!editable}
+              />
+            ) : null}
+            {!isNew && model ? (
+              <CalibrationPanel
+                model={model}
+                row={calibrations.data?.find((entry) => entry.model_id === model.id)}
+                editable={editable}
+                busy={calibrate.isPending}
+                onCalibrate={() =>
+                  calibrate.mutate(model.id, {
+                    onSuccess: (saved) =>
+                      notify(
+                        `Calibrated: ${formatRatio(saved.tokenizer?.ratio ?? 0)} characters per token.`,
+                      ),
+                  })
+                }
+              />
+            ) : null}
+
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
@@ -723,9 +772,73 @@ function stateOf(model: ModelResponse): FormState {
     defaultParams: JSON.stringify(model.default_params, null, 2),
     timeoutSeconds: model.timeout_seconds,
     contextWindow: model.context_window === null ? '' : String(model.context_window),
+    tokenizer: model.tokenizer ?? null,
     enabled: model.enabled,
     scope: model.scope,
   }
+}
+
+/**
+ * Our count against the provider's, for one model (task 101).
+ *
+ * The number is the honest part of an approximation: we will never have every tokenizer,
+ * and showing the measured error against the one count that is authoritative turns a
+ * guess into an estimate with an error bar. **Calibrate** is a button and not automatic
+ * because a ratio that moves by itself moves the budgets by itself.
+ */
+function CalibrationPanel({
+  model,
+  row,
+  editable,
+  busy,
+  onCalibrate,
+}: {
+  model: ModelResponse
+  row: CalibrationResponse | undefined
+  editable: boolean
+  busy: boolean
+  onCalibrate: () => void
+}) {
+  const warns = Boolean(row?.warns)
+  return (
+    <div
+      data-testid="calibration"
+      className={`mb-4 rounded-md border p-3 text-sm ${
+        warns ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-slate-50 text-slate-700'
+      }`}
+    >
+      <p>
+        <span className="font-medium">Measured with </span>
+        <span className="font-mono">{model.effective_tokenizer.name}</span>
+        <span className="text-slate-500"> ({model.effective_tokenizer.origin})</span>.{' '}
+        {describeCalibration(row)}
+      </p>
+      {warns ? (
+        <p role="status" className="mt-1">
+          More than {Math.round(15)}% off the provider&rsquo;s count. Budgets and rate-limit
+          estimates on gateways routing here are measured in the wrong unit until the
+          tokenizer is corrected.
+        </p>
+      ) : null}
+      {row?.proposed && editable ? (
+        <button
+          type="button"
+          onClick={onCalibrate}
+          disabled={busy}
+          className="mt-2 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+        >
+          {busy ? 'Calibrating…' : `Calibrate to ${formatRatio(row.proposed.ratio ?? 0)} characters per token`}
+        </button>
+      ) : null}
+      {row && row.ratio !== null && !row.proposed && model.effective_tokenizer.approximate === false ? (
+        <p className="mt-1 text-xs text-slate-500">
+          A fixed vocabulary cannot be calibrated. If the drift persists, the derivation is
+          wrong for this model: override the tokenizer to the right encoding, or to
+          approximate and calibrate that.
+        </p>
+      ) : null}
+    </div>
+  )
 }
 
 function headersToObject(rows: HeaderRow[]): Record<string, string> {

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -79,7 +80,11 @@ def test_a_stored_override_that_no_longer_validates_reads_as_none() -> None:
 
 def test_every_name_in_the_registry_resolves_to_a_tokenizer() -> None:
     for name in TOKENIZER_NAMES:
-        spec = TokenizerSpec.approximate(4.0) if name == "approximate" else TokenizerSpec(name=name)
+        spec = (
+            TokenizerSpec.approximate(4.0)
+            if name == "approximate"
+            else TokenizerSpec.model_validate({"name": name})
+        )
         tokenizer = resolve(spec)
         assert tokenizer.offsets("") == [0]
         assert tokenizer.offsets("two words")[-1] == len("two words")
@@ -170,8 +175,7 @@ def test_parity_with_the_web_provider_presets() -> None:
 # ---------------------------------------------------------------------------
 
 PROSE = (
-    "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. "
-    * 12
+    "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. " * 12
 ).strip()
 
 
@@ -181,7 +185,7 @@ def test_the_approximate_tokenizer_honours_the_port(ratio: float) -> None:
     for text in (PROSE, "x" * 1000, "   \n  ", "ab", ""):
         offsets = tokenizer.offsets(text)
         assert offsets[0] == 0 and offsets[-1] == len(text)
-        assert all(later > earlier for earlier, later in zip(offsets, offsets[1:], strict=False))
+        assert all(later > earlier for earlier, later in pairwise(offsets))
 
 
 @pytest.mark.parametrize("ratio", [1.0, 2.5, 3.5, 3.6, 4.0, 6.0])
@@ -314,7 +318,7 @@ def test_an_empty_window_has_no_ratio() -> None:
 
 
 def test_calibrating_scales_the_ratio_by_our_count_over_theirs() -> None:
-    """Characters are estimated × old ratio; the new ratio is characters ÷ reported.
+    """Characters are estimated times old ratio; the new ratio is characters over reported.
     Undercounting by four percent means fewer characters per token."""
     proposed = calibrated(
         TokenizerSpec.approximate(3.5), Calibration(estimated=1000, reported=1040, samples=3)

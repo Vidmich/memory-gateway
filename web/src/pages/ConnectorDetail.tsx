@@ -216,6 +216,9 @@ export function DocumentTable({
           <th scope="col" className="py-2 pr-3">
             Indexed
           </th>
+          <th scope="col" className="py-2 pr-3">
+            Cut with
+          </th>
           <th scope="col" className="py-2" />
         </tr>
       </thead>
@@ -248,6 +251,21 @@ export function DocumentTable({
             </td>
             <td className="py-2 pr-3 text-xs text-slate-500">
               {document.indexed_at ? new Date(document.indexed_at).toLocaleString() : '—'}
+            </td>
+            <td className="py-2 pr-3 text-xs">
+              {/* Task 101. The tokenizer the sizes were measured with, by the name it
+                  gave itself — so a worker whose vocabulary failed to load is visible
+                  here rather than in a log line. `stale` is a comparison the listing
+                  made against what ingestion would write now. */}
+              <span className="font-mono text-slate-500">{document.tokenizer ?? '—'}</span>
+              {document.stale ? (
+                <span
+                  title="Cut under a configuration that is no longer current — settings, embedding model or tokenizer. Reindex to recut."
+                  className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-800"
+                >
+                  stale
+                </span>
+              ) : null}
             </td>
             <td className="py-2 text-right whitespace-nowrap">
               {document.chunk_count > 0 ? (
@@ -292,7 +310,7 @@ export function DocumentTable({
           </tr>
           {inspecting === document.id ? (
             <tr>
-              <td colSpan={8} className="bg-slate-50 px-3 py-3">
+              <td colSpan={9} className="bg-slate-50 px-3 py-3">
                 <ChunkInspector
                   documentId={document.id}
                   expected={document.chunk_count}

@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
@@ -8,7 +8,7 @@ import { ApiClient } from '@/api/client'
 import { AppRoutes, makeQueryClient } from '@/App'
 import { AuthProvider } from '@/auth/AuthContext'
 import { ToastProvider } from '@/components/Toast'
-import { makeSuperadmin } from '@/test/factories'
+import { makeSuperadmin, makeTokenizers } from '@/test/factories'
 import { bodyOf, jsonResponse as json, pathOf } from '@/test/http'
 
 /**
@@ -57,6 +57,16 @@ const SETTINGS = {
   from_environment: ['embedding', 'distillation', 'limits', 'storage'],
   reindex: null,
   pending_embedding: null,
+  // Task 101: the hash embedder has no vocabulary, so the chunker's unit is derived as
+  // the fallback approximation.
+  embedding_tokenizer: {
+    spec: { name: 'approximate', ratio: 4 },
+    origin: 'derived',
+    name: 'approximate:4',
+    label: 'approximate:4 (derived)',
+    degraded: false,
+    approximate: true,
+  },
 }
 
 const MAINTENANCE = {
@@ -114,6 +124,7 @@ function fakeServer(options: Options = {}) {
     if (path === '/api/v1/platform/settings') {
       return Promise.resolve(json(options.settings ?? SETTINGS))
     }
+    if (path === '/api/v1/tokenizers') return Promise.resolve(json(makeTokenizers()))
     if (path === '/api/v1/platform/maintenance') {
       return Promise.resolve(json(options.maintenance ?? MAINTENANCE))
     }
@@ -206,6 +217,52 @@ describe('Platform → Settings', () => {
 })
 
 describe('the embedding panel', () => {
+  it('shows the derived tokenizer and says chunk sizes are estimates (task 101)', async () => {
+    renderAt('/platform/settings', fakeServer())
+
+    expect(await screen.findByTestId('embedding.tokenizer-derived')).toHaveTextContent(
+      'approximate:4 (derived)',
+    )
+    expect(screen.getByRole('note')).toHaveTextContent(/chunk sizes are estimates/)
+  })
+
+  it('derives a real encoding once the model is one we know', async () => {
+    renderAt('/platform/settings', fakeServer())
+
+    await userEvent.selectOptions(await screen.findByLabelText('Provider'), 'openai')
+    const model = screen.getByLabelText('Model')
+    await userEvent.clear(model)
+    await userEvent.type(model, 'text-embedding-3-small')
+
+    expect(screen.getByTestId('embedding.tokenizer-derived')).toHaveTextContent(
+      'cl100k_base (derived)',
+    )
+    // A different unit from the one the documents were cut in: every one of them is stale.
+    expect(screen.getByRole('status')).toHaveTextContent(/every indexed document becomes stale/i)
+  })
+
+  it('sends an override as part of the embedding section, without a reindex', async () => {
+    const server = fakeServer()
+    renderAt('/platform/settings', server)
+
+    await userEvent.click(await screen.findByLabelText('Override'))
+    const ratio = screen.getByLabelText('Characters per token')
+    await userEvent.clear(ratio)
+    await userEvent.type(ratio, '3.6')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      const sent = server.requests.find(
+        (entry) => entry.path === '/api/v1/platform/settings' && entry.method === 'PATCH',
+      )
+      expect(sent?.body.embedding).toMatchObject({
+        provider: 'hash',
+        name: 'hash-bow',
+        tokenizer: { name: 'approximate', ratio: 3.6 },
+      })
+    })
+  })
+
   it('will not start a reindex until the model name is retyped', async () => {
     // The most expensive button in the product. Nobody should reach it by tabbing.
     renderAt('/platform/settings', fakeServer())
@@ -259,7 +316,7 @@ describe('the embedding panel', () => {
     renderAt('/platform/settings', server)
 
     expect(await screen.findByText(/A reindex is running/)).toBeInTheDocument()
-    expect(await screen.findByRole('button', { name: 'Save provider' })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: 'Save' })).toBeDisabled()
   })
 })
 

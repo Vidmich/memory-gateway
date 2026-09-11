@@ -8,8 +8,8 @@ count shown rather than guessed.
 **Spec:** §6.3 (budgets), §8.4 (model fields), §9.3 (chunking is measured in tokens), §9.4,
 §11 — and amends §8.4 and §9.4 with a `tokenizer` field each.
 **Size:** M
-**Status:** post-v1. 104 folds the embedding tokenizer into the fingerprint it tracks; do
-this one first or 104 will have to be revisited.
+**Status:** **done.** 104 folds the embedding tokenizer into the fingerprint it tracks; the
+fingerprint now carries it, so 104 can read it rather than add it.
 
 ---
 
@@ -90,100 +90,100 @@ Open a connector's document list: each document shows the tokenizer it was cut w
 
 ### The registry
 
-- [ ] `app/services/tokenizers.py`: `TOKENIZERS`, a closed registry of names →
+- [x] `app/services/tokenizers.py`: `TOKENIZERS`, a closed registry of names →
       constructors: `cl100k_base`, `o200k_base`, `p50k_base` (tiktoken), `approximate`
       (ratio-parameterised), `words`. `resolve(spec) -> Tokenizer`, cached per spec — loading
       a BPE vocabulary is what `workers/runtime.py` already says is expensive.
-- [ ] `TokenizerSpec(name, ratio=None)` as the stored form. `approximate` requires a ratio;
+- [x] `TokenizerSpec(name, ratio=None)` as the stored form. `approximate` requires a ratio;
       others reject one. Validated through the same `ConfigBlob` machinery as everything else,
       so a misspelled name is a 422 and not a silent `words`.
-- [ ] `ApproximateTokenizer(ratio)`: character offsets at every `ratio` characters, snapped to
+- [x] `ApproximateTokenizer(ratio)`: character offsets at every `ratio` characters, snapped to
       whitespace where one is within reach, so `token_span` still lands on word boundaries and
       the chunker's "never mid-word" invariant survives. Its `name` includes the ratio —
       `approximate:3.6` — because two approximations with different ratios cut different
       chunks and the fingerprint has to say so.
-- [ ] `derive(dialect, model_id) -> TokenizerSpec`: a preset table keyed by model-id prefix
+- [x] `derive(dialect, model_id) -> TokenizerSpec`: a preset table keyed by model-id prefix
       per dialect — `gpt-4o*`/`o1*`/`o3*` → `o200k_base`; `gpt-4*`/`gpt-3.5*`/
       `text-embedding-3*`/`text-embedding-ada*` → `cl100k_base`; `claude*` →
       `approximate:3.5`; anything else → `approximate:4.0`. The table lives in one place next
       to the provider presets the UI already has (`web/src/pages/providerPresets.ts` has the
       same knowledge for a different purpose; generate one from the other, or the two will
       disagree within a month).
-- [ ] The `TiktokenCounter` fallback to `WordTokenizer` on a failed vocabulary download stays,
+- [x] The `TiktokenCounter` fallback to `WordTokenizer` on a failed vocabulary download stays,
       and is now **visible**: a tokenizer that degraded reports `name = "words (cl100k_base
       unavailable)"`, which lands on the document row and on the model page. Today the
       degradation is a log line nobody reads.
 
 ### Where it is configured
 
-- [ ] `UpstreamModel.tokenizer: TokenizerSpec | None`. `None` means *derived*; the API returns
+- [x] `UpstreamModel.tokenizer: TokenizerSpec | None`. `None` means *derived*; the API returns
       both the stored value and the `effective` one with its origin, the way task 20 returns
       `effective_chunking`. The form shows the derived value greyed with an **Override** toggle.
-- [ ] `EmbeddingChoice.tokenizer: TokenizerSpec | None`, same shape. This is the one that
+- [x] `EmbeddingChoice.tokenizer: TokenizerSpec | None`, same shape. This is the one that
       **changes chunking**: the fingerprint from task 20 gains the tokenizer name, and a change
       to it — derived or overridden — makes every connector's documents stale (104 shows it;
       until then `requires_reindex` reports it).
-- [ ] `Document.tokenizer` recorded at ingestion, beside `chunk_strategy` and
+- [x] `Document.tokenizer` recorded at ingestion, beside `chunk_strategy` and
       `chunk_fingerprint`. Nullable, no backfill, for the reason task 20 gave: a guess in a
       drift-detection column is worse than a blank.
 
 ### Where it is used
 
-- [ ] **Chunking** gets the embedding model's tokenizer. `IngestionPipeline` stops taking a
+- [x] **Chunking** gets the embedding model's tokenizer. `IngestionPipeline` stops taking a
       tokenizer at construction and asks the platform settings for it per document — the
       settings are cached per worker already, and a mid-run change is exactly the case that
       must be recorded per document rather than per process.
-- [ ] **Assembly and the limiter estimate** get the gateway's *primary* target's tokenizer
+- [x] **Assembly and the limiter estimate** get the gateway's *primary* target's tokenizer
       (the single target, the first failover, or the heaviest A/B weight). `ProxyService`
       resolves it alongside the target; `estimate_tokens` and `prepare` use the same one, which
       keeps the property its docstring promises — `tokens_per_minute` and `doc_max_tokens`
       stay one unit.
-- [ ] **Chunking Compare and Try retrieval** measure with whichever tokenizer ingestion or
+- [x] **Chunking Compare and Try retrieval** measure with whichever tokenizer ingestion or
       assembly would — they are the same code path, and if they took a tokenizer of their own
       they would stop being one.
-- [ ] Every place that constructs `WordTokenizer()` as a default (`prompt.py`,
+- [x] Every place that constructs `WordTokenizer()` as a default (`prompt.py`,
       `memory_preview.py`) is audited: a default is fine in a unit test and wrong in a service.
 
 ### Calibration
 
-- [ ] Every response already carries the provider's `prompt_tokens`, and every request already
+- [x] Every response already carries the provider's `prompt_tokens`, and every request already
       has our estimate. Record the ratio per `(upstream_model_id)` as a rolling window in the
       metrics store — `estimated`, `reported`, `samples`. Non-streaming and streaming both
       (streaming usage arrives on the final frame when the client asked for it; when it did
       not, the sample is skipped rather than guessed).
-- [ ] The model page shows **"our count vs. the provider's: ×1.04 over 3 120 requests"** and,
+- [x] The model page shows **"our count vs. the provider's: ×1.04 over 3 120 requests"** and,
       for `approximate`, a **Calibrate** button that sets the ratio to what the window
       measured. It is a button and not automatic because a ratio that moves by itself moves
       the chunk fingerprint by itself.
-- [ ] A drift over a threshold (say 15%) is a warning on the model page and on the gateway
+- [x] A drift over a threshold (say 15%) is a warning on the model page and on the gateway
       that routes to it — not an alert. It is a configuration problem with a one-click fix, and
       the operator who fixes it is looking at the screen, not the pager.
-- [ ] `tokenizer_drift_ratio{model}` as a gauge, so a deployment that wants the alert can have
+- [x] `tokenizer_drift_ratio{model}` as a gauge, so a deployment that wants the alert can have
       it.
 
 ### Spec
 
-- [ ] Amend §8.4 (a `tokenizer` field, derived unless overridden) and §9.4 (the embedding
+- [x] Amend §8.4 (a `tokenizer` field, derived unless overridden) and §9.4 (the embedding
       tokenizer is part of the chunking configuration, and changing it is a recut). Amend §11
       to say which tokenizer the estimate uses and that the drift is measured.
 
 ## Acceptance criteria
 
-- [ ] A `gpt-4o` model derives `o200k_base`; a `claude-*` model derives a calibrated
+- [x] A `gpt-4o` model derives `o200k_base`; a `claude-*` model derives a calibrated
       approximation; a model with an override uses the override, and the API says which.
-- [ ] Two gateways with `doc_max_tokens: 2000`, one routing to a `cl100k_base` model and one to
+- [x] Two gateways with `doc_max_tokens: 2000`, one routing to a `cl100k_base` model and one to
       an `o200k_base` model, inject different numbers of characters for the same chunks, and
       each stays within budget *as measured by its own tokenizer*.
-- [ ] `estimate_tokens` and `prepare` agree on the tokenizer for every routing mode.
-- [ ] Changing the embedding tokenizer marks documents stale via the chunk fingerprint;
+- [x] `estimate_tokens` and `prepare` agree on the tokenizer for every routing mode.
+- [x] Changing the embedding tokenizer marks documents stale via the chunk fingerprint;
       changing an upstream model's tokenizer marks nothing stale (nothing indexed depends on it).
-- [ ] A document ingested under `approximate:3.6` records that on its row; the connector's
+- [x] A document ingested under `approximate:3.6` records that on its row; the connector's
       document list shows it.
-- [ ] After N requests through a model, the calibration ratio equals `reported / estimated`
+- [x] After N requests through a model, the calibration ratio equals `reported / estimated`
       over those requests, and **Calibrate** stores it as the override.
-- [ ] `ApproximateTokenizer` passes the shared chunking invariant suite (`tests/chunking_contract.py`)
+- [x] `ApproximateTokenizer` passes the shared chunking invariant suite (`tests/chunking_contract.py`)
       under every strategy: no word lost, no word invented, nothing over the ceiling.
-- [ ] A tiktoken vocabulary that fails to load produces a document row that *says so*, not a
+- [x] A tiktoken vocabulary that fails to load produces a document row that *says so*, not a
       row that claims `cl100k_base`.
 
 ## Tests
@@ -197,6 +197,55 @@ Open a connector's document list: each document shows the tokenizer it was cut w
 - Fingerprint: the tokenizer name is in it, and `changed_formats` reports a tokenizer change.
 - Calibration arithmetic over a recorded window, including the streaming-without-usage skip.
 - The degraded-vocabulary name reaching the document row.
+
+## Implementation notes
+
+- **Where things landed.** `app/services/tokenizers.py` is the registry, the derivation
+  table, `Effective` (spec + origin) and the calibration arithmetic; `app/services/tokenizer.py`
+  keeps the port and gains `ApproximateTokenizer` and the degraded name. The override is
+  `upstream_models.tokenizer` (JSONB, `NULL` = derived) and `EmbeddingChoice.tokenizer`; the
+  record is `documents.tokenizer`, the chunk payload's `tokenizer`, and
+  `request_logs.tokenizer` + `estimated_prompt_tokens`. Migration `0020_tokenizer_follows_model`.
+- **The count is exact and the chunker keeps words whole — not the other way round.** The
+  work item asked the approximate tokenizer to snap its boundaries to whitespace so "never
+  mid-word" survives. Snapping far enough to guarantee that makes the count depend on word
+  length (two ideal offsets collapse onto one word start), and then the ratio stops meaning
+  "characters per token", which is the quantity the calibration corrects. So the tokenizer
+  snaps only within *half a token* (count stays `len / ratio` ± 1) and the invariant moved to
+  where it belongs: `_split` in `chunking.py` now walks a cut off the inside of a word, for the
+  closing edge and for the overlap's opening edge. That is a no-op for `WordTokenizer` (its
+  boundaries were word starts already) and a real fix for `cl100k_base`, whose sub-word tokens
+  could open a `fixed` chunk with the second half of `extraordinary` before this. The shared
+  invariant suite runs under `approximate:3.6` for every strategy.
+- **"Primary target" became "the target being prepared".** The work item said assembly and
+  the limiter estimate get the *primary* target's tokenizer. `prepare()` runs once per routing
+  attempt, so the tokenizer is simply the attempt's own target's; for `single` and `ab_split`
+  that *is* the primary, and for `failover` the retry is budgeted in the unit of the model that
+  will actually read it. `estimate_tokens` reads the count off the assembly the same call made,
+  so the two cannot disagree for any routing mode. The estimate for the limiter is still taken
+  from the first target, as before, and settlement corrects the difference either way.
+- **Calibration is a query, not a table.** The request log already had the provider's
+  `prompt_tokens`; it now has ours and the tokenizer's name beside it, and the "rolling window"
+  is `GET /models/calibration` grouping the last 30 days by `(model, tokenizer)` — grouped by
+  tokenizer name so an override starts a fresh window rather than inheriting the old unit's
+  error. Rows without both counts (a stream whose client never asked for usage, a refused
+  request) are skipped, not guessed. The Prometheus gauge is fed from an in-process window of
+  the last 256 samples per model, because a gauge is a process-local number.
+- **What "stale" means.** The connector's document listing compares each row's
+  `chunk_fingerprint` against the one ingestion would write now (settings, embedding model
+  where the strategy depends on it, tokenizer) and returns `stale` per row. A row with no
+  fingerprint — indexed before task 20 — is not stale, it is unknown. A tokenizer change on the
+  platform therefore starts no reindex run; it makes every connector show its documents as
+  stale, and **Reindex** on the connector is the recut.
+- **The UI's derivation is the server's table.** `GET /tokenizers` serves the registry and the
+  derivation rows; `web/src/pages/tokenizers.ts` applies the same longest-prefix rule to them
+  while somebody types. The parity test in `tests/test_tokenizers.py` reads
+  `providerPresets.ts` and asserts every preset model derives something better than the
+  fallback unless it is a family we knowingly approximate.
+- **Behaviour change on existing deployments.** The `hash` development embedder and any
+  self-hosted embedding model now derive `approximate:4` where they used to get `cl100k_base`;
+  `text-embedding-3-*` keeps `cl100k_base` and its chunks stay valid. Everything else is a
+  stale document list and a reindex — see `docs/runbooks/chunking-change.md`.
 
 ## Notes
 

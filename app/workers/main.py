@@ -33,11 +33,11 @@ from app.workers.runtime import (
     build_dead_letters,
     build_distillation,
     build_ingestion,
-    embedding_tokenizer,
     build_platform,
     build_platform_settings,
     build_runner,
     build_vector_backends,
+    embedding_tokenizer,
 )
 
 logger = logging.getLogger(__name__)

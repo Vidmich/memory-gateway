@@ -15,12 +15,14 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tan
 
 import { useApiClient } from '@/auth/AuthContext'
 import type {
+  CalibrationResponse,
   ModelCreateRequest,
   ModelPage,
   ModelResponse,
   ModelTestRequest,
   ModelUpdateRequest,
   ProbeResponse,
+  TokenizersResponse,
 } from '@/api/types'
 
 export type ModelScope = 'global' | 'org'
@@ -30,6 +32,10 @@ export const keys = {
   list: (scope: ModelScope | null, cursor?: string | null) =>
     ['models', { scope: scope ?? null, cursor: cursor ?? null }] as const,
   one: (id: string) => ['models', id] as const,
+  //  Task 101. Under the models prefix so a save invalidates the drift rows too: a
+  //  tokenizer override starts a fresh window, and the old ratio must not linger.
+  calibration: ['models', 'calibration'] as const,
+  tokenizers: ['tokenizers'] as const,
 }
 
 function listPath(scope: ModelScope | null, cursor?: string | null): string {
@@ -59,6 +65,26 @@ export function useModel(id: string | undefined): UseQueryResult<ModelResponse> 
     queryKey: keys.one(id ?? ''),
     queryFn: () => client.get<ModelResponse>(`/api/v1/models/${id}`),
     enabled: Boolean(id),
+  })
+}
+
+/** The closed registry and the derivation table (task 101) — served, not duplicated. */
+export function useTokenizers(): UseQueryResult<TokenizersResponse> {
+  const client = useApiClient()
+  return useQuery({
+    queryKey: keys.tokenizers,
+    queryFn: () => client.get<TokenizersResponse>('/api/v1/tokenizers'),
+    staleTime: Infinity,
+  })
+}
+
+/** Every visible model's tokenizer drift, in one round trip (task 101). */
+export function useCalibrations(enabled = true): UseQueryResult<CalibrationResponse[]> {
+  const client = useApiClient()
+  return useQuery({
+    queryKey: keys.calibration,
+    queryFn: () => client.get<CalibrationResponse[]>('/api/v1/models/calibration'),
+    enabled,
   })
 }
 
@@ -102,6 +128,16 @@ export function useDeleteModel() {
   const invalidate = useInvalidateModels()
   return useMutation({
     mutationFn: (id: string) => client.delete<void>(`/api/v1/models/${id}`),
+    onSuccess: invalidate,
+  })
+}
+
+/** Store the ratio the window measured as the model's tokenizer override (task 101). */
+export function useCalibrateModel() {
+  const client = useApiClient()
+  const invalidate = useInvalidateModels()
+  return useMutation({
+    mutationFn: (id: string) => client.post<ModelResponse>(`/api/v1/models/${id}/calibrate`),
     onSuccess: invalidate,
   })
 }

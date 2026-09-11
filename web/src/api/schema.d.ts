@@ -1109,6 +1109,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/models/calibration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Calibrations
+         * @description Every visible model's tokenizer drift (task 101), in one round trip.
+         *
+         *     One list rather than a per-model endpoint: the gateway editor needs its targets'
+         *     rows and the model page needs one, and both are answered from a single grouped query
+         *     over the window. Declared before ``/models/{model_id}`` so ``calibration`` is not
+         *     parsed as an id.
+         */
+        get: operations["list_calibrations_api_v1_models_calibration_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/models/test": {
         parameters: {
             query?: never;
@@ -1157,6 +1182,26 @@ export interface paths {
          *     clears it. There is no way to read it back, so rotation is replacement.
          */
         patch: operations["update_model_api_v1_models__model_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/models/{model_id}/calibrate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Calibrate Model
+         * @description Store the ratio the window measured as this model's tokenizer override.
+         */
+        post: operations["calibrate_model_api_v1_models__model_id__calibrate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/models/{model_id}/test": {
@@ -1559,6 +1604,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tokenizers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Tokenizers
+         * @description The tokenizer registry and the derivation table (task 101).
+         */
+        get: operations["list_tokenizers_api_v1_tokenizers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/g/{slug}/v1/chat/completions": {
         parameters: {
             query?: never;
@@ -1749,6 +1814,33 @@ export interface components {
              * Format: date-time
              */
             start: string;
+        };
+        /**
+         * CalibrationResponse
+         * @description Task 101: our count against the provider's, for one model.
+         *
+         *     ``ratio`` is provider ÷ ours over the window — ``1.04`` reads "we undercount by four
+         *     percent". ``proposed`` is the ``approximate`` ratio **Calibrate** would store, present
+         *     only when the tokenizer is approximate and there is something to calibrate from.
+         */
+        CalibrationResponse: {
+            /** Estimated */
+            estimated: number;
+            /**
+             * Model Id
+             * Format: uuid
+             */
+            model_id: string;
+            proposed: components["schemas"]["TokenizerSpec"] | null;
+            /** Ratio */
+            ratio: number | null;
+            /** Reported */
+            reported: number;
+            /** Samples */
+            samples: number;
+            tokenizer: components["schemas"]["EffectiveTokenizerResponse"];
+            /** Warns */
+            warns: boolean;
         };
         /** @enum {string} */
         ChangeKind: "added" | "removed" | "changed";
@@ -2006,6 +2098,17 @@ export interface components {
             hint?: string | null;
         };
         /**
+         * DerivationResponse
+         * @description One row of the derivation table, for the form to match while somebody types.
+         */
+        DerivationResponse: {
+            /** Dialect */
+            dialect: string | null;
+            /** Prefix */
+            prefix: string;
+            spec: components["schemas"]["TokenizerSpec"];
+        };
+        /**
          * DistillationConfig
          * @description SPEC §6.4's knobs, per organization.
          */
@@ -2193,13 +2296,38 @@ export interface components {
             source_name: string;
             /** Source Uri */
             source_uri: string;
+            /**
+             * Stale
+             * @default false
+             */
+            stale: boolean;
             /** Status */
             status: string;
+            /** Tokenizer */
+            tokenizer: string | null;
             /**
              * Updated At
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * EffectiveTokenizerResponse
+         * @description A resolved tokenizer and where it came from (task 101). Shared by the model page
+         *     and the platform embedding section, so the two read identically.
+         */
+        EffectiveTokenizerResponse: {
+            /** Approximate */
+            approximate: boolean;
+            /** Degraded */
+            degraded: boolean;
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /** Origin */
+            origin: string;
+            spec: components["schemas"]["TokenizerSpec"];
         };
         /**
          * EmbeddingChoice
@@ -2228,6 +2356,7 @@ export interface components {
              * @enum {string}
              */
             provider: "openai" | "hash";
+            tokenizer?: components["schemas"]["TokenizerSpec"] | null;
         };
         /**
          * EndUserResponse
@@ -3262,6 +3391,7 @@ export interface components {
              * @default 60
              */
             timeout_seconds: number;
+            tokenizer?: components["schemas"]["TokenizerSpec"] | null;
             /** Upstream Model Id */
             upstream_model_id: string;
         };
@@ -3299,6 +3429,7 @@ export interface components {
             dialect: string;
             /** Editable */
             editable: boolean;
+            effective_tokenizer: components["schemas"]["EffectiveTokenizerResponse"];
             /** Enabled */
             enabled: boolean;
             /** Extra Headers */
@@ -3320,6 +3451,7 @@ export interface components {
             system_context: string | null;
             /** Timeout Seconds */
             timeout_seconds: number;
+            tokenizer: components["schemas"]["TokenizerSpec"] | null;
             /**
              * Updated At
              * Format: date-time
@@ -3382,6 +3514,7 @@ export interface components {
              * @default 60
              */
             timeout_seconds: number;
+            tokenizer?: components["schemas"]["TokenizerSpec"] | null;
             /** Upstream Model Id */
             upstream_model_id: string;
         };
@@ -3427,6 +3560,7 @@ export interface components {
             system_context?: string | null;
             /** Timeout Seconds */
             timeout_seconds?: number | null;
+            tokenizer?: components["schemas"]["TokenizerSpec"] | null;
             /** Upstream Model Id */
             upstream_model_id?: string | null;
         };
@@ -3688,6 +3822,7 @@ export interface components {
         PlatformSettingsResponse: {
             /** Attribution */
             attribution?: components["schemas"]["SettingAttribution"][];
+            embedding_tokenizer?: components["schemas"]["EffectiveTokenizerResponse"] | null;
             /** From Environment */
             from_environment?: string[];
             pending_embedding?: components["schemas"]["EmbeddingChoice"] | null;
@@ -3786,6 +3921,8 @@ export interface components {
             retrieval: components["schemas"]["RetrievalPreviewResponse"];
             /** System Message */
             system_message: string;
+            /** Tokenizer */
+            tokenizer: string;
             /** Total Tokens */
             total_tokens: number;
         };
@@ -4107,6 +4244,8 @@ export interface components {
             outcome: string;
             /** Query */
             query: string;
+            /** Tokenizer */
+            tokenizer: string;
         };
         /** RetrievedChunkResponse */
         RetrievedChunkResponse: {
@@ -4361,6 +4500,39 @@ export interface components {
         ThrottledEndUsersResponse: {
             /** Items */
             items: components["schemas"]["ThrottledEndUserResponse"][];
+        };
+        /** @enum {string} */
+        TokenizerName: "cl100k_base" | "o200k_base" | "p50k_base" | "approximate" | "words";
+        /**
+         * TokenizerSpec
+         * @description The stored form: a name from the closed registry, and a ratio for ``approximate``.
+         *
+         *     ``approximate`` requires the ratio and every other name rejects one, both as
+         *     validation errors — a ratio on ``o200k_base`` is a misunderstanding worth stopping,
+         *     not a field to ignore.
+         */
+        TokenizerSpec: {
+            name: components["schemas"]["TokenizerName"];
+            /** Ratio */
+            ratio?: number | null;
+        };
+        /**
+         * TokenizersResponse
+         * @description The closed registry and the derivation table (task 101). Served rather than
+         *     duplicated in the web bundle, so the two cannot disagree.
+         */
+        TokenizersResponse: {
+            /** Derivations */
+            derivations: components["schemas"]["DerivationResponse"][];
+            /** Drift Warning */
+            drift_warning: number;
+            fallback: components["schemas"]["TokenizerSpec"];
+            /** Max Ratio */
+            max_ratio: number;
+            /** Min Ratio */
+            min_ratio: number;
+            /** Names */
+            names: string[];
         };
         /**
          * TranscriptResponse
@@ -6529,6 +6701,26 @@ export interface operations {
             };
         };
     };
+    list_calibrations_api_v1_models_calibration_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalibrationResponse"][];
+                };
+            };
+        };
+    };
     test_draft_api_v1_models_test_post: {
         parameters: {
             query?: never;
@@ -6636,6 +6828,37 @@ export interface operations {
                 "application/json": components["schemas"]["ModelUpdateRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    calibrate_model_api_v1_models__model_id__calibrate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -7293,6 +7516,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RetentionCeilingsResponse"];
+                };
+            };
+        };
+    };
+    list_tokenizers_api_v1_tokenizers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenizersResponse"];
                 };
             };
         };

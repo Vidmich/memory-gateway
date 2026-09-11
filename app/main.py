@@ -81,11 +81,11 @@ from app.services.tokenizer import build_tokenizer
 from app.workers.runtime import (
     build_distillation,
     build_ingestion,
-    embedding_tokenizer,
     build_platform,
     build_platform_settings,
     build_queue,
     build_vector_backends,
+    embedding_tokenizer,
 )
 
 logger = logging.getLogger(__name__)

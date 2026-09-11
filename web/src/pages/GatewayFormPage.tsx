@@ -9,7 +9,7 @@ import {
   useTestGateway,
   useUpdateGateway,
 } from '@/api/gateways'
-import { useModels } from '@/api/models'
+import { useCalibrations, useModels } from '@/api/models'
 import type { GatewayResponse, GatewayTestResponse } from '@/api/types'
 import { useAuth } from '@/auth/AuthContext'
 import { can } from '@/auth/capabilities'
@@ -39,6 +39,7 @@ import {
   type MemoryForm,
 } from '@/pages/memory'
 import { chainBody, chainProblem, rowsOf, sameChain, type ChainRow } from '@/pages/routing'
+import { driftingTargets, formatDrift } from '@/pages/tokenizers'
 import { suggestSlug } from '@/pages/slug'
 import { useUnsavedChanges } from '@/pages/useUnsavedChanges'
 
@@ -341,6 +342,7 @@ export function GatewayFormPage() {
             onMode={(mode) => set('routingMode', mode)}
             onRows={(targets) => set('targets', targets)}
           />
+          <DriftWarning targets={state.targets} models={models?.items ?? []} />
 
           {/* 3. Memory --------------------------------------------------- */}
           <MemorySection
@@ -942,6 +944,41 @@ function TestResult({ result }: { result: GatewayTestResponse }) {
         </div>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * Task 101: a target whose tokenizer is more than the warning line off the provider's
+ * count. A warning on the screen and not an alert on the pager — it is a configuration
+ * problem with a one-click fix, and the person who fixes it is looking at this form.
+ */
+function DriftWarning({
+  targets,
+  models,
+}: {
+  targets: ChainRow[]
+  models: { id: string; name: string }[]
+}) {
+  const modelIds = targets.map((row) => row.modelId).filter(Boolean)
+  const calibrations = useCalibrations(modelIds.length > 0)
+  const drifting = driftingTargets(calibrations.data, modelIds)
+  if (drifting.length === 0) return null
+  const named = (id: string) => models.find((model) => model.id === id)?.name ?? id
+  return (
+    <p
+      role="status"
+      className="-mt-4 mb-6 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+    >
+      Token counts for{' '}
+      {drifting.map((row, index) => (
+        <span key={row.model_id}>
+          {index > 0 ? ', ' : ''}
+          <span className="font-medium">{named(row.model_id)}</span> ({formatDrift(row.ratio ?? 1)})
+        </span>
+      ))}{' '}
+      are off the provider&rsquo;s by more than 15%, so this gateway&rsquo;s budgets and rate
+      limits are measured in the wrong unit. Fix the tokenizer under Models.
+    </p>
   )
 }
 

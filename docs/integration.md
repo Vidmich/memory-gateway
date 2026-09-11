@@ -131,6 +131,18 @@ for citation in getattr(message, "citations", []):
 Whatever the mode, the gateway records which injected chunks each answer cited, and the
 request's detail view in Monitoring shows it.
 
+## Token counts
+
+Every count the gateway makes on your behalf — the document and memory budgets, the
+pre-dispatch estimate a `tokens_per_minute` limit is charged against — is measured with the
+**tokenizer of the model that answers**: `o200k_base` for `gpt-4o`, `cl100k_base` for `gpt-4`,
+and a calibrated characters-per-token approximation for models whose vocabulary is not
+published (Claude, Llama, Mistral). The estimate is settled against the provider's own
+`prompt_tokens` afterwards, and the ratio between the two is shown per model under
+**Models**, so an approximation is an estimate with a stated error rather than a guess. If
+the provider's count and the gateway's disagree by more than a few percent for a model you
+run, that page has a one-click fix.
+
 ## Rate limits
 
 A gateway can carry limits per minute, per day, on requests, on tokens, and on concurrent

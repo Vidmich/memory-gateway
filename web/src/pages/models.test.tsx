@@ -9,10 +9,13 @@ import { AppRoutes, makeQueryClient } from '@/App'
 import { AuthProvider } from '@/auth/AuthContext'
 import { ToastProvider } from '@/components/Toast'
 import {
+  makeCalibration,
+  makeEffectiveTokenizer,
   makeGlobalModel,
   makeModel,
   makeProbe,
   makeSuperadmin,
+  makeTokenizers,
   makeUser,
 } from '@/test/factories'
 import { bodyOf, jsonResponse as json, pathOf } from '@/test/http'
@@ -26,6 +29,8 @@ type ServerOptions = {
   deleteError?: { status: number; code: string; message: string; details?: unknown }
   /** Error to answer a POST/PATCH with. */
   saveError?: { status: number; code: string; message: string; param?: string }
+  /** Task 101: what `GET /models/calibration` answers. */
+  calibrations?: ReturnType<typeof makeCalibration>[]
 }
 
 /**
@@ -58,6 +63,28 @@ function fakeServer(options: ServerOptions = {}) {
 
     if (path.startsWith('/api/v1/models') && path.endsWith('/test') && method === 'POST') {
       return Promise.resolve(json(options.probe ?? makeProbe()))
+    }
+    // Task 101. Before the models prefix, which would otherwise answer these as a page.
+    if (path === '/api/v1/tokenizers') return Promise.resolve(json(makeTokenizers()))
+    if (path === '/api/v1/models/calibration') {
+      return Promise.resolve(json(options.calibrations ?? []))
+    }
+    if (path.endsWith('/calibrate') && method === 'POST') {
+      const proposed = options.calibrations?.[0]?.proposed ?? null
+      return Promise.resolve(
+        json(
+          makeModel({
+            tokenizer: proposed,
+            effective_tokenizer: makeEffectiveTokenizer({
+              spec: proposed ?? { name: 'o200k_base', ratio: null },
+              origin: 'override',
+              name: 'approximate:3.365',
+              label: 'approximate:3.365 (override)',
+              approximate: true,
+            }),
+          }),
+        ),
+      )
     }
     if (path === '/api/v1/models' && method === 'POST') {
       const failure = options.saveError
@@ -432,6 +459,111 @@ describe('the model form', () => {
 
     await waitFor(() => expect(requests.some((r) => r.method === 'POST')).toBe(true))
     expect(lastBody(requests, 'POST').dialect).toBe('openai')
+  })
+})
+
+describe('the tokenizer (task 101)', () => {
+  it('shows the derived tokenizer greyed, with its origin', async () => {
+    const { client } = fakeServer({ models: [makeModel()] })
+    renderAt(client, '/models/mo1')
+
+    expect(await screen.findByTestId('tokenizer-derived')).toHaveTextContent(
+      'o200k_base (derived)',
+    )
+    // No override, so the save body says so and the model stays on derivation.
+    expect(screen.getByLabelText('Override')).not.toBeChecked()
+  })
+
+  it('re-derives as the model id is typed', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/models/new')
+
+    const modelId = await screen.findByLabelText(/model id/i)
+    await userEvent.clear(modelId)
+    await userEvent.type(modelId, 'gpt-4-turbo')
+    expect(screen.getByTestId('tokenizer-derived')).toHaveTextContent('cl100k_base (derived)')
+
+    await userEvent.clear(modelId)
+    await userEvent.type(modelId, 'llama-3.3-70b')
+    expect(screen.getByTestId('tokenizer-derived')).toHaveTextContent('approximate:4 (derived)')
+  })
+
+  it('sends an override, and null to clear it', async () => {
+    const { client, requests } = fakeServer({ models: [makeModel()] })
+    renderAt(client, '/models/mo1')
+
+    await userEvent.click(await screen.findByLabelText('Override'))
+    await userEvent.selectOptions(screen.getByLabelText('Encoding'), 'approximate')
+    const ratio = screen.getByLabelText('Characters per token')
+    await userEvent.clear(ratio)
+    await userEvent.type(ratio, '3.6')
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => {
+      const patch = requests.find((entry) => entry.method === 'PATCH')
+      expect(patch?.body.tokenizer).toEqual({ name: 'approximate', ratio: 3.6 })
+    })
+
+    await userEvent.click(screen.getByLabelText('Override'))
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => {
+      const patches = requests.filter((entry) => entry.method === 'PATCH')
+      expect(patches.at(-1)?.body.tokenizer).toBeNull()
+    })
+  })
+
+  it('shows our count against the provider\'s and calibrates on request', async () => {
+    const approximate = makeModel({
+      tokenizer: { name: 'approximate', ratio: 3.5 },
+      effective_tokenizer: makeEffectiveTokenizer({
+        spec: { name: 'approximate', ratio: 3.5 },
+        origin: 'override',
+        name: 'approximate:3.5',
+        label: 'approximate:3.5 (override)',
+        approximate: true,
+      }),
+    })
+    const { client, requests } = fakeServer({
+      models: [approximate],
+      calibrations: [
+        makeCalibration({
+          ratio: 1.04,
+          samples: 3120,
+          proposed: { name: 'approximate', ratio: 3.365 },
+        }),
+      ],
+    })
+    renderAt(client, '/models/mo1')
+
+    const panel = await screen.findByTestId('calibration')
+    expect(panel).toHaveTextContent('×1.04 over 3,120 requests')
+    await userEvent.click(within(panel).getByRole('button', { name: /calibrate to 3\.365/i }))
+
+    await waitFor(() => {
+      expect(
+        requests.some((entry) => entry.path === '/api/v1/models/mo1/calibrate' && entry.method === 'POST'),
+      ).toBe(true)
+    })
+  })
+
+  it('warns when the drift is past the line, and offers no button for a fixed vocabulary', async () => {
+    const { client } = fakeServer({
+      models: [makeModel()],
+      calibrations: [makeCalibration({ ratio: 1.2, samples: 40, warns: true, proposed: null })],
+    })
+    renderAt(client, '/models/mo1')
+
+    const panel = await screen.findByTestId('calibration')
+    expect(within(panel).getByRole('status')).toHaveTextContent(/more than 15% off/i)
+    expect(within(panel).queryByRole('button')).not.toBeInTheDocument()
+    expect(panel).toHaveTextContent(/fixed vocabulary cannot be calibrated/i)
+  })
+
+  it('says when nothing has been measured yet', async () => {
+    const { client } = fakeServer({ models: [makeModel()], calibrations: [] })
+    renderAt(client, '/models/mo1')
+
+    expect(await screen.findByTestId('calibration')).toHaveTextContent(/no requests measured yet/i)
   })
 })
 

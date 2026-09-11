@@ -12,19 +12,30 @@ answers used to be better".
 | `chunk_size`, `overlap`, `respect_boundaries`, `strategy` | Every stored chunk for the affected formats is now wrong. |
 | An entry added to or removed from `overrides` | Only that format's chunks are wrong. |
 | The platform embedding model | Chunks are still correct **unless** a connector is on `semantic`, where the boundaries came out of the old model. |
+| The embedding **tokenizer** (Platform → Settings → Embedding, derived or overridden) | Every stored chunk everywhere is now sized in a different unit. No reindex run starts; every document reads `stale` until its connector is reindexed. |
 
 The connector's PATCH response says which: `reindex_required` and `reindex_formats`. The
-document row says what each file was actually cut with — `chunk_strategy` and
-`chunk_fingerprint` — which is how you tell a connector that is half reindexed from one
-that is not.
+document row says what each file was actually cut with — `chunk_strategy`,
+`chunk_fingerprint` and `tokenizer` — and the listing marks `stale` any row whose fingerprint
+no longer matches what ingestion would write now. That is how you tell a connector that is
+half reindexed from one that is not.
 
 ```bash
 curl -sS "$GW/api/v1/connectors/$CONNECTOR/documents?limit=200" -H "Authorization: Bearer $TOKEN" \
-  | jq -r '.items[] | "\(.chunk_strategy // "unrecorded")\t\(.source_name)"' | sort | uniq -c
+  | jq -r '.items[] | "\(.chunk_strategy // "unrecorded")\t\(.tokenizer // "unrecorded")\t\(if .stale then "STALE" else "ok" end)\t\(.source_name)"' | sort | uniq -c
 ```
 
-Two strategies in that output means the connector holds two chunkings at once. That is a
-normal transient during a reindex and a problem if it persists.
+Two strategies or two tokenizers in that output means the connector holds two chunkings at
+once. That is a normal transient during a reindex and a problem if it persists.
+
+**On the tokenizer specifically (task 101).** Before it, every chunk on every deployment was
+measured with `cl100k_base`, whatever the embedding model. After it, `chunk_size` is measured
+with the embedding model's own tokenizer, so on a non-OpenAI embedding model the first deploy
+marks every document stale. That is correct and it is a reindex bill: the chunks were sized in
+the wrong unit and the fingerprint is now saying so. Reindex connectors at a pace the
+embedding provider tolerates rather than all at once, and read `tokenizer` on a row that
+looks odd — `words (cl100k_base unavailable)` means a worker could not load its vocabulary
+and cut by word count, which is a network problem on the worker and not a chunking decision.
 
 ## Check
 

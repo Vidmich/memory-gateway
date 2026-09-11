@@ -1,10 +1,13 @@
 import { useState } from 'react'
 
+import { useTokenizers } from '@/api/models'
 import { useUpdatePlatformSettings } from '@/api/platform'
 import { useApiClient } from '@/auth/AuthContext'
-import type { PlatformSettingsResponse, ReindexEstimate } from '@/api/types'
+import type { PlatformSettingsResponse, ReindexEstimate, TokenizerSpec } from '@/api/types'
 import { Field, Form, Select, SubmitButton, TextInput } from '@/components/Form'
 import { useToast } from '@/components/Toast'
+import { TokenizerField } from '@/pages/TokenizerField'
+import { deriveTokenizer, tokenizerKey } from '@/pages/tokenizers'
 
 /**
  * Platform → Settings, the embedding panel (SPEC §9.4).
@@ -35,8 +38,19 @@ export function EmbeddingChange({ settings }: { settings: PlatformSettingsRespon
   const [confirm, setConfirm] = useState('')
   const [estimate, setEstimate] = useState<ReindexEstimate | null>(null)
   const [estimating, setEstimating] = useState(false)
+  //  Task 101. `null` derives the chunker's tokenizer from the model above; an override
+  //  is the one tokenizer setting that changes *chunking*, and the panel says so.
+  const [tokenizer, setTokenizer] = useState<TokenizerSpec | null>(current?.tokenizer ?? null)
+  const tokenizers = useTokenizers()
 
   const changed = name !== current?.name || Number(dimension) !== current?.dimension
+  const derived = tokenizers.data ? deriveTokenizer(tokenizers.data, provider, name) : null
+  const effectiveKey = tokenizer ? tokenizerKey(tokenizer) : derived ? tokenizerKey(derived) : null
+  const tokenizerMoved =
+    settings.embedding_tokenizer !== null &&
+    settings.embedding_tokenizer !== undefined &&
+    effectiveKey !== null &&
+    effectiveKey !== tokenizerKey(settings.embedding_tokenizer.spec)
 
   const preview = async () => {
     setEstimating(true)
@@ -55,7 +69,7 @@ export function EmbeddingChange({ settings }: { settings: PlatformSettingsRespon
   const apply = () =>
     update.mutate(
       {
-        embedding: { provider, name, dimension: Number(dimension) },
+        embedding: { provider, name, dimension: Number(dimension), tokenizer },
         confirm_reindex: confirm,
       },
       {
@@ -140,6 +154,36 @@ export function EmbeddingChange({ settings }: { settings: PlatformSettingsRespon
           )}
         </Field>
 
+        {tokenizers.data && derived ? (
+          <TokenizerField
+            namePrefix="embedding.tokenizer"
+            derived={derived}
+            effective={settings.embedding_tokenizer}
+            value={tokenizer}
+            onChange={setTokenizer}
+            names={tokenizers.data.names}
+            disabled={Boolean(running)}
+          />
+        ) : null}
+        {effectiveKey?.startsWith('approximate') ? (
+          <p role="note" className="mb-4 text-xs text-slate-600">
+            No vocabulary ships for this model, so chunk sizes are estimates: a chunk of
+            &ldquo;1000 tokens&rdquo; is 1000 &times; the ratio in characters. Calibrate the
+            ratio from a chat model on the same tokenizer family, or accept a few percent of
+            error at the window edge.
+          </p>
+        ) : null}
+        {tokenizerMoved && !running ? (
+          <p
+            role="status"
+            className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          >
+            Changing the tokenizer changes what <span className="font-mono">chunk_size</span>{' '}
+            means. Every indexed document becomes stale — each connector will show its
+            documents as needing a recut — without starting a platform reindex.
+          </p>
+        ) : null}
+
         {changed && !running ? (
           <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
             <p className="font-medium">This starts a reindex.</p>
@@ -191,7 +235,7 @@ export function EmbeddingChange({ settings }: { settings: PlatformSettingsRespon
           disabled={Boolean(running) || (changed && confirm !== name)}
           className="w-auto"
         >
-          {changed ? 'Start reindex' : 'Save provider'}
+          {changed ? 'Start reindex' : 'Save'}
         </SubmitButton>
       </Form>
     </section>

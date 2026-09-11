@@ -222,6 +222,34 @@ describe('connector detail', () => {
     expect(within(table).getByText('3')).toBeInTheDocument()
   })
 
+  it('shows what each document was cut with, and marks the stale ones (task 101)', async () => {
+    // The tokenizer by the name it gave itself, so a worker whose vocabulary failed to
+    // load is visible on the row rather than in a log line.
+    renderAt(
+      '/connectors/c1',
+      fakeServer({
+        documents: [
+          makeDocument({ id: 'd1', source_name: 'fresh.md', tokenizer: 'o200k_base' }),
+          makeDocument({
+            id: 'd2',
+            source_name: 'old.md',
+            tokenizer: 'words (cl100k_base unavailable)',
+            stale: true,
+          }),
+        ],
+      }),
+    )
+
+    const table = await screen.findByRole('table')
+    expect(within(table).getByText('o200k_base')).toBeInTheDocument()
+    expect(within(table).getByText('words (cl100k_base unavailable)')).toBeInTheDocument()
+    const rows = within(table).getAllByRole('row')
+    const old = rows.find((row) => row.textContent?.includes('old.md'))
+    const fresh = rows.find((row) => row.textContent?.includes('fresh.md'))
+    expect(old?.textContent).toContain('stale')
+    expect(fresh?.textContent).not.toContain('stale')
+  })
+
   it('shows a failed document’s error inline', async () => {
     // SPEC §13.1. A detail view per failed row would mean the table cannot say what is
     // wrong until somebody clicks.

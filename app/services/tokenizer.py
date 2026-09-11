@@ -150,9 +150,9 @@ class ApproximateTokenizer:
         low = max(1, position - self._reach)
         high = min(len(text) - 1, position + self._reach)
         for candidate in range(low, high + 1):
-            if text[candidate - 1].isspace() and not text[candidate].isspace():
-                if best is None or abs(candidate - position) < abs(best - position):
-                    best = candidate
+            starts_word = text[candidate - 1].isspace() and not text[candidate].isspace()
+            if starts_word and (best is None or abs(candidate - position) < abs(best - position)):
+                best = candidate
         return best
 
 

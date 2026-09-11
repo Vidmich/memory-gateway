@@ -29,6 +29,7 @@ function preview(overrides: Partial<RetrievalPreviewResponse> = {}): RetrievalPr
     chunks: [],
     injected_tokens: 0,
     doc_max_tokens: 2000,
+    tokenizer: 'o200k_base',
     ...overrides,
   }
 }

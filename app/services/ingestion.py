@@ -83,6 +83,9 @@ from app.services.jobs import (
 from app.services.locks import Lock
 from app.services.object_store import ObjectRef, ObjectStore
 from app.services.tokenizer import Tokenizer
+from app.services.vector_store import ChunkPoint, VectorStore, point_id
+
+logger = logging.getLogger(__name__)
 
 #: Where the pipeline gets its tokenizer from — see ``IngestionPipeline.__init__``.
 type TokenizerSource = Callable[[], Tokenizer]
@@ -90,9 +93,7 @@ type TokenizerSource = Callable[[], Tokenizer]
 
 def _constant(tokenizer: Tokenizer) -> TokenizerSource:
     return lambda: tokenizer
-from app.services.vector_store import ChunkPoint, VectorStore, point_id
 
-logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024
 DEFAULT_EXTRACTION_TIMEOUT_SECONDS = 120.0

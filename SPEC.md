@@ -388,12 +388,26 @@ id, scope (global|org), organization_id (null when global), name, description,
 base_url, dialect, upstream_model_id, auth_type (bearer|api_key_header|azure|none),
 credential_ref (encrypted), extra_headers, system_context,
 default_params {temperature, top_p, max_tokens, ...},
-timeout_seconds, enabled
+timeout_seconds, context_window, tokenizer, enabled
 ```
 
 Gateway-level `param_overrides` are applied last, so an org can pin `temperature` for an
 endpoint regardless of what the client requests. A gateway may also declare params as `locked`,
 in which case client-supplied values are ignored rather than merged.
+
+**`tokenizer` is derived unless overridden (task 101).** Every count made on a model's behalf —
+the document and memory budgets in §7, the prompt-token estimate in §11 — is measured with the
+tokenizer of *that* model, chosen from a closed registry: the `tiktoken` encodings
+(`cl100k_base`, `o200k_base`, `p50k_base`), `approximate` with a characters-per-token ratio,
+and `words`. `null` means the platform derives it from the dialect and model id (`gpt-4o*` →
+`o200k_base`, `gpt-4*` → `cl100k_base`, `claude*` → `approximate:3.5`, anything else →
+`approximate:4`); an override names one explicitly. The API returns both the stored value and
+the effective one with its origin, so a wrong derivation is diagnosable as "no override set".
+Every request records our estimate and its tokenizer beside the provider's `prompt_tokens`;
+the ratio of the two per model over a window is the **calibration**, shown on the model page
+with a **Calibrate** action that stores the measured ratio as an `approximate` override.
+Drift over 15% is a warning on the model and on every gateway routing to it, and the gauge
+`tokenizer_drift_ratio{model}` carries it for anyone who wants an alert.
 
 ---
 
@@ -484,9 +498,13 @@ token count beside it.
 
 Every chunk carries payload metadata: `org_id, connector_id, document_id, source_name,
 source_uri, page_or_section, chunk_index, ingested_at, content_hash, token_count,
-chunk_strategy, chunk_fingerprint` — the last two for the same reason §9.4 records the
-embedding model, and with per-format overrides a stronger one: two documents in one
-connector can legitimately be cut differently. A `sentence_window` chunk also carries
+chunk_strategy, chunk_fingerprint, tokenizer` — the fingerprint for the same reason §9.4
+records the embedding model, and with per-format overrides a stronger one: two documents in
+one connector can legitimately be cut differently. `tokenizer` (task 101) is what
+`chunk_size` was *measured* with, by the name the tokenizer gives itself — so a worker whose
+BPE vocabulary failed to load records `words (cl100k_base unavailable)` rather than claiming
+the BPE. It is part of the fingerprint for every strategy: a chunk sized in a different unit is
+a different chunk. A `sentence_window` chunk also carries
 `embedded_text` and `window_sentences`, which is what lets the chunk inspector highlight the
 matched sentence and what tells retrieval how far its near-duplicate filter should reach.
 
@@ -508,6 +526,13 @@ mixing models across a tenant silently degrades retrieval.
   downtime.
 - The active embedding model and dimension are recorded on each collection's metadata and on
   every document row, so drift is detectable.
+- **The embedding tokenizer is part of the chunking configuration (task 101).** `chunk_size`
+  is a promise about the embedding model's input window, so it is measured with that model's
+  tokenizer — derived from the provider and model name (`text-embedding-3-*` → `cl100k_base`;
+  a model no vocabulary ships for → `approximate`, with the screen saying chunk sizes are
+  estimates) and overridable in the same section. Changing it, derived or overridden, is a
+  **recut, not a re-embed**: no reindex run starts, but every indexed document's fingerprint
+  stops matching and each connector's document list shows it as stale until reindexed.
 
 **Backends (task 19).** Qdrant is the default; Chroma is optional. Which one an organization
 uses is a per-tenant binding, and both backends satisfy the same port — cosine similarity in
@@ -616,6 +641,12 @@ per gateway, so an org can see when it is being throttled rather than guessing.
 
 Token-based limits are enforced optimistically: prompt tokens are counted before dispatch,
 completion tokens are settled after the response and carried into the next window.
+
+The pre-dispatch count is made with the **target model's tokenizer** (§8.4), the same one the
+prompt assembler budgeted with, so `tokens_per_minute` and `doc_max_tokens` are one unit
+rather than two units with one name. It is an estimate; the provider's `prompt_tokens` is the
+settlement. Both are recorded on the request log, and their ratio per model is the
+calibration §8.4 describes — the measured error of the estimate, shown rather than guessed.
 
 ---
 
@@ -790,13 +821,15 @@ sessions            (id, user_id, refresh_token_hash, expires_at, ip, user_agent
 
 upstream_models     (id, scope, organization_id NULL, name, description, base_url, dialect,
                      upstream_model_id, auth_type, credential_ciphertext, extra_headers_jsonb,
-                     system_context, default_params_jsonb, timeout_seconds, enabled, created_at)
+                     system_context, default_params_jsonb, timeout_seconds, context_window,
+                     tokenizer_jsonb NULL, enabled, created_at)
 
 connectors          (id, organization_id, name, type, config_jsonb, chunking_jsonb,
                      storage_prefix, status, last_synced_at, created_at)
 documents           (id, connector_id, organization_id, source_uri, source_name, mime_type,
                      size_bytes, content_hash, status, error, chunk_count,
-                     embedding_model, indexed_at, created_at)
+                     embedding_model, chunk_strategy, chunk_fingerprint, tokenizer,
+                     indexed_at, created_at)
 
 gateways            (id, organization_id, slug UNIQUE, name, description, enabled,
                      routing_mode, system_context, param_overrides_jsonb, locked_params_jsonb,
@@ -816,6 +849,7 @@ request_logs        (id, organization_id, gateway_id, api_key_id, end_user_id, s
                      prompt_tokens, completion_tokens, memory_tokens,
                      retrieved_chunk_ids, retrieved_fact_ids, failover_attempts_jsonb,
                      cited_chunk_ids, citations_unresolved,
+                     tokenizer, estimated_prompt_tokens,
                      created_at)                              -- partitioned by day
 transcripts         (request_log_id PK, request_body, assembled_prompt, response_body,
                      distilled_at, created_at)                -- partitioned by day

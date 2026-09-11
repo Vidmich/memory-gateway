@@ -10,6 +10,7 @@ import { AuthProvider } from '@/auth/AuthContext'
 import { ToastProvider } from '@/components/Toast'
 import {
   makeApiKey,
+  makeCalibration,
   makeConnector,
   makeGateway,
   makeGatewayLimits,
@@ -20,6 +21,7 @@ import {
   makeRetrievalPreview,
   makeRetrievedChunk,
   makeSeries,
+  makeTokenizers,
   makeUser,
 } from '@/test/factories'
 import { bodyOf, jsonResponse as json, pathOf } from '@/test/http'
@@ -34,6 +36,8 @@ type ServerOptions = {
   connectors?: ReturnType<typeof makeConnector>[]
   retrieval?: ReturnType<typeof makeRetrievalPreview>
   saveError?: { status: number; code: string; message: string; param?: string }
+  /** Task 101: what `GET /models/calibration` answers. */
+  calibrations?: ReturnType<typeof makeCalibration>[]
 }
 
 /**
@@ -112,6 +116,11 @@ function fakeServer(options: ServerOptions = {}) {
       }
       return Promise.resolve(json({ items: gateways, next_cursor: null }))
     }
+    // Task 101. Declared before the models prefix, which would otherwise swallow it.
+    if (path === '/api/v1/models/calibration') {
+      return Promise.resolve(json(options.calibrations ?? []))
+    }
+    if (path === '/api/v1/tokenizers') return Promise.resolve(json(makeTokenizers()))
     if (path.startsWith('/api/v1/models')) {
       // Two, because a routing chain needs somewhere to route to: with one model in the
       // catalog every failover and A/B assertion below would be about an empty picker.
@@ -1077,6 +1086,28 @@ describe('try retrieval', () => {
 
     expect(await screen.findByText('Documents')).toBeInTheDocument()
     expect(screen.getByText('61 tokens')).toBeInTheDocument()
+  })
+
+  it('warns when a target tokenizer has drifted past the line (task 101)', async () => {
+    // A configuration problem with a one-click fix, shown to the person who can make it.
+    const { client } = fakeServer({
+      calibrations: [makeCalibration({ model_id: 'mo1', ratio: 1.22, warns: true })],
+    })
+    renderAt(client, '/gateways/g1')
+
+    const warning = await screen.findByText(/off the provider/)
+    expect(warning.textContent).toContain('acme-gpt')
+    expect(warning.textContent).toContain('×1.22')
+  })
+
+  it('says nothing about drift when every target is within the line', async () => {
+    const { client } = fakeServer({
+      calibrations: [makeCalibration({ model_id: 'mo1', ratio: 1.04, warns: false })],
+    })
+    renderAt(client, '/gateways/g1')
+
+    await screen.findByDisplayValue('Support Bot')
+    expect(screen.queryByText(/off the provider/)).not.toBeInTheDocument()
   })
 
   it('shows what a client would receive under each citation mode (task 100)', async () => {

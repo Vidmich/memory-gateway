@@ -9,6 +9,9 @@
 import type {
   AuditChange,
   AuditEvent,
+  CalibrationResponse,
+  EffectiveTokenizerResponse,
+  TokenizersResponse,
   PromptPreviewResponse,
   RetrievalPreviewResponse,
   RetrievedChunkResponse,
@@ -140,10 +143,61 @@ export function makeModel(overrides: Partial<ModelResponse> = {}): ModelResponse
     context_window: null,
     default_params: {},
     timeout_seconds: 60,
+    // Task 101: no override, so what is in effect is what the table derives for gpt-4o.
+    tokenizer: null,
+    effective_tokenizer: makeEffectiveTokenizer(),
     enabled: true,
     editable: true,
     created_at: NOW,
     updated_at: NOW,
+    ...overrides,
+  }
+}
+
+export function makeEffectiveTokenizer(
+  overrides: Partial<EffectiveTokenizerResponse> = {},
+): EffectiveTokenizerResponse {
+  return {
+    spec: { name: 'o200k_base', ratio: null },
+    origin: 'derived',
+    name: 'o200k_base',
+    label: 'o200k_base (derived)',
+    degraded: false,
+    approximate: false,
+    ...overrides,
+  }
+}
+
+export function makeTokenizers(overrides: Partial<TokenizersResponse> = {}): TokenizersResponse {
+  return {
+    names: ['cl100k_base', 'o200k_base', 'p50k_base', 'approximate', 'words'],
+    derivations: [
+      { dialect: 'openai', prefix: 'gpt-4o', spec: { name: 'o200k_base', ratio: null } },
+      { dialect: 'openai', prefix: 'gpt-4', spec: { name: 'cl100k_base', ratio: null } },
+      { dialect: 'openai', prefix: 'text-embedding-3', spec: { name: 'cl100k_base', ratio: null } },
+      { dialect: null, prefix: 'claude', spec: { name: 'approximate', ratio: 3.5 } },
+      { dialect: 'anthropic', prefix: '', spec: { name: 'approximate', ratio: 3.5 } },
+    ],
+    fallback: { name: 'approximate', ratio: 4 },
+    min_ratio: 1,
+    max_ratio: 20,
+    drift_warning: 0.15,
+    ...overrides,
+  }
+}
+
+export function makeCalibration(
+  overrides: Partial<CalibrationResponse> = {},
+): CalibrationResponse {
+  return {
+    model_id: 'mo1',
+    tokenizer: makeEffectiveTokenizer(),
+    estimated: 3000,
+    reported: 3120,
+    samples: 3120,
+    ratio: 1.04,
+    warns: false,
+    proposed: null,
     ...overrides,
   }
 }
@@ -461,6 +515,8 @@ export function makeDocument(overrides: Partial<DocumentResponse> = {}): Documen
     page_count: null,
     embedding_model: 'text-embedding-3-small',
     chunk_strategy: 'recursive',
+    tokenizer: 'cl100k_base',
+    stale: false,
     content_hash: 'a'.repeat(64),
     indexed_at: NOW,
     created_at: NOW,
@@ -529,6 +585,7 @@ export function makeRetrievalPreview(
     chunks: [makeRetrievedChunk()],
     injected_tokens: 64,
     doc_max_tokens: 2000,
+    tokenizer: 'o200k_base',
     ...overrides,
   }
 }
@@ -573,6 +630,7 @@ export function makePromptPreview(
       ],
       footer: '\n\nSources:\n[1] [handbook.md (p. 12)](http://localhost:5173/connectors/cn1?document=d1&chunk=ch1)',
     },
+    tokenizer: 'o200k_base',
     ...overrides,
   }
 }

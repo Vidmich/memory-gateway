@@ -45,6 +45,7 @@ function chunk(injected: boolean) {
     chunk_index: 0,
     tokens: 20,
     injected,
+    handle: 1,
   }
 }
 
@@ -60,6 +61,16 @@ describe('the memory form', () => {
       retrieval_timeout_ms: 800,
       on_retrieval_error: 'fail_open',
     })
+  })
+
+  it('round-trips the citation mode, which lives in this blob but is edited under Prompt', () => {
+    expect(memoryBody(memoryForm({ ...stored, citations: 'footer' }))).toMatchObject({
+      citations: 'footer',
+    })
+    // A blob written before the field existed reads as off, which is what the server
+    // defaults it to — the form must not invent a different answer.
+    const { citations: _omitted, ...older } = stored
+    expect(memoryForm(older as typeof stored).citations).toBe('off')
   })
 
   it('sends both halves of memory, because this section now renders both', () => {

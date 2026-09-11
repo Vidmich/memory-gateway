@@ -84,6 +84,15 @@ class MemoryConfig(ConfigBlob):
     #: outage.
     retrieval_timeout_ms: int = Field(default=800, ge=50, le=5000)
     on_retrieval_error: Literal["fail_open", "fail_closed"] = "fail_open"
+    #: Task 100: whether, and how, the client is told which chunks the answer cited.
+    #: ``metadata`` adds a ``citations`` array to the message; ``footer`` appends a
+    #: "Sources:" block to the content. ``off`` by default — a gateway fronting an
+    #: unmodified client must not grow a response field or a footer the day this
+    #: deploys — and *off is not none*: the gateway resolves and records citations on
+    #: every request whatever this says, because cited-versus-injected is the one
+    #: relevance signal that arrives free, and it should not exist only for the gateways
+    #: that happened to turn a client-facing feature on.
+    citations: Literal["off", "metadata", "footer"] = "off"
 
 
 class LoggingConfig(ConfigBlob):

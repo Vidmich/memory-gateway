@@ -163,6 +163,16 @@ class RequestRecord:
 
     retrieved_chunk_ids: list[Any] = field(default_factory=list)
     retrieved_fact_ids: list[Any] = field(default_factory=list)
+    #: Task 100. Which of the injected chunks the answer actually cited, by id, in the
+    #: order it first cited them — ``retrieved_chunk_ids`` is what went *in*, this is
+    #: what was *used*, and the ratio between them is the relevance signal task 103
+    #: reads. Filled whatever the gateway's citation mode.
+    cited_chunk_ids: list[str] = field(default_factory=list)
+    #: Handles in the answer that pointed at no injected chunk — ``[7]`` with six
+    #: injected. A count rather than the list, because the number is the signal: a model
+    #: citing chunks it was never shown is making things up in the one place it was
+    #: asked not to.
+    citations_unresolved: int = 0
     failover_attempts: list[Any] = field(default_factory=list)
     #: Generation parameters the target's dialect could not carry, so they never reached
     #: the provider (SPEC §8.3). Empty for an OpenAI-shaped upstream, which is every
@@ -316,6 +326,17 @@ class RequestRecorder:
         self._record.retrieved_chunk_ids = [dict(chunk) for chunk in chunks]
         self._record.retrieved_fact_ids = [dict(fact) for fact in facts]
 
+    def cited(self, chunk_ids: Sequence[str], *, unresolved: int = 0) -> None:
+        """Which injected chunks the answer cited (task 100).
+
+        Plain ids rather than the resolver's types, for the same reason :meth:`injected`
+        takes mappings: the log records what happened without importing the subsystem
+        that worked it out. The row already carries each chunk's name and section under
+        ``retrieved_chunk_ids``, so an id here is enough for the drawer to mark it.
+        """
+        self._record.cited_chunk_ids = [str(chunk_id) for chunk_id in chunk_ids]
+        self._record.citations_unresolved = max(0, int(unresolved))
+
     def attempts(self, records: Sequence[Mapping[str, Any]]) -> None:
         """The routing chain, already in its JSON form.
 
@@ -437,8 +458,34 @@ class RequestRecorder:
             if record.latency_upstream_ms is not None:
                 overhead = max(0, record.latency_total_ms - record.latency_upstream_ms)
                 self._metrics.overhead.labels(gateway=self._gateway).observe(overhead / 1000)
+            self._observe_citations(record)
         except Exception:  # pragma: no cover - a metrics failure is not a request failure
             logger.warning("could not record proxy metrics", exc_info=True)
+
+    def _observe_citations(self, record: RequestRecord) -> None:
+        """Task 100's three counters.
+
+        ``uncited`` is the one worth alerting on and the one that needs care: it counts
+        requests that *injected* documents and cited none, so a gateway with no memory
+        attached does not show up as a gateway whose memory is ignored. Only successful
+        answers — a 5xx cited nothing because there was no answer, not because the
+        documents were irrelevant.
+        """
+        assert self._metrics is not None
+        if record.cited_chunk_ids:
+            self._metrics.citations_resolved.labels(gateway=self._gateway).inc(
+                len(record.cited_chunk_ids)
+            )
+        if record.citations_unresolved:
+            self._metrics.citations_unresolved.labels(gateway=self._gateway).inc(
+                record.citations_unresolved
+            )
+        injected = any(
+            isinstance(entry, Mapping) and entry.get("injected") is True
+            for entry in record.retrieved_chunk_ids
+        )
+        if injected and not record.cited_chunk_ids and record.status_code < 400:
+            self._metrics.uncited_requests.labels(gateway=self._gateway).inc()
 
     def _close_upstream(self) -> None:
         if self._upstream_started is not None and self._record.latency_upstream_ms is None:

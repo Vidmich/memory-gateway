@@ -1904,6 +1904,23 @@ export interface components {
             /** Source Name */
             source_name: string;
         };
+        /**
+         * CitationsPreviewResponse
+         * @description What a client would receive under each citation mode, for a sample answer that
+         *     cites the first injected chunks (task 100).
+         */
+        CitationsPreviewResponse: {
+            /** Footer */
+            footer: string;
+            /** Metadata */
+            metadata: {
+                [key: string]: unknown;
+            }[];
+            /** Mode */
+            mode: string;
+            /** Sample Answer */
+            sample_answer: string;
+        };
         /** ConnectorCreateRequest */
         ConnectorCreateRequest: {
             /** Chunking */
@@ -2875,6 +2892,12 @@ export interface components {
              * @default false
              */
             allow_anonymous_memory: boolean;
+            /**
+             * Citations
+             * @default off
+             * @enum {string}
+             */
+            citations: "off" | "metadata" | "footer";
             /** Connector Ids */
             connector_ids?: string[];
             /**
@@ -3751,6 +3774,7 @@ export interface components {
          * @description The assembled system message, layer by layer, with the retrieval behind it.
          */
         PromptPreviewResponse: {
+            citations: components["schemas"]["CitationsPreviewResponse"];
             /** Context Window */
             context_window: number | null;
             /** Layers */
@@ -3941,6 +3965,8 @@ export interface components {
          *     fields already describe completely. Non-empty means more than one was involved.
          */
         RequestDetailResponse: {
+            /** Cited Chunk Ids */
+            cited_chunk_ids: string[];
             /** Failover Attempts */
             failover_attempts: components["schemas"]["AttemptResponse"][];
             log: components["schemas"]["RequestLogResponse"];
@@ -3959,6 +3985,10 @@ export interface components {
             api_key_id: string | null;
             /** Bodies Omitted */
             bodies_omitted: string | null;
+            /** Citations Unresolved */
+            citations_unresolved: number;
+            /** Cited Chunks */
+            cited_chunks: number;
             /** Completion Tokens */
             completion_tokens: number | null;
             /**
@@ -4086,6 +4116,8 @@ export interface components {
             connector_id: string | null;
             /** Document Id */
             document_id: string | null;
+            /** Handle */
+            handle: number;
             /** Id */
             id: string;
             /** Injected */
@@ -4218,6 +4250,8 @@ export interface components {
             error_rate: number;
             /** Errors */
             errors: number;
+            /** Injected Requests */
+            injected_requests: number;
             /** Memory Tokens */
             memory_tokens: number;
             /** Models */
@@ -4237,6 +4271,10 @@ export interface components {
             };
             total: components["schemas"]["PercentilesResponse"];
             ttft: components["schemas"]["PercentilesResponse"];
+            /** Uncited Rate */
+            uncited_rate: number;
+            /** Uncited Requests */
+            uncited_requests: number;
         };
         /** SweepRequest */
         SweepRequest: {
@@ -6127,6 +6165,7 @@ export interface operations {
                 streamed?: boolean | null;
                 min_latency_ms?: number | null;
                 search?: string | null;
+                uncited?: boolean | null;
                 cursor?: string | null;
                 limit?: number | null;
             };

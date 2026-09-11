@@ -53,6 +53,8 @@ _Session = Annotated[str | None, Query(max_length=128)]
 _Streamed = Annotated[bool | None, Query()]
 _MinLatency = Annotated[int | None, Query(ge=0)]
 _Search = Annotated[str | None, Query(max_length=200)]
+#: Task 100. ``true`` keeps the requests that injected documents and cited none.
+_Uncited = Annotated[bool | None, Query()]
 _Cursor = Annotated[str | None, Query(max_length=64)]
 _Limit = Annotated[int | None, Query(ge=1, le=200)]
 
@@ -156,6 +158,7 @@ async def list_logs(
     streamed: _Streamed = None,
     min_latency_ms: _MinLatency = None,
     search: _Search = None,
+    uncited: _Uncited = None,
     cursor: _Cursor = None,
     limit: _Limit = None,
 ) -> Page[RequestLogResponse]:
@@ -176,6 +179,7 @@ async def list_logs(
         streamed=streamed,
         min_latency_ms=min_latency_ms,
         search=search,
+        uncited=uncited,
     )
     page = await service.list_logs(actor, filters, cursor=cursor, limit=limit)
     return Page(

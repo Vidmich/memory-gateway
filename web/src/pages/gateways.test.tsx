@@ -890,6 +890,21 @@ describe('the memory section', () => {
     expect(body.doc_min_score).toBe(0.5)
   })
 
+  it('saves the citation mode from the Prompt section into the memory blob (task 100)', async () => {
+    // Edited under Prompt, because it is about the answer; stored in memory_config,
+    // because it is about the retrieved documents. The form has to bridge the two.
+    const { client, requests } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.selectOptions(await screen.findByLabelText('Citations'), 'footer')
+    await person.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'PATCH')).toBe(true))
+    const body = lastBody(requests, 'PATCH').memory_config as Record<string, unknown>
+    expect(body.citations).toBe('footer')
+  })
+
   it('saves both halves of memory together, and still sends a partial', async () => {
     // The blob is deep-merged server-side, so a key this form omits is a key it cannot
     // wipe. That is what lets a later task add a field to the same blob without this
@@ -1062,6 +1077,19 @@ describe('try retrieval', () => {
 
     expect(await screen.findByText('Documents')).toBeInTheDocument()
     expect(screen.getByText('61 tokens')).toBeInTheDocument()
+  })
+
+  it('shows what a client would receive under each citation mode (task 100)', async () => {
+    const { client } = fakeServer()
+    renderAt(client, '/gateways/g1')
+    const person = userEvent.setup()
+
+    await person.type(await screen.findByLabelText('Question'), 'refunds')
+    await person.click(screen.getByRole('button', { name: 'Show the whole prompt' }))
+
+    expect(await screen.findByText('Citations, per mode')).toBeInTheDocument()
+    expect(screen.getByText(/"document_name": "handbook.md"/)).toBeInTheDocument()
+    expect(screen.getByText(/Sources:/)).toBeInTheDocument()
   })
 
   it('cannot be run before the gateway has been saved once', async () => {

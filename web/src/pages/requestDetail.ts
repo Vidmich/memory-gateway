@@ -24,20 +24,59 @@ export type RetrievedChunk = {
   documentId: string | null
   injected: boolean
   dropped: string | null
+  /** Task 100: the answer's handles named this chunk. Only ever true for an injected one. */
+  cited: boolean
+  /** The `[n]` the prompt numbered it with — positional among the injected chunks. */
+  handle: number | null
 }
 
-export function retrievedChunks(entries: readonly unknown[]): RetrievedChunk[] {
-  return entries.filter(isRecord).map((entry) => ({
-    id: text(entry.id) ?? '',
-    score: typeof entry.score === 'number' ? entry.score : null,
-    sourceName: text(entry.source_name) ?? '(unknown document)',
-    pageOrSection: text(entry.page_or_section),
-    documentId: text(entry.document_id),
+export function retrievedChunks(
+  entries: readonly unknown[],
+  cited: readonly string[] = [],
+): RetrievedChunk[] {
+  const citedIds = new Set(cited)
+  let handle = 0
+  return entries.filter(isRecord).map((entry) => {
     //  Absent means "written before this field existed", and the honest reading of that
     //  is that it went into the prompt: dropping was not a thing the assembler did then.
-    injected: entry.injected !== false,
-    dropped: text(entry.dropped),
-  }))
+    const injected = entry.injected !== false
+    const id = text(entry.id) ?? ''
+    return {
+      id,
+      score: typeof entry.score === 'number' ? entry.score : null,
+      sourceName: text(entry.source_name) ?? '(unknown document)',
+      pageOrSection: text(entry.page_or_section),
+      documentId: text(entry.document_id),
+      injected,
+      dropped: text(entry.dropped),
+      cited: injected && citedIds.has(id),
+      //  The record stores injected chunks first, in prompt order, so counting them here
+      //  reproduces the numbering the model saw — the same rule the assembler uses.
+      handle: injected ? ++handle : null,
+    }
+  })
+}
+
+/**
+ * The one-line account of what the answer did with its documents.
+ *
+ * Returns nothing when nothing was injected: "0 of 0 cited" is not information, and the
+ * drawer already explains why nothing went in.
+ */
+export function citationSummary(
+  chunks: readonly RetrievedChunk[],
+  unresolved: number,
+): string | null {
+  const injected = chunks.filter((chunk) => chunk.injected).length
+  if (injected === 0) return null
+  const cited = chunks.filter((chunk) => chunk.cited).length
+  const parts = [`${cited} of ${injected} cited by the answer`]
+  if (unresolved > 0) {
+    parts.push(
+      `${unresolved} handle${unresolved === 1 ? '' : 's'} pointed at nothing that was injected`,
+    )
+  }
+  return parts.join(' · ')
 }
 
 /**

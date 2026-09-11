@@ -99,6 +99,13 @@ class ProxyMetrics:
     requests: Counter
     duration: Histogram
     overhead: Histogram
+    #: Task 100. Handles that resolved to an injected chunk, handles that resolved to
+    #: nothing, and requests that injected documents and cited none of them. The last is
+    #: the cheapest optimisation in the product: a gateway paying two thousand tokens of
+    #: context per request for a model that never uses it.
+    citations_resolved: Counter
+    citations_unresolved: Counter
+    uncited_requests: Counter
 
 
 @dataclass(frozen=True)
@@ -384,6 +391,24 @@ def build_proxy_metrics(registry: CollectorRegistry) -> ProxyMetrics:
             # so an alert can be written against a bucket boundary instead of an
             # interpolation between two of them.
             buckets=(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25, 0.5, 1.0, 2.5),
+            registry=registry,
+        ),
+        citations_resolved=Counter(
+            "citations_resolved_total",
+            "Citation handles in answers that resolved to an injected chunk, by gateway.",
+            labelnames=("gateway",),
+            registry=registry,
+        ),
+        citations_unresolved=Counter(
+            "citations_unresolved_total",
+            "Citation handles in answers that named no injected chunk, by gateway.",
+            labelnames=("gateway",),
+            registry=registry,
+        ),
+        uncited_requests=Counter(
+            "requests_uncited_total",
+            "Successful requests that injected documents and cited none of them, by gateway.",
+            labelnames=("gateway",),
             registry=registry,
         ),
     )

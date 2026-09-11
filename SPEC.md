@@ -311,6 +311,32 @@ Rules:
 - The fully assembled system message is stored on the transcript when body logging is enabled —
   this is the primary debugging surface for "why did it answer that?".
 
+### 7.1 Citations on the way back
+
+The numbered handles are honoured in the answer, not only in the prompt. When the model writes
+`[2]` — or `[1, 3]`, `[2-4]`, `[^2]`, `[2][3]` — the gateway resolves each handle against the
+chunks *this request's* prompt numbered (the assembler's numbering, after budget truncation, never
+a recount) and records on the request log which injected chunks were **cited** (`cited_chunk_ids`)
+beside which were **injected** (`retrieved_chunk_ids`), plus how many handles named no chunk
+(`citations_unresolved`). Handles inside fenced code blocks, and a bracket glued to a word
+(`items[0]`), are not citations. This record is kept for every request with documents injected,
+whatever the gateway's delivery mode below — cited-versus-injected is the one relevance signal
+that arrives free.
+
+What the client sees is the gateway's `citations` setting (memory configuration, default `off`):
+
+| Mode | Behaviour |
+|---|---|
+| `off` | The response is byte-identical to the upstream's. Nothing is added. |
+| `metadata` | A `citations` array and a `citations_unresolved` list are added to the assistant message (`choices[n].message`); streaming, they arrive in the `delta` of one final extra chunk after the upstream's last frame and before `[DONE]`. The text is not changed. |
+| `footer` | `\n\nSources:` and one line per cited chunk — `[2] handbook.pdf (p. 12)`, linked to the chunk inspector when the deployment has a UI address — are appended to the content, as a final content delta when streaming. Handles that resolved to nothing are removed from the text. |
+
+Handles are never renumbered: the `[3]` in the footer is the `[3]` the model wrote. The
+upstream's `usage` is forwarded as received; the footer is not counted against it. Under
+`footer`, streaming holds back only an unfinished trailing handle (`[`, `[2,`) until the next
+frame decides what it is; every other frame is relayed as the provider sent it, so
+time-to-first-token is unchanged.
+
 ---
 
 ## 8. Upstream routing
@@ -549,10 +575,13 @@ just documented), and each organization can set stricter defaults than the platf
 ### 10.3 Request detail view
 
 Clicking a request in the monitoring page opens a drill-down showing: the original client
-request, each retrieved chunk with its similarity score and source document, each recalled
-memory fact, the fully assembled prompt, the routing decision (and any failover attempts), the
-upstream response, and a timeline waterfall of the phases. This view is the product's main
-debugging affordance — it answers "why did the model say that?" directly.
+request, each retrieved chunk with its similarity score and source document — marked **cited**
+when the answer's handles named it (§7.1), with any handles that named nothing listed — each
+recalled memory fact, the fully assembled prompt, the routing decision (and any failover
+attempts), the upstream response, and a timeline waterfall of the phases. This view is the
+product's main debugging affordance — it answers "why did the model say that?" directly. The
+request list can be filtered to requests that were given documents and cited none of them,
+which is the query to run when a corpus is suspected of being irrelevant.
 
 ### 10.4 Audit log
 
@@ -608,6 +637,44 @@ Custom response headers: `X-Gateway-Request-Id`, `X-Gateway-Model` (the target a
 Unsupported OpenAI fields (`tools`, `tool_choice`, `functions`, `logprobs`) return a `400` with
 an explicit message naming the unsupported field, rather than being silently dropped — a loud
 failure is far cheaper to diagnose than a quietly degraded agent.
+
+**Gateway extension — citations** (§7.1; only when the gateway's `citations` mode is not `off`,
+and marked as an extension because no OpenAI client expects it). Under `metadata`, the assistant
+message carries two extra fields:
+
+```json
+"message": {
+  "role": "assistant",
+  "content": "Expenses are reimbursed within thirty days [2].",
+  "citations": [
+    {
+      "handle": 2,
+      "chunk_id": "6f1c…:3",
+      "document_id": "6f1c…",
+      "document_name": "handbook.pdf",
+      "connector_id": "a81e…",
+      "section": "p. 12",
+      "chunk_strategy": "recursive",
+      "matched_text": null,
+      "url": "https://gateway.example.com/connectors/a81e…?document=6f1c…&chunk=6f1c…%3A3"
+    }
+  ],
+  "citations_unresolved": []
+}
+```
+
+`citations` is in order of first citation, deduplicated; `matched_text` is the sentence that
+matched under `sentence_window` chunking and `null` otherwise; `url` opens the chunk in the
+control plane's inspector and is `null` when the deployment has no UI address. Streaming, the
+same two fields appear in the `delta` of one extra chunk with no `content`, emitted after the
+upstream's last frame and before `data: [DONE]`. Under `footer`, `content` ends with:
+
+```
+\n\nSources:\n[2] handbook.pdf (p. 12)\n[4] pricing.md
+```
+
+Every field here is information the model was already shown inside the prompt; nothing new is
+disclosed to the client.
 
 ### 12.2 Control plane — `/api/v1/*`
 
@@ -748,6 +815,7 @@ request_logs        (id, organization_id, gateway_id, api_key_id, end_user_id, s
                      latency_total_ms, latency_retrieval_ms, latency_ttft_ms,
                      prompt_tokens, completion_tokens, memory_tokens,
                      retrieved_chunk_ids, retrieved_fact_ids, failover_attempts_jsonb,
+                     cited_chunk_ids, citations_unresolved,
                      created_at)                              -- partitioned by day
 transcripts         (request_log_id PK, request_body, assembled_prompt, response_body,
                      distilled_at, created_at)                -- partitioned by day

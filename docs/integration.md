@@ -104,6 +104,33 @@ matters to you, check that the last frame you received was `data: [DONE]`.
 
 Usage arrives on the final chunk when the provider sends it.
 
+## Citations
+
+The prompt numbers every retrieved excerpt — `[1]`, `[2]` — and asks the model to cite them.
+Whether you see those citations resolved depends on the gateway's **Citations** setting, which
+its owner chooses under Gateways → Prompt:
+
+| Mode | What you receive |
+|---|---|
+| `off` (default) | The answer exactly as the model wrote it. `[2]` stays `[2]`. |
+| `metadata` | The message carries a `citations` array — one entry per cited chunk with `handle`, `document_name`, `section`, `chunk_id`, `document_id`, `connector_id` and a `url` into the control plane's chunk inspector — and a `citations_unresolved` list of handles that named nothing. The text is untouched, and every OpenAI SDK ignores fields it does not know, so nothing breaks for a client that never reads them. |
+| `footer` | A `Sources:` block is appended to the answer's content, one line per cited chunk, in the model's own numbering. For a terminal, a Slack bot, anything that renders `content` and nothing else. Handles that named nothing are removed from the text. |
+
+Streaming, `metadata` arrives as one extra chunk after the last content frame and before
+`data: [DONE]` — its `delta` has no `content`, only `citations` and `citations_unresolved`. A
+client that accumulates deltas into a message ends up with the same shape as a non-streamed
+answer. `footer` arrives as a final content delta.
+
+```python
+answer = client.chat.completions.create(model="support", messages=[...])
+message = answer.choices[0].message
+for citation in getattr(message, "citations", []):
+    print(f"[{citation['handle']}] {citation['document_name']} {citation['section'] or ''}")
+```
+
+Whatever the mode, the gateway records which injected chunks each answer cited, and the
+request's detail view in Monitoring shows it.
+
 ## Rate limits
 
 A gateway can carry limits per minute, per day, on requests, on tokens, and on concurrent

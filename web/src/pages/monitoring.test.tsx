@@ -187,6 +187,21 @@ describe('the monitoring screen', () => {
     })
   })
 
+  it('sends the nothing-cited filter as a boolean (task 100)', async () => {
+    const person = userEvent.setup()
+    const { client, requests } = fakeServer()
+    renderAt(client)
+
+    await screen.findByText('120')
+    await person.click(screen.getByLabelText('Nothing cited'))
+
+    await waitFor(() => {
+      expect(queries(requests, '/api/v1/logs').some((path) => path.includes('uncited=true'))).toBe(
+        true,
+      )
+    })
+  })
+
   it('asks for a different window when the range changes', async () => {
     const person = userEvent.setup()
     const { client, requests } = fakeServer()
@@ -442,6 +457,30 @@ describe('the routing timeline', () => {
       expect(within(dialog).getByText(/handbook\.md/)).toBeInTheDocument()
       expect(within(dialog).getByText(/1 of 1 chunk injected/)).toBeInTheDocument()
       expect(within(dialog).getByText(/140 tokens/)).toBeInTheDocument()
+    })
+
+    it('marks the chunks the answer cited, and counts the handles that named nothing', async () => {
+      // Task 100. The record joins two lists: what went in, and which of those the
+      // answer's handles pointed at. A handle that pointed at nothing is a count, not a
+      // row — there is no chunk to draw.
+      const second = { ...injected, id: 'ch3', score: 0.6, source_name: 'pricing.md' }
+      const dialog = await open(
+        makeRequestDetail({
+          log: makeRequestLog({ latency_retrieval_ms: 18, citations_unresolved: 1 }),
+          retrieved_chunk_ids: [injected, second],
+          cited_chunk_ids: ['ch3'],
+        }),
+      )
+
+      expect(within(dialog).getByText(/1 of 2 cited by the answer/)).toBeInTheDocument()
+      expect(within(dialog).getByText(/1 handle pointed at nothing/)).toBeInTheDocument()
+      const rows = within(dialog).getAllByRole('listitem')
+      const cited = rows.find((row) => row.textContent?.includes('pricing.md'))
+      const uncited = rows.find((row) => row.textContent?.includes('handbook.md'))
+      expect(cited?.textContent).toContain('cited')
+      expect(cited?.textContent).toContain('[2]')
+      expect(uncited?.textContent).not.toContain('cited')
+      expect(uncited?.textContent).toContain('[1]')
     })
 
     it('says why a chunk was dropped, in words rather than a field name', async () => {

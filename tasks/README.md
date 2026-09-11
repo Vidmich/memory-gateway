@@ -48,6 +48,20 @@ Size guide: **S** ≈ 1–2 days · **M** ≈ 3–5 days · **L** ≈ 1–2 week
 | [19](19-pluggable-vector-backends.md) | Pluggable vector backends: Chroma alongside Qdrant | L | Two organizations on two vector stores, in one deployment |
 | [20](20-chunking-strategies.md) | Chunking strategies: semantic, sentence-window & code-aware | L | Compare strategies on your own documents, then pick one |
 
+### Retrieval quality (100+)
+
+Numbered from 100 to leave room: these are a second wave, each one a measurement or a lever on
+retrieval quality, and they land in any order that respects the graph below.
+
+| # | Task | Size | What becomes demonstrable |
+|---|---|---|---|
+| [100](100-answer-citations.md) | Citations in the generated answer | M | **A client receives which documents the answer came from**, and the log records which chunks were used |
+| [101](101-tokenizer-per-model.md) | The tokenizer follows the model | M | Chunk sizes and budgets are counted in the right unit, with the error against the provider shown |
+| [102](102-document-summarization.md) | Optional document summarization before chunking & embedding | L | Chunks embed with their document's context; every token it costs is on the monitoring page |
+| [103](103-retrieval-validation.md) | Validation pages: chunking, embeddings, recall / precision | L | **Recall@k for a gateway against its own questions, before and after a change** |
+| [104](104-reprocessing-status.md) | Reprocessing status after a chunking or embedding change | M | Stale documents are visible everywhere until reprocessed, with progress |
+| [105](105-advanced-gateway-templates.md) | Advanced configuration: request and response templates per gateway | M | A gateway speaks its customer's language around documents, memory and answers — previewed, versioned on the log |
+
 ## Dependency graph
 
 ```
@@ -70,6 +84,13 @@ Size guide: **S** ≈ 1–2 days · **M** ≈ 3–5 days · **L** ≈ 1–2 week
      └─ 17 retention / reindex ── 18 production deployment
          │                         └─ 19 pluggable vector backends (post-v1)
          └─ 20 chunking strategies (post-v1)
+             ├─ 100 answer citations ──────────────┐
+             │   └─ 105 gateway templates (request & response text)
+             ├─ 101 tokenizer per model ──┐        │
+             ├─ 102 document summarization ┤        │
+             │                             └─ 104 reprocessing status
+             └─ 103 validation pages ◄────────────┘   (103 reads 100's labels;
+                                                       104 compares 103's runs)
 ```
 
 ## Milestones
@@ -105,3 +126,17 @@ Size guide: **S** ≈ 1–2 days · **M** ≈ 3–5 days · **L** ≈ 1–2 week
   model part of the *chunking* configuration, so a platform embedding change stops being a
   re-embed and becomes a recut for those connectors. That is a change to the reindexer, and it
   can only be written against a reindexer that exists. 19 and 20 are independent of each other.
+- **The 100-series is ordered by what each one needs from the others, not by value.** 100 is
+  independent and small, and it is first because task 103 cannot compute precision without the
+  cited-vs-injected record it writes. 101 and 102 each add an input to what a stored chunk
+  depends on; 104 defines that fingerprint once and should come after both, or it is defined
+  three times. 103 is last because an evaluation run is a measurement of a *known* state, and
+  104 is what makes the state known.
+- **105 is independent of 101–104 and small enough to slot anywhere after 100.** It reuses
+  100's response stage for the answer prefix and suffix and keeps 100's citation invariant —
+  the excerpt template must print `[{handle}]` — as a validation rule. Its one gift to the
+  rest of the series is the template fingerprint on the log row, which 103's evaluation runs
+  should record; if 103 lands first it gains that field afterwards.
+- **101 changes chunk sizes for existing connectors on non-OpenAI embedding models.** They
+  were counted with the wrong tokenizer; correcting the unit marks them stale. That is a
+  reindex bill and it is why 104's status display should exist before 101 is deployed widely.

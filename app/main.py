@@ -141,7 +141,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # `tiktoken` loads a vocabulary on first use and a per-request build would repeat
         # that lookup on the hot path.
         tokenizer = build_tokenizer()
-        proxy_service = ProxyService(clients.http, tokenizer=tokenizer)
+        proxy_service = ProxyService(
+            clients.http,
+            tokenizer=tokenizer,
+            # For the link a citation carries (task 100): the control plane's chunk
+            # inspector, at the address a person's browser reaches it on.
+            ui_base_url=settings.ui_base_url,
+        )
         app.state.proxy_service = proxy_service
         upstream_router = Router(
             proxy_service,
@@ -367,7 +373,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # The editor's Memory section: the same retriever and the same assembler the data
         # plane uses, so what it shows is what a request would inject.
         app.state.memory_preview = MemoryPreview(
-            gateway_store, memory=app.state.memory_service, tokenizer=tokenizer
+            gateway_store,
+            memory=app.state.memory_service,
+            tokenizer=tokenizer,
+            ui_base_url=settings.ui_base_url,
         )
         app.state.gateway_service = GatewayService(
             gateway_store,

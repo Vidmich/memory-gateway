@@ -274,6 +274,7 @@ def build_filters(
     streamed: bool | None = None,
     min_latency_ms: int | None = None,
     search: str | None = None,
+    uncited: bool | None = None,
 ) -> LogFilters:
     """Turn query parameters into a checked window.
 
@@ -310,6 +311,7 @@ def build_filters(
         # `or None` after the strip, so "   " is the same request as no search at all
         # rather than a filter for the empty string.
         search=(search or "").strip() or None,
+        uncited=uncited,
     )
 
 
@@ -431,6 +433,8 @@ def _summary_from(payload: dict[str, Any]) -> Summary:
         memory_tokens=int(payload.get("memory_tokens", 0)),
         retrieval_attempts=int(payload.get("retrieval_attempts", 0)),
         retrieval_empty=int(payload.get("retrieval_empty", 0)),
+        injected_requests=int(payload.get("injected_requests", 0)),
+        uncited_requests=int(payload.get("uncited_requests", 0)),
         models=tuple(
             ModelTraffic(
                 upstream_model_id=_as_uuid(item.get("upstream_model_id")),

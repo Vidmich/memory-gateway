@@ -15,7 +15,7 @@ import { useAuth } from '@/auth/AuthContext'
 import { can } from '@/auth/capabilities'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { CopyButton } from '@/components/CopyButton'
-import { Field, Form, SubmitButton, TextArea, TextInput } from '@/components/Form'
+import { Field, Form, Select, SubmitButton, TextArea, TextInput } from '@/components/Form'
 import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { useToast } from '@/components/Toast'
 import { GatewayKeys } from '@/pages/GatewayKeys'
@@ -30,7 +30,14 @@ import {
   limitsForm,
   type LimitsForm,
 } from '@/pages/limits'
-import { memoryBody, memoryChanged, memoryForm, memoryProblem, type MemoryForm } from '@/pages/memory'
+import {
+  CITATION_MODES,
+  memoryBody,
+  memoryChanged,
+  memoryForm,
+  memoryProblem,
+  type MemoryForm,
+} from '@/pages/memory'
 import { chainBody, chainProblem, rowsOf, sameChain, type ChainRow } from '@/pages/routing'
 import { suggestSlug } from '@/pages/slug'
 import { useUnsavedChanges } from '@/pages/useUnsavedChanges'
@@ -399,6 +406,41 @@ export function GatewayFormPage() {
                 />
               )}
             </Field>
+
+            {/* Task 100. The prompt already tells the model to cite; this is what the
+                gateway does with the citations on the way back. It is stored in the memory
+                blob and edited here because the decision is about the answer, not about
+                retrieval. */}
+            <Field
+              name="citations"
+              label="Citations"
+              hint={
+                CITATION_MODES.find((mode) => mode.value === state.memory.citations)?.hint ??
+                'How the client learns which documents the answer cited.'
+              }
+            >
+              {(props) => (
+                <Select
+                  {...props}
+                  value={state.memory.citations}
+                  onChange={(event) =>
+                    set('memory', { ...state.memory, citations: event.target.value })
+                  }
+                >
+                  {CITATION_MODES.map((mode) => (
+                    <option key={mode.value} value={mode.value}>
+                      {mode.label}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            <p className="-mt-2 mb-4 text-xs text-slate-500">
+              Whatever the mode, the request log records which injected chunks each answer
+              cited. To see what a client would receive under each mode for a real question,
+              use <span className="font-medium">Show the whole prompt</span> under Memory → Try
+              retrieval.
+            </p>
 
             <PromptPreview
               gatewayContext={state.systemContext}

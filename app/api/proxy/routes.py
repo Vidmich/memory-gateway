@@ -39,6 +39,7 @@ from app.core.logging import get_request_id
 from app.core.tracing import phase
 from app.schemas.openai import ChatRequest, ModelCard, ModelList
 from app.services.api_keys import AuthenticatedKey, KeyAuthenticator
+from app.services.citations import Resolution
 from app.services.end_user import EndUserIdentity, resolve_identity, session_key
 from app.services.end_user_resolver import EndUserResolver, ResolvedEndUser
 from app.services.facts import ANONYMOUS_NOT_ALLOWED, NO_IDENTITY
@@ -211,6 +212,9 @@ async def chat_completions(
                 # rather than a convention.
                 observer=Observers((StreamRecorder(recorder), _StreamLimits(limits, recorder))),
                 recall=recall,
+                # Fires before the observers' `done`, so the row the log's observer
+                # submits already says what the answer cited (task 100).
+                on_citations=_record_citations(recorder),
             )
             recorder.attempts(attempts.as_json())
             memory.injected(opened.prepared.memory_tokens)
@@ -235,7 +239,12 @@ async def chat_completions(
         completed = await router_.complete(chat, gateway, routing, attempts, recall=recall)
         recorder.attempts(attempts.as_json())
         memory.injected(completed.prepared.memory_tokens)
-        recorder.from_response(completed.response)
+        # Task 100. Resolved against the attempt that answered, recorded whatever the
+        # mode, and applied to the response before it is logged — so the transcript is
+        # what the client received, footer and all.
+        delivered = proxy.cite(completed.prepared, completed.response)
+        _record_citations(recorder)(delivered.resolution)
+        recorder.from_response(delivered.response)
         recorder.submit()
         # Inline rather than in the background, because the answer is already built and
         # two Redis round trips on a request that just waited on a provider are not the
@@ -248,7 +257,7 @@ async def chat_completions(
             completion_tokens=usage.completion_tokens if usage is not None else None,
         )
         return JSONResponse(
-            content=completed.response.model_dump(exclude_none=True),
+            content=delivered.response.model_dump(exclude_none=True),
             headers=_headers(completed.prepared, recall, limits),
         )
     except BaseException as error:
@@ -462,6 +471,20 @@ def _record_prompt(recorder: RequestRecorder) -> Callable[[Prepared], None]:
                 chunks=prepared.assembly.chunk_log(),
                 facts=prepared.assembly.fact_log(),
             )
+
+    return record
+
+
+def _record_citations(recorder: RequestRecorder) -> Callable[[Resolution], None]:
+    """Tell the log which injected chunks the answer cited.
+
+    A closure for the same reason :func:`_record_prompt` is one: neither the proxy nor
+    the router has any business importing the request log, and ids plus a count are all
+    the record wants from a resolution.
+    """
+
+    def record(resolution: Resolution) -> None:
+        recorder.cited(resolution.cited_ids, unresolved=len(resolution.unresolved))
 
     return record
 

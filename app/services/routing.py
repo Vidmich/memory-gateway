@@ -61,6 +61,7 @@ from app.adapters.base import UpstreamTarget
 from app.api.proxy.errors import ProxyError, UpstreamTimeout
 from app.core.metrics import RoutingMetrics
 from app.schemas.openai import ChatRequest, ChatResponse
+from app.services.citations import Resolution
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.proxy import Prepared, ProxyService, StreamObserver, UpstreamStream
 from app.services.retrieval import Recall
@@ -346,6 +347,7 @@ class Router:
         *,
         observer: StreamObserver | None = None,
         recall: Recall | None = None,
+        on_citations: Callable[[Resolution], None] | None = None,
     ) -> Opened:
         """Start a stream, failing over **only while the status line is still ours**.
 
@@ -358,7 +360,9 @@ class Router:
         """
 
         async def call(prepared: Prepared) -> UpstreamStream:
-            return await self._proxy.open_stream(prepared, observer=observer)
+            return await self._proxy.open_stream(
+                prepared, observer=observer, on_citations=on_citations
+            )
 
         prepared, stream = await self._run(request, gateway, routing, attempts, call, recall=recall)
         return Opened(prepared=prepared, stream=stream)

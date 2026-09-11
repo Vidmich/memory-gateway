@@ -744,6 +744,40 @@
         "title": "ChunkingPreviewResponse",
         "type": "object"
       },
+      "CitationsPreviewResponse": {
+        "additionalProperties": false,
+        "description": "What a client would receive under each citation mode, for a sample answer that\ncites the first injected chunks (task 100).",
+        "properties": {
+          "footer": {
+            "title": "Footer",
+            "type": "string"
+          },
+          "metadata": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Metadata",
+            "type": "array"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "sample_answer": {
+            "title": "Sample Answer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "sample_answer",
+          "metadata",
+          "footer"
+        ],
+        "title": "CitationsPreviewResponse",
+        "type": "object"
+      },
       "ConnectorCreateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2853,6 +2887,16 @@
             "default": false,
             "title": "Allow Anonymous Memory",
             "type": "boolean"
+          },
+          "citations": {
+            "default": "off",
+            "enum": [
+              "off",
+              "metadata",
+              "footer"
+            ],
+            "title": "Citations",
+            "type": "string"
           },
           "connector_ids": {
             "items": {
@@ -5005,6 +5049,9 @@
         "additionalProperties": false,
         "description": "The assembled system message, layer by layer, with the retrieval behind it.",
         "properties": {
+          "citations": {
+            "$ref": "#/components/schemas/CitationsPreviewResponse"
+          },
           "context_window": {
             "anyOf": [
               {
@@ -5057,7 +5104,8 @@
           "context_window",
           "model_name",
           "overflowed",
-          "retrieval"
+          "retrieval",
+          "citations"
         ],
         "title": "PromptPreviewResponse",
         "type": "object"
@@ -5452,6 +5500,13 @@
         "additionalProperties": false,
         "description": "One request, with everything the \u00a710.3 drawer draws.\n\nThe retrieval lists are here and empty until task 10 fills them, for the same reason\nthe gateway editor shows its unbuilt sections: a drawer that grows a panel later moves\neverything the reader has learned the position of.\n\n``failover_attempts`` is empty for the overwhelming majority of requests, and that is\ninformation rather than an omission: it means one target answered, which the ``log``\nfields already describe completely. Non-empty means more than one was involved.",
         "properties": {
+          "cited_chunk_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cited Chunk Ids",
+            "type": "array"
+          },
           "failover_attempts": {
             "items": {
               "$ref": "#/components/schemas/AttemptResponse"
@@ -5487,6 +5542,7 @@
           "log",
           "retrieved_chunk_ids",
           "retrieved_fact_ids",
+          "cited_chunk_ids",
           "failover_attempts"
         ],
         "title": "RequestDetailResponse",
@@ -5518,6 +5574,14 @@
               }
             ],
             "title": "Bodies Omitted"
+          },
+          "citations_unresolved": {
+            "title": "Citations Unresolved",
+            "type": "integer"
+          },
+          "cited_chunks": {
+            "title": "Cited Chunks",
+            "type": "integer"
           },
           "completion_tokens": {
             "anyOf": [
@@ -5731,7 +5795,9 @@
           "response_truncated",
           "failed_after_stream_start",
           "bodies_omitted",
-          "dropped_params"
+          "dropped_params",
+          "cited_chunks",
+          "citations_unresolved"
         ],
         "title": "RequestLogResponse",
         "type": "object"
@@ -5918,6 +5984,10 @@
             ],
             "title": "Document Id"
           },
+          "handle": {
+            "title": "Handle",
+            "type": "integer"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -5964,7 +6034,8 @@
           "connector_id",
           "chunk_index",
           "tokens",
-          "injected"
+          "injected",
+          "handle"
         ],
         "title": "RetrievedChunkResponse",
         "type": "object"
@@ -6249,6 +6320,10 @@
             "title": "Errors",
             "type": "integer"
           },
+          "injected_requests": {
+            "title": "Injected Requests",
+            "type": "integer"
+          },
           "memory_tokens": {
             "title": "Memory Tokens",
             "type": "integer"
@@ -6291,6 +6366,14 @@
           },
           "ttft": {
             "$ref": "#/components/schemas/PercentilesResponse"
+          },
+          "uncited_rate": {
+            "title": "Uncited Rate",
+            "type": "number"
+          },
+          "uncited_requests": {
+            "title": "Uncited Requests",
+            "type": "integer"
           }
         },
         "required": [
@@ -6307,6 +6390,9 @@
           "retrieval_attempts",
           "retrieval_empty",
           "empty_retrieval_rate",
+          "injected_requests",
+          "uncited_requests",
+          "uncited_rate",
           "models",
           "error_groups"
         ],
@@ -9785,6 +9871,22 @@
                 }
               ],
               "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "uncited",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Uncited"
             }
           },
           {

@@ -79,6 +79,11 @@ class SummaryResponse(BaseModel):
     retrieval_attempts: int
     retrieval_empty: int
     empty_retrieval_rate: float
+    #: Task 100. Successful requests that were given documents, how many of those cited
+    #: none, and the rate — precomputed for the same reason the two above are.
+    injected_requests: int
+    uncited_requests: int
+    uncited_rate: float
     models: list[ModelTrafficResponse]
     error_groups: list[ErrorGroupResponse]
 
@@ -98,6 +103,9 @@ class SummaryResponse(BaseModel):
             retrieval_attempts=summary.retrieval_attempts,
             retrieval_empty=summary.retrieval_empty,
             empty_retrieval_rate=round(summary.empty_retrieval_rate, 6),
+            injected_requests=summary.injected_requests,
+            uncited_requests=summary.uncited_requests,
+            uncited_rate=round(summary.uncited_rate, 6),
             models=[ModelTrafficResponse(**asdict(model)) for model in summary.models],
             error_groups=[ErrorGroupResponse(**asdict(group)) for group in summary.error_groups],
         )
@@ -198,6 +206,11 @@ class RequestLogResponse(BaseModel):
     #: OpenAI-shaped upstream, and the answer to "why did temperature do nothing" for one
     #: that translates.
     dropped_params: list[str]
+    #: Task 100. How many injected chunks the answer cited, and how many handles it
+    #: wrote that named no chunk. On the row rather than only the detail so the table
+    #: can mark an uncited request without opening it.
+    cited_chunks: int
+    citations_unresolved: int
 
     @classmethod
     def of(cls, row: RequestLog) -> Self:
@@ -226,6 +239,8 @@ class RequestLogResponse(BaseModel):
             failed_after_stream_start=bool(row.failed_after_stream_start),
             bodies_omitted=row.bodies_omitted,
             dropped_params=[str(name) for name in (row.dropped_params or [])],
+            cited_chunks=len(row.cited_chunk_ids or []),
+            citations_unresolved=int(row.citations_unresolved or 0),
         )
 
 
@@ -267,6 +282,9 @@ class RequestDetailResponse(BaseModel):
     transcript: TranscriptResponse | None = None
     retrieved_chunk_ids: list[Any]
     retrieved_fact_ids: list[Any]
+    #: Task 100. Ids out of ``retrieved_chunk_ids`` that the answer cited, in the order
+    #: it first cited them. The drawer joins the two lists to mark each chunk.
+    cited_chunk_ids: list[str]
     failover_attempts: list[AttemptResponse]
 
     @classmethod
@@ -278,6 +296,7 @@ class RequestDetailResponse(BaseModel):
             ),
             retrieved_chunk_ids=list(detail.log.retrieved_chunk_ids or []),
             retrieved_fact_ids=list(detail.log.retrieved_fact_ids or []),
+            cited_chunk_ids=[str(value) for value in (detail.log.cited_chunk_ids or [])],
             failover_attempts=[
                 AttemptResponse.model_validate(attempt)
                 for attempt in (detail.log.failover_attempts or [])

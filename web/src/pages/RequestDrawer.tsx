@@ -16,6 +16,7 @@ import {
     contentOf,
     countInjected,
     droppedReason,
+    citationSummary,
     recalledFacts,
     retrievedChunks,
     roleOf,
@@ -240,7 +241,7 @@ function Detail({
           title="Memory"
           subtitle="What retrieval found for this request, and what became of it."
         >
-          <Retrieved log={log} entries={detail.retrieved_chunk_ids} />
+          <Retrieved log={log} entries={detail.retrieved_chunk_ids} cited={detail.cited_chunk_ids} />
           <Recalled log={log} entries={detail.retrieved_fact_ids} />
         </Panel>
       </div>
@@ -260,11 +261,14 @@ function Detail({
 function Retrieved({
   log,
   entries,
+  cited,
 }: {
   log: RequestLogResponse
   entries: readonly unknown[]
+  cited: readonly string[]
 }) {
-  const chunks = retrievedChunks(entries)
+  const chunks = retrievedChunks(entries, cited)
+  const citations = citationSummary(chunks, log.citations_unresolved)
 
   if (log.latency_retrieval_ms === null) {
     return (
@@ -291,6 +295,12 @@ function Retrieved({
         {injected} of {chunks.length} chunk{chunks.length === 1 ? '' : 's'} injected
         {log.memory_tokens ? `, ${log.memory_tokens} tokens` : ''} · {log.latency_retrieval_ms} ms
       </p>
+      {citations ? (
+        /* Task 100. Rendered without alarm — most injected chunks go uncited, and that is
+           a fact about the model as much as the corpus. The alarming case is the filter on
+           the monitoring page, not a colour here. */
+        <p className="mt-1 text-xs text-slate-500">{citations}</p>
+      ) : null}
       <ol className="mt-2 space-y-1">
         {chunks.map((chunk, index) => (
           <ChunkRow key={`${chunk.id}-${index}`} chunk={chunk} />
@@ -399,6 +409,11 @@ function ChunkRow({ chunk }: { chunk: RetrievedChunk }) {
       }`}
     >
       <div className="flex flex-wrap items-baseline gap-2">
+        {chunk.handle !== null ? (
+          <span className="font-mono tabular-nums opacity-70" title="Citation handle in the prompt">
+            [{chunk.handle}]
+          </span>
+        ) : null}
         <span className="font-mono tabular-nums">
           {chunk.score === null ? '—' : chunk.score.toFixed(2)}
         </span>
@@ -414,6 +429,11 @@ function ChunkRow({ chunk }: { chunk: RetrievedChunk }) {
             <span className="font-normal opacity-70"> · {chunk.pageOrSection}</span>
           ) : null}
         </span>
+        {chunk.cited ? (
+          <span className="rounded bg-violet-200 px-1.5 py-0.5 font-medium text-violet-900">
+            cited
+          </span>
+        ) : null}
         {chunk.injected ? null : (
           <span className="rounded bg-slate-200 px-1.5 py-0.5 font-medium text-slate-700">
             dropped{reason ? ` — ${reason}` : ''}

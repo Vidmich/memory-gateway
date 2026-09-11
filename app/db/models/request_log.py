@@ -149,6 +149,20 @@ class RequestLog(Base):
     retrieved_fact_ids: Mapped[list[Any]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
+    #: Task 100. The ids of the injected chunks the answer cited, in order of first
+    #: citation. ``retrieved_chunk_ids`` is what went into the prompt; this is what came
+    #: back out of the answer; a chunk that is in the first on every request and never in
+    #: the second is a retrieval false positive, and that ratio is what task 103 reads.
+    #: Written for every request with documents injected, whatever the gateway's
+    #: citation mode — ``off`` switches off the client's copy, not the record.
+    cited_chunk_ids: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    #: Handles the answer wrote that named no injected chunk. A count, because the
+    #: number is the signal and the handles themselves are in the stored response.
+    citations_unresolved: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     #: One entry per attempted target — ``{target_id, model_name, status, error_code,
     #: latency_ms, retryable}`` — written only when more than one target was involved.
     #: Empty is the common case and means the row's own ``upstream_model_id`` and

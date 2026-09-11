@@ -78,7 +78,7 @@ export function MonitoringPage() {
   const retrieval = useSeries(window, filters, 'retrieval')
   const logs = useLogs(window, filters, { cursor, tail: tail && atTop })
 
-  const setFilter = (name: keyof LogFilters, value: string | null) => {
+  const setFilter = (name: keyof LogFilters, value: string | boolean | null) => {
     setFilters((current) => ({ ...current, [name]: value || null }))
     setCursor(null)
     setPrevious([])
@@ -169,6 +169,18 @@ export function MonitoringPage() {
             onChange={(event) => setFilter('search', event.target.value)}
             className="w-56 rounded-md border border-slate-300 px-2 py-1 text-sm"
           />
+        </label>
+
+        {/* Task 100. The query an operator runs when a corpus is suspected of being
+            irrelevant: requests that were given documents and whose answer used none. */}
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={filters.uncited === true}
+            onChange={(event) => setFilter('uncited', event.target.checked ? true : null)}
+            className="h-4 w-4 rounded border-slate-300"
+          />
+          <span className="text-slate-600">Nothing cited</span>
         </label>
       </div>
 
@@ -424,6 +436,17 @@ function Cards({
       summary?.retrieval_attempts
         ? `${summary.retrieval_empty.toLocaleString()} of ${summary.retrieval_attempts.toLocaleString()} searches`
         : 'no requests used memory',
+    ],
+    //  Task 100's number, beside the memory tokens it explains: a gateway paying for
+    //  context on every request and citing none of it is the cheapest optimisation in the
+    //  product. A proxy for relevance and a biased one — models under-cite — so the card
+    //  says what it counts rather than passing judgement.
+    [
+      'Cited nothing',
+      summary?.injected_requests ? `${(summary.uncited_rate * 100).toFixed(0)}%` : '—',
+      summary?.injected_requests
+        ? `${summary.uncited_requests.toLocaleString()} of ${summary.injected_requests.toLocaleString()} answers given documents · ${summary.memory_tokens.toLocaleString()} memory tokens`
+        : 'no answers were given documents',
     ],
   ]
 

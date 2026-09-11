@@ -117,18 +117,24 @@ class Chunk:
     #: distinction from leaking into every other screen: a chunk whose matched text is its
     #: own text has nothing to say about the difference.
     matched_text: str | None = None
+    #: How the document was cut (task 20), for the citation a client receives: a person
+    #: reading "cited a ``sentence_window`` chunk" knows to look at ``matched_text``.
+    #: ``None`` for a point written before the payload carried it.
+    chunk_strategy: str | None = None
 
     @classmethod
     def of(cls, match: Match) -> Chunk:
         payload = match.payload
         section = payload.get("page_or_section")
         embedded = payload.get("embedded_text")
+        strategy = payload.get("chunk_strategy")
         text = str(payload.get("text", ""))
         return cls(
             id=match.id,
             score=match.score,
             text=text,
             matched_text=str(embedded) if embedded and str(embedded) != text else None,
+            chunk_strategy=str(strategy) if strategy else None,
             # A document whose name is missing is still a usable citation target by id;
             # rendering "source: None" into somebody's prompt is not.
             source_name=str(payload.get("source_name") or "untitled"),

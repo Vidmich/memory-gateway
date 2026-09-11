@@ -29,7 +29,7 @@ after a save that this screen just made.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +39,7 @@ from app.db.models import Gateway, UpstreamModel
 from app.schemas.config import merge_config
 from app.schemas.gateway_config import MemoryConfig
 from app.schemas.openai import ChatMessage
+from app.services.citations import footer, resolve
 from app.services.gateway_store import GatewayStore
 from app.services.prompt import Layer, assemble, fit_documents, render_entry
 from app.services.retrieval import Chunk, MemoryService, Recall, Retrieval
@@ -64,6 +65,12 @@ class PreviewChunk:
     #: share of the total — the block's separators tokenize differently in context — but
     #: close enough to answer "which of these is eating the budget".
     tokens: int
+    #: The ``[n]`` the prompt would number this chunk with (task 100), so a person reading
+    #: a logged answer can map ``[3]`` back to a document without opening the drawer.
+    #: Positional in retrieval order, exactly as :func:`~app.services.prompt.render_entry`
+    #: assigns it — a dropped chunk still shows its number, because that is the number
+    #: the model would have seen had the budget been larger.
+    handle: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +90,26 @@ class RetrievalPreview:
 
 
 @dataclass(frozen=True, slots=True)
+class CitationsPreview:
+    """What the client would receive under each citation mode (task 100).
+
+    Built from a *sample* answer that cites the first injected chunks — the editor cannot
+    call the model, and does not need to: the shape of the array and the footer is what
+    the person choosing a mode wants to see, and it comes from the same
+    :func:`~app.services.citations.resolve` and :func:`~app.services.citations.footer` the
+    data plane uses, over the same chunks the prompt preview numbered.
+    """
+
+    #: The mode the form currently has, so the UI can highlight the example that applies.
+    mode: str
+    sample_answer: str
+    #: The ``citations`` array ``metadata`` would put on the message.
+    metadata: tuple[dict[str, Any], ...]
+    #: The block ``footer`` would append to the content. Empty when nothing is injected.
+    footer: str
+
+
+@dataclass(frozen=True, slots=True)
 class PromptPreview:
     """What Prompt preview returns: the assembled message, and where its tokens went."""
 
@@ -95,6 +122,7 @@ class PromptPreview:
     model_name: str | None
     overflowed: bool
     retrieval: RetrievalPreview
+    citations: CitationsPreview
 
 
 class MemoryPreview:
@@ -104,10 +132,14 @@ class MemoryPreview:
         *,
         memory: MemoryService,
         tokenizer: Tokenizer | None = None,
+        ui_base_url: str | None = None,
     ) -> None:
         self._store = store
         self._memory = memory
         self._tokenizer = tokenizer or WordTokenizer()
+        #: For the links in the citation examples — the same address the data plane puts
+        #: on a real citation, so the preview shows what a client would actually get.
+        self._ui_base_url = ui_base_url
 
     async def try_retrieval(
         self,
@@ -153,6 +185,7 @@ class MemoryPreview:
             model_name=model.name if model is not None else None,
             overflowed=assembled.overflowed,
             retrieval=self._preview(recall.documents, config),
+            citations=self._citations(config, assembled.injected),
         )
 
     # -- internals --------------------------------------------------------
@@ -205,11 +238,33 @@ class MemoryPreview:
                     chunk=chunk,
                     injected=chunk.id in survivors,
                     tokens=count(self._tokenizer, render_entry(index, chunk)),
+                    handle=index,
                 )
                 for index, chunk in enumerate(retrieval.chunks, start=1)
             ),
             injected_tokens=budgeted.tokens,
             doc_max_tokens=config.doc_max_tokens,
+        )
+
+    def _citations(self, config: MemoryConfig, injected: Sequence[Chunk]) -> CitationsPreview:
+        """One example per mode, for an answer that cites the first two injected chunks.
+
+        Over ``assembled.injected`` and not the retrieval's chunks: only what survived the
+        budget has a handle the model can cite, which is the whole point of resolving
+        against the assembler's numbering rather than a recount.
+        """
+        handles = [f"[{index}]" for index in range(1, min(len(injected), 2) + 1)]
+        sample = (
+            f"According to {' and '.join(handles)}, the answer is …"
+            if handles
+            else "The documents do not cover this, so the answer would cite nothing."
+        )
+        resolution = resolve(sample, injected)
+        return CitationsPreview(
+            mode=config.citations,
+            sample_answer=sample,
+            metadata=tuple(c.as_json(base_url=self._ui_base_url) for c in resolution.cited),
+            footer=footer(resolution.cited, base_url=self._ui_base_url),
         )
 
 

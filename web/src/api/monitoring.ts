@@ -57,6 +57,8 @@ export type LogFilters = {
   min_latency_ms?: number | null
   search?: string | null
   streamed?: boolean | null
+  /** Task 100: only requests that were given documents and cited none of them. */
+  uncited?: boolean | null
 }
 
 export type Window = { from: string; to: string }

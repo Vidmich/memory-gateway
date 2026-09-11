@@ -172,6 +172,8 @@ def make_log_row(
         "latency_total_ms": latency_total_ms,
         "retrieved_chunk_ids": [],
         "retrieved_fact_ids": [],
+        "cited_chunk_ids": [],
+        "citations_unresolved": 0,
         "failover_attempts": [],
         "response_truncated": False,
     }
@@ -331,6 +333,9 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
                     if found
                     else []
                 ),
+                # Task 100: the one request that was given a document cited it, so the
+                # uncited rate has a denominator of one and a numerator of zero.
+                cited_chunk_ids=["chunk-1"] if found else [],
                 upstream_model_id=mini_model_id,
                 model_name="acme-mini",
                 completion_tokens=10 if status == 200 else None,

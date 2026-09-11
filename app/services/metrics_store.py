@@ -39,6 +39,7 @@ from sqlalchemy import (
     delete,
     func,
     literal,
+    not_,
     or_,
     select,
     tuple_,
@@ -89,6 +90,10 @@ class LogFilters:
     #: bodies would mean scanning the large table the split exists to avoid, and would
     #: quietly turn the monitoring screen into a content-search tool over end-user data.
     search: str | None = None
+    #: Task 100. ``True`` keeps only requests that injected documents and cited none of
+    #: them — the query an operator runs when a corpus is suspected of being irrelevant.
+    #: ``False`` is the complement over the same denominator: injected *and* cited.
+    uncited: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +159,12 @@ class Summary:
     #: without the documents it was supposed to have.
     retrieval_attempts: int = 0
     retrieval_empty: int = 0
+    #: Task 100. Successful requests that injected at least one chunk, and of those, how
+    #: many cited none. The denominator is *injected* rather than *retrieved*: a request
+    #: whose every chunk was dropped by the budget gave the model nothing to cite, and
+    #: counting it as "ignored its documents" would blame the corpus for the budget.
+    injected_requests: int = 0
+    uncited_requests: int = 0
     models: tuple[ModelTraffic, ...] = ()
     error_groups: tuple[ErrorGroup, ...] = ()
 
@@ -169,6 +180,17 @@ class Summary:
         other chart — normal latency, no errors — and is answering from nowhere.
         """
         return (self.retrieval_empty / self.retrieval_attempts) if self.retrieval_attempts else 0.0
+
+    @property
+    def uncited_rate(self) -> float:
+        """Of the requests that were given documents, the share whose answer used none.
+
+        Task 100's number for the monitoring page, beside injected memory tokens: a
+        gateway paying for context on every request and citing none of it is the
+        cheapest optimisation in the product. A proxy for relevance and a biased one —
+        models under-cite — so it is shown as a rate to watch, not a score to hit.
+        """
+        return (self.uncited_requests / self.injected_requests) if self.injected_requests else 0.0
 
 
 #: The gateway error code a throttled request is recorded under. Taken from the exception
@@ -322,6 +344,8 @@ class PostgresMetricsTransaction:
                     _percentiles(RequestLog.latency_retrieval_ms),
                     func.count().filter(_retrieved()),
                     func.count().filter(_retrieved(), _no_chunks()),
+                    func.count().filter(_injected()),
+                    func.count().filter(_injected(), _uncited()),
                 )
                 .where(*where)
                 .execution_options(**scoped())
@@ -369,6 +393,8 @@ class PostgresMetricsTransaction:
             retrieval=Percentiles.of(totals[7]),
             retrieval_attempts=totals[8],
             retrieval_empty=totals[9],
+            injected_requests=totals[10],
+            uncited_requests=totals[11],
             models=tuple(
                 ModelTraffic(upstream_model_id=row[0], model_name=row[1], requests=row[2])
                 for row in models
@@ -562,7 +588,11 @@ class MemoryMetricsTransaction:
             haystack = f"{row.error_code or ''} {row.error_message or ''}".lower()
             if needle not in haystack:
                 return False
-        return True
+        if filters.uncited is None:
+            return True
+        # Both halves live on the injected denominator: "cited" is not the complement of
+        # "uncited" over every request, only over the ones that were given documents.
+        return _injected_row(row) and _uncited_row(row) == filters.uncited
 
     async def summary(self, filters: LogFilters) -> Summary:
         rows = self._rows(filters)
@@ -591,6 +621,8 @@ class MemoryMetricsTransaction:
             retrieval_empty=sum(
                 1 for row in rows if _attempted(row) and not row.retrieved_chunk_ids
             ),
+            injected_requests=sum(1 for row in rows if _injected_row(row)),
+            uncited_requests=sum(1 for row in rows if _injected_row(row) and _uncited_row(row)),
             models=tuple(
                 ModelTraffic(upstream_model_id=key[0], model_name=key[1], requests=count)
                 for key, count in sorted(models.items(), key=lambda item: -item[1])
@@ -802,6 +834,9 @@ def _conditions(filters: LogFilters) -> list[ColumnElement[bool]]:
         conditions.append(
             or_(RequestLog.error_code.ilike(needle), RequestLog.error_message.ilike(needle))
         )
+    if filters.uncited is not None:
+        conditions.append(_injected())
+        conditions.append(_uncited() if filters.uncited else not_(_uncited()))
     return conditions
 
 
@@ -837,6 +872,34 @@ def _no_chunks() -> Any:
 
 def _attempted(row: RequestLog) -> bool:
     return row.latency_retrieval_ms is not None
+
+
+def _injected() -> Any:
+    """Successful rows where at least one chunk made it into the prompt (task 100).
+
+    Containment on the jsonb array — ``@> '[{"injected": true}]'`` — which the GIN-less
+    table answers by scanning the window, the same as every other aggregate here. Rows
+    from before task 10 carry no ``injected`` key and correctly do not match.
+    """
+    return and_(
+        RequestLog.status_code < 400,
+        RequestLog.retrieved_chunk_ids.contains([{"injected": True}]),
+    )
+
+
+def _uncited() -> Any:
+    return func.jsonb_array_length(RequestLog.cited_chunk_ids) == 0
+
+
+def _injected_row(row: RequestLog) -> bool:
+    return row.status_code < 400 and any(
+        isinstance(entry, dict) and entry.get("injected") is True
+        for entry in (row.retrieved_chunk_ids or [])
+    )
+
+
+def _uncited_row(row: RequestLog) -> bool:
+    return not row.cited_chunk_ids
 
 
 def _status_class() -> Any:

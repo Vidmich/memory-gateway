@@ -214,6 +214,7 @@ export function makeGateway(overrides: Partial<GatewayResponse> = {}): GatewayRe
       query_n_turns: 3,
       retrieval_timeout_ms: 800,
       on_retrieval_error: 'fail_open',
+      citations: 'off',
     },
     logging_config: {
       version: 1,
@@ -316,6 +317,11 @@ export function makeSummary(overrides: Partial<SummaryResponse> = {}): SummaryRe
     retrieval_attempts: 0,
     retrieval_empty: 0,
     empty_retrieval_rate: 0,
+    // Same reasoning for task 100's rate: no answer was given documents, so there is no
+    // denominator and the card reads "—".
+    injected_requests: 0,
+    uncited_requests: 0,
+    uncited_rate: 0,
     models: [{ upstream_model_id: 'mo1', model_name: 'acme-gpt', requests: 120 }],
     error_groups: [{ error_code: 'upstream_timeout', requests: 6 }],
     ...overrides,
@@ -364,6 +370,8 @@ export function makeRequestLog(
     failed_after_stream_start: false,
     bodies_omitted: null,
     dropped_params: [],
+    cited_chunks: 0,
+    citations_unresolved: 0,
     ...overrides,
   }
 }
@@ -384,6 +392,7 @@ export function makeRequestDetail(
     },
     retrieved_chunk_ids: [],
     retrieved_fact_ids: [],
+    cited_chunk_ids: [],
     failover_attempts: [],
     ...overrides,
   }
@@ -504,6 +513,7 @@ export function makeRetrievedChunk(
     chunk_index: 0,
     tokens: 24,
     injected: true,
+    handle: 1,
     ...overrides,
   }
 }
@@ -545,6 +555,24 @@ export function makePromptPreview(
     model_name: 'acme-gpt',
     overflowed: false,
     retrieval: makeRetrievalPreview(),
+    citations: {
+      mode: 'off',
+      sample_answer: 'According to [1], the answer is …',
+      metadata: [
+        {
+          handle: 1,
+          chunk_id: 'ch1',
+          document_id: 'd1',
+          document_name: 'handbook.md',
+          connector_id: 'cn1',
+          section: 'p. 12',
+          chunk_strategy: null,
+          matched_text: null,
+          url: 'http://localhost:5173/connectors/cn1?document=d1&chunk=ch1',
+        },
+      ],
+      footer: '\n\nSources:\n[1] [handbook.md (p. 12)](http://localhost:5173/connectors/cn1?document=d1&chunk=ch1)',
+    },
     ...overrides,
   }
 }

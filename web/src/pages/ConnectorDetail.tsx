@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import {
   useDeleteDocument,
@@ -167,9 +168,15 @@ export function DocumentTable({
   const reindex = useReindexDocument()
   const remove = useDeleteDocument()
   const { notify } = useToast()
+  // A citation's link (task 100) arrives as `?document=…&chunk=…`: open that document's
+  // inspector and let it scroll to the chunk. Read once, at mount, so closing the panel
+  // afterwards is not undone by the URL.
+  const [params] = useSearchParams()
+  const linkedDocument = params.get('document')
+  const linkedChunk = params.get('chunk')
   // One open at a time. A connector with two hundred documents would otherwise fetch two
   // hundred chunk lists, and nobody compares two of them side by side anyway.
-  const [inspecting, setInspecting] = useState<string | null>(null)
+  const [inspecting, setInspecting] = useState<string | null>(linkedDocument)
 
   if (loading && documents.length === 0) {
     return <p className="py-8 text-center text-sm text-slate-500">Loading documents…</p>
@@ -286,7 +293,11 @@ export function DocumentTable({
           {inspecting === document.id ? (
             <tr>
               <td colSpan={8} className="bg-slate-50 px-3 py-3">
-                <ChunkInspector documentId={document.id} expected={document.chunk_count} />
+                <ChunkInspector
+                  documentId={document.id}
+                  expected={document.chunk_count}
+                  highlight={document.id === linkedDocument ? linkedChunk : null}
+                />
               </td>
             </tr>
           ) : null}
@@ -329,11 +340,20 @@ export function DocumentReason({ document }: { document: DocumentResponse }) {
 export function ChunkInspector({
   documentId,
   expected,
+  highlight = null,
 }: {
   documentId: string
   expected: number
+  /** A chunk id to scroll to and mark — what a citation's URL points at (task 100). */
+  highlight?: string | null
 }) {
   const chunks = useDocumentChunks(documentId)
+  const highlighted = useRef<HTMLLIElement | null>(null)
+  useEffect(() => {
+    // Optional-called: jsdom has no `scrollIntoView`, and a missing scroll is not a
+    // failure worth a crash outside a browser either.
+    highlighted.current?.scrollIntoView?.({ block: 'center' })
+  }, [chunks.data, highlight])
 
   if (chunks.isPending) {
     return <p className="text-xs text-slate-500">Loading chunks…</p>
@@ -358,10 +378,22 @@ export function ChunkInspector({
       </p>
       <ol className="space-y-2">
         {items.map((chunk) => (
-          <li key={chunk.id} className="rounded-md border border-slate-200 bg-white p-2">
+          <li
+            key={chunk.id}
+            ref={chunk.id === highlight ? highlighted : null}
+            data-highlighted={chunk.id === highlight || undefined}
+            className={`rounded-md border bg-white p-2 ${
+              chunk.id === highlight ? 'border-violet-400 ring-2 ring-violet-200' : 'border-slate-200'
+            }`}
+          >
             <div className="mb-1 flex items-center justify-between gap-2 text-xs text-slate-500">
               <span className="font-medium text-slate-700">
                 {chunk.page_or_section ?? `Chunk ${(chunk.chunk_index ?? 0) + 1}`}
+                {chunk.id === highlight ? (
+                  <span className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-800">
+                    cited chunk
+                  </span>
+                ) : null}
               </span>
               <span className="font-mono">{chunk.token_count ?? 0} tokens</span>
             </div>

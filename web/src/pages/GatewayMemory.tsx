@@ -540,6 +540,15 @@ function ChunkRow({ chunk }: { chunk: RetrievedChunkResponse }) {
       }`}
     >
       <div className="flex flex-wrap items-baseline gap-2 text-xs">
+        {/* The handle the prompt numbers this chunk with (task 100), so `[3]` in a logged
+            answer maps back to a document from here. A dropped chunk keeps its number:
+            it is the number the model would have seen had the budget been larger. */}
+        <span
+          className="font-mono tabular-nums text-slate-500"
+          title="The citation handle this chunk is numbered with in the prompt"
+        >
+          [{chunk.handle}]
+        </span>
         <span className="rounded bg-slate-900 px-1.5 py-0.5 font-mono text-white tabular-nums">
           {formatScore(chunk.score)}
         </span>
@@ -622,6 +631,77 @@ function PromptResult({ preview }: { preview: PromptPreviewResponse }) {
           ))}
         </ol>
       )}
+
+      <CitationExamples citations={preview.citations} />
+    </div>
+  )
+}
+
+/**
+ * What a client would receive under each citation mode (task 100), for a sample answer
+ * that cites the first injected chunks.
+ *
+ * Built server-side by the same resolver the data plane runs, over the chunks the prompt
+ * above numbered — so the array and the footer here are the shapes a real response would
+ * carry, not a mock-up. The mode the form currently has is marked; the other two are
+ * shown anyway, because the point of the panel is to choose between them.
+ */
+function CitationExamples({
+  citations,
+}: {
+  citations: PromptPreviewResponse['citations']
+}) {
+  const current = (mode: string) =>
+    citations.mode === mode ? (
+      <span className="ml-2 rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white">
+        current
+      </span>
+    ) : null
+
+  return (
+    <div className="mt-3 border-t border-slate-200 pt-3">
+      <h5 className="text-xs font-semibold text-slate-900">Citations, per mode</h5>
+      <p className="mt-0.5 text-xs text-slate-500">
+        For an answer that reads <span className="italic">“{citations.sample_answer}”</span>.
+      </p>
+      <dl className="mt-2 space-y-2 text-xs">
+        <div className="rounded border border-slate-200 bg-slate-50 p-2">
+          <dt className="font-medium text-slate-700">off{current('off')}</dt>
+          <dd className="mt-1 text-slate-600">
+            The client receives the answer exactly as the model wrote it. The request log
+            still records which chunks it cited.
+          </dd>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50 p-2">
+          <dt className="font-medium text-slate-700">metadata{current('metadata')}</dt>
+          <dd className="mt-1">
+            {citations.metadata.length === 0 ? (
+              <span className="text-slate-600">
+                Nothing is injected for this question, so the <code>citations</code> array
+                would be empty.
+              </span>
+            ) : (
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-slate-700">
+                {JSON.stringify({ citations: citations.metadata }, null, 2)}
+              </pre>
+            )}
+          </dd>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50 p-2">
+          <dt className="font-medium text-slate-700">footer{current('footer')}</dt>
+          <dd className="mt-1">
+            {citations.footer ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-slate-700">
+                {citations.sample_answer + citations.footer}
+              </pre>
+            ) : (
+              <span className="text-slate-600">
+                Nothing is injected for this question, so no footer would be appended.
+              </span>
+            )}
+          </dd>
+        </div>
+      </dl>
     </div>
   )
 }

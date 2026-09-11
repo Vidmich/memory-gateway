@@ -549,6 +549,30 @@ async def memory_tokens_are_summed_separately_from_the_rest(fixture: Fixture) ->
     assert summary.memory_tokens == 180
 
 
+async def the_uncited_rate_counts_only_requests_that_were_given_documents(
+    fixture: Fixture,
+) -> None:
+    """Task 100. One of Acme's requests injected a chunk and cited it; the twenty that
+    never searched and the two that found nothing are not in the denominator."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        summary = await transaction.summary(fixture.window())
+
+    assert summary.injected_requests == 1
+    assert summary.uncited_requests == 0
+    assert summary.uncited_rate == 0.0
+
+
+async def filtering_by_uncited_is_over_the_injected_denominator(fixture: Fixture) -> None:
+    """``uncited=false`` is "injected and cited", not "everything else": a request that
+    was never given a document is on neither side of the filter."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        cited = await transaction.logs(fixture.window(uncited=False), after=None, limit=50)
+        uncited = await transaction.logs(fixture.window(uncited=True), after=None, limit=50)
+
+    assert [row.cited_chunk_ids for row in cited] == [["chunk-1"]]
+    assert uncited == []
+
+
 Check = Callable[[Fixture], Awaitable[None]]
 
 #: Every check, in one list, so neither implementation can be given a shorter exam.
@@ -651,6 +675,8 @@ CHECKS: tuple[Check, ...] = (
     a_retrieval_series_carries_the_rate_and_the_counts,
     a_retrieval_series_omits_the_rate_when_nothing_searched,
     memory_tokens_are_summed_separately_from_the_rest,
+    the_uncited_rate_counts_only_requests_that_were_given_documents,
+    filtering_by_uncited_is_over_the_injected_denominator,
     throttled_callers_are_ranked_by_how_often_they_were_refused,
     throttling_is_scoped_to_one_organization,
     an_unidentified_caller_is_not_a_row_on_the_list,

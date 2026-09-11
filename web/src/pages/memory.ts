@@ -27,7 +27,30 @@ export type MemoryForm = {
   memoryMaxTokens: string
   memoryMinScore: string
   allowAnonymousMemory: boolean
+  //  Task 100. Lives in the memory blob because it is about the retrieved documents, but
+  //  it is *rendered* in the Prompt section, next to the instruction that asks the model
+  //  to cite: the setting is about what happens to the answer, not about retrieval.
+  citations: string
 }
+
+/** The three delivery modes, in the order the selector shows them (SPEC §7.1). */
+export const CITATION_MODES = [
+  {
+    value: 'off',
+    label: 'Off',
+    hint: 'The response is exactly what the model returned. Citations are still recorded on the request log.',
+  },
+  {
+    value: 'metadata',
+    label: 'Metadata (recommended)',
+    hint: 'A citations array is added to the assistant message. Clients that do not know about it ignore it; the text is untouched.',
+  },
+  {
+    value: 'footer',
+    label: 'Footer',
+    hint: 'A "Sources:" block is appended to the answer text, for clients you do not control. Handles that point at nothing are removed.',
+  },
+] as const
 
 /** Mirrors the server's `MemoryConfig` bounds. Kept in step by `memory.test.ts`. */
 export const LIMITS = {
@@ -53,6 +76,7 @@ export function memoryForm(config: MemoryConfig): MemoryForm {
     memoryMaxTokens: String(config.memory_max_tokens ?? 600),
     memoryMinScore: String(config.memory_min_score ?? 0.3),
     allowAnonymousMemory: config.allow_anonymous_memory ?? false,
+    citations: config.citations ?? 'off',
   }
 }
 
@@ -78,6 +102,7 @@ export function memoryBody(form: MemoryForm): Record<string, unknown> {
     memory_max_tokens: Number(form.memoryMaxTokens),
     memory_min_score: Number(form.memoryMinScore),
     allow_anonymous_memory: form.allowAnonymousMemory,
+    citations: form.citations,
   }
 }
 

@@ -48,6 +48,7 @@ from app.services.gateways import (
 )
 from app.services.memory_preview import (
     MAX_PREVIEW_QUERY,
+    CitationsPreview,
     PreviewChunk,
     PromptPreview,
     RetrievalPreview,
@@ -372,6 +373,8 @@ class RetrievedChunkResponse(BaseModel):
     #: Whether it survives ``doc_max_tokens``. A high-scoring chunk with ``false`` here
     #: is the screen earning its keep: the corpus is fine and the budget is the problem.
     injected: bool
+    #: The ``[n]`` the prompt numbers this chunk with (task 100).
+    handle: int
 
     @classmethod
     def of(cls, item: PreviewChunk) -> Self:
@@ -387,6 +390,28 @@ class RetrievedChunkResponse(BaseModel):
             chunk_index=chunk.chunk_index,
             tokens=item.tokens,
             injected=item.injected,
+            handle=item.handle,
+        )
+
+
+class CitationsPreviewResponse(BaseModel):
+    """What a client would receive under each citation mode, for a sample answer that
+    cites the first injected chunks (task 100)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str
+    sample_answer: str
+    metadata: list[dict[str, Any]]
+    footer: str
+
+    @classmethod
+    def of(cls, preview: CitationsPreview) -> Self:
+        return cls(
+            mode=preview.mode,
+            sample_answer=preview.sample_answer,
+            metadata=[dict(item) for item in preview.metadata],
+            footer=preview.footer,
         )
 
 
@@ -444,6 +469,7 @@ class PromptPreviewResponse(BaseModel):
     #: SPEC §7: the client messages left no room, so nothing was injected.
     overflowed: bool
     retrieval: RetrievalPreviewResponse
+    citations: CitationsPreviewResponse
 
     @classmethod
     def of(cls, preview: PromptPreview) -> Self:
@@ -460,6 +486,7 @@ class PromptPreviewResponse(BaseModel):
             model_name=preview.model_name,
             overflowed=preview.overflowed,
             retrieval=RetrievalPreviewResponse.of(preview.retrieval),
+            citations=CitationsPreviewResponse.of(preview.citations),
         )
 
 

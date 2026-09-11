@@ -605,6 +605,25 @@ describe('the chunk inspector', () => {
     expect(screen.getByText(/Utrecht depot/)).toBeInTheDocument()
   })
 
+  it('opens at the chunk a citation links to (task 100)', async () => {
+    // The URL a citation carries: the document's inspector is open on arrival and the
+    // cited chunk is marked, so "where did this come from" is one click from the answer.
+    renderAt(
+      '/connectors/c1?document=d1&chunk=p2',
+      fakeServer({
+        documents: [makeDocument({ id: 'd1', chunk_count: 2 })],
+        chunks: [
+          makeDocumentChunk({ id: 'p1', chunk_index: 0 }),
+          makeDocumentChunk({ id: 'p2', chunk_index: 1, text: 'The cited passage.' }),
+        ],
+      }),
+    )
+
+    const cited = await screen.findByText('cited chunk')
+    expect(cited.closest('li')?.textContent).toContain('The cited passage.')
+    expect(screen.getByRole('button', { name: 'Hide chunks' })).toBeInTheDocument()
+  })
+
   it('is not offered for a document with nothing in the index', async () => {
     renderAt(
       '/connectors/c1',

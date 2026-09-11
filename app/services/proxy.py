@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -35,10 +35,11 @@ from app.api.proxy.errors import (
 )
 from app.core.tracing import phase, record_error
 from app.schemas.openai import ChatRequest, ChatResponse, StreamFrame
+from app.services.citations import MODE_OFF, Delivered, Resolution, StreamCitations, deliver
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.params import Resolved, resolve_params
 from app.services.prompt import Assembled, assemble, prompt_tokens
-from app.services.retrieval import Recall
+from app.services.retrieval import Chunk, Recall
 from app.services.sse import DONE, format_event
 from app.services.tokenizer import Tokenizer, WordTokenizer
 
@@ -64,6 +65,16 @@ class Prepared:
     params: Resolved
     target: UpstreamTarget
     assembly: Assembled | None = None
+    #: How the gateway wants citations delivered (task 100). Carried here rather than
+    #: read off the gateway again at delivery time, for the same reason the assembly is:
+    #: the response is handled after the request was prepared, and the two must agree.
+    citations: str = MODE_OFF
+
+    @property
+    def injected(self) -> tuple[Chunk, ...]:
+        """The chunks the prompt numbered, in the order it numbered them — what a
+        citation resolves against."""
+        return self.assembly.injected if self.assembly is not None else ()
 
     @property
     def memory_tokens(self) -> int:
@@ -130,6 +141,7 @@ class ProxyService:
         http: httpx.AsyncClient,
         *,
         tokenizer: Tokenizer | None = None,
+        ui_base_url: str | None = None,
     ) -> None:
         self._http = http
         # The same tokenizer the chunker used, so the budget a gateway sets in tokens is
@@ -137,6 +149,9 @@ class ProxyService:
         # make `doc_max_tokens` mean something slightly different from `chunk_size`, which
         # is the sort of discrepancy nobody finds by reading.
         self._tokenizer = tokenizer or WordTokenizer()
+        #: Where the control plane's chunk inspector lives, for the link a citation
+        #: carries. ``None`` means citations are delivered without one.
+        self._ui_base_url = ui_base_url
 
     # -- request construction ------------------------------------------------
 
@@ -203,6 +218,7 @@ class ProxyService:
             params=params,
             target=target,
             assembly=assembly,
+            citations=memory.citations,
         )
 
     def estimate_tokens(self, prepared: Prepared) -> int:
@@ -253,12 +269,33 @@ class ProxyService:
                 f"[upstream:{target.name}] returned a response that is not a chat completion."
             ) from exc
 
+    def cite(self, prepared: Prepared, response: ChatResponse) -> Delivered:
+        """Resolve the answer's citations against what this attempt injected (task 100).
+
+        Always, whatever the gateway's mode: under ``off`` the response comes back the
+        same object, untouched, and only the resolution — which the request log records
+        — is new. The chunks are the *attempt's*, because two targets can have injected
+        different amounts and ``[3]`` means whatever the prompt that answered said it did.
+        """
+        return deliver(
+            response, prepared.injected, mode=prepared.citations, base_url=self._ui_base_url
+        )
+
     # -- streaming -----------------------------------------------------------
 
     async def open_stream(
-        self, prepared: Prepared, *, observer: StreamObserver | None = None
+        self,
+        prepared: Prepared,
+        *,
+        observer: StreamObserver | None = None,
+        on_citations: Callable[[Resolution], None] | None = None,
     ) -> UpstreamStream:
-        """Start the upstream call and validate its status. Nothing is yielded yet."""
+        """Start the upstream call and validate its status. Nothing is yielded yet.
+
+        ``on_citations`` is told what the answer cited once the stream ends, however it
+        ends — the same guarantee observers have, and it fires before their ``done`` so
+        the record is complete by the time the log's observer submits it.
+        """
         target = prepared.target
         adapter = _adapter_for(target)
         outbound = _outbound(adapter, prepared)
@@ -292,6 +329,17 @@ class ProxyService:
             target=target,
             request=prepared.request,
             observer=observer,
+            # Built only when something was injected: with nothing to resolve against
+            # there is nothing to record, and a stream with no citation stage in it is
+            # the exact code path task 18 measured.
+            citations=(
+                StreamCitations(
+                    prepared.injected, mode=prepared.citations, base_url=self._ui_base_url
+                )
+                if prepared.injected
+                else None
+            ),
+            on_citations=on_citations,
         )
 
 
@@ -306,11 +354,15 @@ class UpstreamStream:
         target: UpstreamTarget,
         request: ChatRequest,
         observer: StreamObserver | None = None,
+        citations: StreamCitations | None = None,
+        on_citations: Callable[[Resolution], None] | None = None,
     ) -> None:
         self._response = response
         self._adapter = adapter
         self._request = request
         self._observer = observer
+        self._citations = citations
+        self._on_citations = on_citations
         self.target = target
 
     async def frames(self) -> AsyncIterator[str]:
@@ -318,9 +370,15 @@ class UpstreamStream:
         try:
             async for frame in self._adapter.parse_stream(self._response, self._request):
                 # Observed before it is yielded, so a tee sees every frame the client
-                # sees and no frame the client does not.
-                self._notify(frame)
-                yield format_event(frame.data)
+                # sees and no frame the client does not — including the frames the
+                # citation stage rewrites or adds, which is what makes the stored
+                # transcript the text the client actually received.
+                for outbound in self._cite(frame):
+                    self._notify(outbound)
+                    yield format_event(outbound.data)
+            for outbound in self._citations.finish() if self._citations is not None else ():
+                self._notify(outbound)
+                yield format_event(outbound.data)
             yield format_event(DONE)
         except asyncio.CancelledError as exc:
             # The client hung up. Closing the response below cancels the upstream call so
@@ -351,6 +409,15 @@ class UpstreamStream:
             self._finish(outcome)
             await self._response.aclose()
 
+    def _cite(self, frame: StreamFrame) -> list[StreamFrame]:
+        if self._citations is None:
+            return [frame]
+        try:
+            return self._citations.feed(frame)
+        except Exception:  # pragma: no cover - a rewrite that raises must not cost a frame
+            logger.warning("citation stage failed on a frame; relaying it as is", exc_info=True)
+            return [frame]
+
     def _notify(self, frame: StreamFrame) -> None:
         if self._observer is None:
             return
@@ -360,6 +427,13 @@ class UpstreamStream:
             logger.warning("stream observer failed on a frame", exc_info=True)
 
     def _finish(self, error: BaseException | None) -> None:
+        # Citations first, observers second: the log's observer submits the record from
+        # its `done`, and the record has to already say what was cited.
+        if self._citations is not None and self._on_citations is not None:
+            try:
+                self._on_citations(self._citations.resolution())
+            except Exception:  # pragma: no cover - never at the client's expense
+                logger.warning("could not record citations for a stream", exc_info=True)
         if self._observer is None:
             return
         try:

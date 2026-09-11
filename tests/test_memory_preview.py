@@ -419,3 +419,67 @@ async def test_a_gateway_in_another_organization_is_not_found() -> None:
     actor = connectors.actor
     with pytest.raises(NotFound):
         await preview.try_retrieval(actor, stranger.id, query=QUESTION)
+
+
+# ---------------------------------------------------------------------------
+# citations (task 100)
+# ---------------------------------------------------------------------------
+
+
+async def test_try_retrieval_shows_the_handle_each_chunk_would_be_numbered_with(
+    signed_in: AuthHarness,
+) -> None:
+    """So a person reading ``[3]`` in a logged answer can map it back without opening
+    the drawer. Positional in retrieval order, as the prompt numbers them."""
+    await seed(signed_in, SECRET_FACT)
+    gateway_id = await make_gateway(signed_in)
+
+    payload = (
+        await post(signed_in, f"/api/v1/gateways/{gateway_id}/try-retrieval", {"query": QUESTION})
+    ).json()
+
+    assert [chunk["handle"] for chunk in payload["chunks"]] == list(
+        range(1, len(payload["chunks"]) + 1)
+    )
+
+
+async def test_the_prompt_preview_renders_one_citation_example_per_mode(
+    signed_in: AuthHarness,
+) -> None:
+    await seed(signed_in, SECRET_FACT)
+    gateway_id = await make_gateway(signed_in)
+
+    payload = (
+        await post(
+            signed_in,
+            f"/api/v1/gateways/{gateway_id}/prompt-preview",
+            {"query": QUESTION, "memory_config": {"citations": "footer"}},
+        )
+    ).json()
+
+    citations = payload["citations"]
+    assert citations["mode"] == "footer"
+    assert "[1]" in citations["sample_answer"]
+    [example] = citations["metadata"]
+    assert example["handle"] == 1
+    assert example["document_name"] == "warranty.md"
+    assert example["chunk_id"] == payload["retrieval"]["chunks"][0]["id"]
+    assert citations["footer"].startswith("\n\nSources:\n[1] ")
+
+
+async def test_the_citation_example_cites_nothing_when_nothing_is_injected(
+    signed_in: AuthHarness,
+) -> None:
+    gateway_id = await make_gateway(signed_in)
+
+    payload = (
+        await post(
+            signed_in,
+            f"/api/v1/gateways/{gateway_id}/prompt-preview",
+            {"query": QUESTION},
+        )
+    ).json()
+
+    assert payload["citations"]["metadata"] == []
+    assert payload["citations"]["footer"] == ""
+    assert payload["citations"]["mode"] == "off"

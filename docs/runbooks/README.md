@@ -19,6 +19,7 @@ responder reading source code at three in the morning.
 | `PartitionRunwayLow` | [partition-runway.md](partition-runway.md) |
 | `RateLimiterUnavailable` | [redis-outage.md](redis-outage.md) |
 | `DistillationFailureRateHigh` | [distillation-failures.md](distillation-failures.md) |
+| `SummarizationFailureRateHigh` | [summarization-failures.md](summarization-failures.md) |
 
 ## Procedures
 

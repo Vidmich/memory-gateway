@@ -25,6 +25,7 @@ import {
   makeRequestDetail,
   makeRequestLog,
   makeSeries,
+  makeSummarizationHealth,
   makeSummary,
   makeUser,
 } from '@/test/factories'
@@ -36,6 +37,8 @@ type ServerOptions = {
   logs?: ReturnType<typeof makeRequestLog>[]
   detail?: ReturnType<typeof makeRequestDetail>
   nextCursor?: string | null
+  /** Task 102: what `GET /summarization/health` answers. */
+  summarization?: ReturnType<typeof makeSummarizationHealth>
 }
 
 /**
@@ -76,6 +79,9 @@ function fakeServer(options: ServerOptions = {}) {
     }
     if (path.startsWith('/api/v1/gateways')) {
       return Promise.resolve(json({ items: [makeGateway()], next_cursor: null }))
+    }
+    if (path.startsWith('/api/v1/summarization/health')) {
+      return Promise.resolve(json(options.summarization ?? makeSummarizationHealth()))
     }
 
     throw new Error(`unexpected ${path}`)
@@ -259,6 +265,39 @@ describe('the monitoring screen', () => {
 // ---------------------------------------------------------------------------
 // the drawer
 // ---------------------------------------------------------------------------
+
+describe('the summarization panel (task 102)', () => {
+  it('shows what summarizing cost in the window, by model and by connector', async () => {
+    const { client, requests } = fakeServer()
+    renderAt(client)
+
+    const panel = await screen.findByTestId('summarization-panel')
+    expect(panel).toHaveTextContent('12 summarized, 1 failed — 25,800 tokens.')
+    expect(within(panel).getByText('cheap-summarizer')).toBeInTheDocument()
+    expect(within(panel).getByText('Product docs')).toBeInTheDocument()
+    // The page's own window, not a window of its own.
+    const window = resolveRange('24h')
+    await waitFor(() => {
+      const [call] = queries(requests, '/api/v1/summarization/health')
+      expect(call).toContain(`from=${encodeURIComponent(window.from)}`)
+    })
+  })
+
+  it('says how many documents are parked on a cap', async () => {
+    const { client } = fakeServer({
+      summarization: makeSummarizationHealth({
+        waiting_documents: 7,
+        waiting: [{ connector_id: 'c1', name: 'Product docs', documents: 7 }],
+      }),
+    })
+    renderAt(client)
+
+    const panel = await screen.findByTestId('summarization-panel')
+    expect(within(panel).getByRole('status')).toHaveTextContent(
+      /7 documents waiting on the summarization cap across 1 connector/,
+    )
+  })
+})
 
 describe('the request drawer', () => {
   /** Click the row, not the model's bar in the traffic chart above it. */

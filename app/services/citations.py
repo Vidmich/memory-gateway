@@ -184,8 +184,12 @@ class Citation:
             "document_id": chunk.document_id,
             "document_name": chunk.source_name,
             "connector_id": chunk.connector_id,
-            "section": chunk.page_or_section,
+            # A summary is about the whole document: no section, whatever the point says.
+            "section": None if chunk.is_summary else chunk.page_or_section,
             "chunk_strategy": chunk.chunk_strategy,
+            # `source` or `summary` (task 102): a client rendering a footer has to know
+            # which handles point at a quote and which at a description of a document.
+            "kind": chunk.kind,
             # The sentence that matched under ``sentence_window``, not the window around
             # it — the one strategy where "what was cited" and "what was shown" differ.
             "matched_text": chunk.matched_text,
@@ -197,6 +201,8 @@ class Citation:
         and the section in the shape the prompt's own heading printed it."""
         chunk = self.chunk
         where = f" ({chunk.page_or_section})" if chunk.page_or_section else ""
+        if chunk.is_summary:
+            where = " (summary)"
         label = f"{chunk.source_name}{where}"
         url = inspector_url(base_url, chunk)
         # A Markdown link for the clients that render one; a terminal shows the URL, which

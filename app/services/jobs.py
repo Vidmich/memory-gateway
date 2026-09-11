@@ -350,6 +350,9 @@ class JobRunner:
 
 INGEST_DOCUMENT = "ingest_document"
 DELETE_CONNECTOR = "delete_connector"
+#: Task 102. Just the summary of an already-indexed document: the **Summarize** retry, the
+#: morning after a cap hit, the re-embed after an operator edits one.
+SUMMARIZE_DOCUMENT = "summarize_document"
 DISTIL_MEMORY = "distil_memory"
 REINDEX = "reindex"
 #: Task 19. Two, not one, because the second runs *after* a grace period: the drop of a
@@ -370,6 +373,7 @@ DROP_MIGRATION_SOURCE = "drop_migration_source"
 JOB_NAMES = (
     INGEST_DOCUMENT,
     DELETE_CONNECTOR,
+    SUMMARIZE_DOCUMENT,
     DISTIL_MEMORY,
     REINDEX,
     MIGRATE_VECTORS,
@@ -385,6 +389,12 @@ def ingest_key(document_id: uuid.UUID, content_hash: str | None) -> str:
     the fix would silently never be indexed.
     """
     return f"ingest:{document_id}:{content_hash or 'unknown'}"
+
+
+def summarize_key(document_id: uuid.UUID, content_hash: str | None) -> str:
+    """One summarization per document *version*, like :func:`ingest_key`. The callers
+    that mean "again, even though nothing changed" qualify it."""
+    return f"summarize:{document_id}:{content_hash or 'unknown'}"
 
 
 #: The one non-default queue. A *logical* name: turning it into a Redis key is the

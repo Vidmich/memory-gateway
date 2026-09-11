@@ -54,6 +54,7 @@ from app.schemas.openai import ChatMessage
 from app.services.embeddings import Embedder
 from app.services.facts import NO_FACTS, NO_IDENTITY, Fact, FactRecall, FactRecaller
 from app.services.prompt import as_text
+from app.services.summarization import KIND_SOURCE, KIND_SUMMARY
 from app.services.vector_store import Match, VectorStore
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,11 @@ class Chunk:
     #: reading "cited a ``sentence_window`` chunk" knows to look at ``matched_text``.
     #: ``None`` for a point written before the payload carried it.
     chunk_strategy: str | None = None
+    #: ``source`` or ``summary`` (task 102). A summary is rewritten text, not a quote, and
+    #: everything downstream — the prompt's heading, the citation, the inspector — switches
+    #: on this rather than inferring it. A point written before the key existed is a
+    #: source, because before the key existed nothing else could be written.
+    kind: str = KIND_SOURCE
 
     @classmethod
     def of(cls, match: Match) -> Chunk:
@@ -129,16 +135,20 @@ class Chunk:
         embedded = payload.get("embedded_text")
         strategy = payload.get("chunk_strategy")
         text = str(payload.get("text", ""))
+        kind = KIND_SUMMARY if payload.get("kind") == KIND_SUMMARY else KIND_SOURCE
         return cls(
             id=match.id,
             score=match.score,
             text=text,
             matched_text=str(embedded) if embedded and str(embedded) != text else None,
             chunk_strategy=str(strategy) if strategy else None,
+            kind=kind,
             # A document whose name is missing is still a usable citation target by id;
             # rendering "source: None" into somebody's prompt is not.
             source_name=str(payload.get("source_name") or "untitled"),
-            page_or_section=str(section) if section else None,
+            # A summary has no page: it is about the whole document, and a citation of
+            # it must not point a reader at "p. Summary".
+            page_or_section=str(section) if section and kind != KIND_SUMMARY else None,
             document_id=_as_str(payload.get("document_id")),
             connector_id=_as_str(payload.get("connector_id")),
             chunk_index=int(payload.get("chunk_index", 0) or 0),
@@ -162,9 +172,15 @@ class Chunk:
             "chunk_index": self.chunk_index,
             "injected": injected,
         }
+        if self.kind != KIND_SOURCE:
+            entry["kind"] = self.kind
         if dropped_reason is not None:
             entry["dropped"] = dropped_reason
         return entry
+
+    @property
+    def is_summary(self) -> bool:
+        return self.kind == KIND_SUMMARY
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,11 +544,19 @@ def _dedupe(matches: Sequence[Match]) -> list[Match]:
     """
     kept: list[Match] = []
     for match in matches:
+        if match.payload.get("kind") == KIND_SUMMARY:
+            # A summary shares no text with any source chunk of its document — it is a
+            # different thing about the same document — so it neighbours nothing and is
+            # never a duplicate of anything. Its index is a constant that would otherwise
+            # sit one step from chunk zero.
+            kept.append(match)
+            continue
         document = match.payload.get("document_id")
         index = int(match.payload.get("chunk_index", 0) or 0)
         radius = _radius(match)
         if any(
             existing.payload.get("document_id") == document
+            and existing.payload.get("kind") != KIND_SUMMARY
             and abs(int(existing.payload.get("chunk_index", 0) or 0) - index)
             <= max(radius, _radius(existing))
             for existing in kept

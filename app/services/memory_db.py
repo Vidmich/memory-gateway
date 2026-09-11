@@ -34,6 +34,7 @@ from app.db.models import (
     ReindexRun,
     ReindexTarget,
     RequestLog,
+    SummarizationRun,
     Transcript,
     UpstreamModel,
     User,
@@ -61,6 +62,8 @@ class MemoryDatabase:
     request_logs: dict[uuid.UUID, RequestLog] = field(default_factory=dict)
     transcripts: dict[uuid.UUID, Transcript] = field(default_factory=dict)
     distillation_runs: dict[uuid.UUID, DistillationRun] = field(default_factory=dict)
+    #: Task 102's ledger, beside the one it is modelled on.
+    summarization_runs: dict[uuid.UUID, SummarizationRun] = field(default_factory=dict)
     #: Task 15. Append-only here too: nothing in this class removes one, which is the
     #: in-memory half of the trigger the migration installs.
     audit_events: dict[uuid.UUID, AuditEvent] = field(default_factory=dict)

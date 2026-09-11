@@ -486,6 +486,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{document_id}/summarize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Summarize Document
+         * @description **Regenerate**, and the **Summarize** retry after a failed summary (task 102).
+         *
+         *     Asks the model again and re-embeds what depends on the answer. Just the summary phase
+         *     under ``summary_chunk``; the whole ingestion under ``contextual``, where every vector
+         *     carries the prefix.
+         */
+        post: operations["summarize_document_api_v1_documents__document_id__summarize_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Edit Summary
+         * @description Replace the document's summary with the operator's own (task 102).
+         *
+         *     The edit re-embeds what depends on it — the summary chunk, and under ``contextual``
+         *     every chunk — and charges no cap: no model was called. ``summary_model`` reads
+         *     ``manual`` from here on, and the summary survives later reindexes of the same bytes.
+         */
+        patch: operations["edit_summary_api_v1_documents__document_id__summary_patch"];
+        trace?: never;
+    };
     "/api/v1/end-users": {
         parameters: {
             query?: never;
@@ -1604,6 +1652,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/summarization": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Summarization Settings
+         * @description The organization's default summarization model, and what a connector with no choice
+         *     of its own would actually use — through the distillation model and the platform default.
+         */
+        get: operations["get_summarization_settings_api_v1_summarization_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Summarization Settings
+         * @description ``model_id: null`` is a value: it means "summarize with the distillation model".
+         */
+        patch: operations["update_summarization_settings_api_v1_summarization_patch"];
+        trace?: never;
+    };
+    "/api/v1/summarization/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Summarization Health
+         * @description Documents summarized per day, tokens by model, failures, cap hits, the connectors
+         *     spending the most, and the documents parked on a cap — over the monitoring page's own
+         *     window. ``connector_id`` narrows it to one connector's slice for its detail screen.
+         */
+        get: operations["get_summarization_health_api_v1_summarization_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tokenizers": {
         parameters: {
             query?: never;
@@ -1995,6 +2090,7 @@ export interface components {
             query: string | null;
             /** Source Name */
             source_name: string;
+            summarization?: components["schemas"]["SummarizationCostResponse"] | null;
         };
         /**
          * CitationsPreviewResponse
@@ -2023,6 +2119,10 @@ export interface components {
             description?: string | null;
             /** Name */
             name: string;
+            /** Summarization */
+            summarization?: {
+                [key: string]: unknown;
+            };
             /**
              * Type
              * @default managed_file_drop
@@ -2049,6 +2149,10 @@ export interface components {
             effective_chunking: {
                 [key: string]: components["schemas"]["ChunkingConfig"];
             };
+            /** Effective Summarization */
+            effective_summarization: {
+                [key: string]: components["schemas"]["SummarizationConfig"];
+            };
             /** Error */
             error: string | null;
             /**
@@ -2068,10 +2172,28 @@ export interface components {
             status: string;
             /** Storage Prefix */
             storage_prefix: string | null;
+            summarization: components["schemas"]["SummarizationConfig"];
+            summary_model: components["schemas"]["SummaryModelResponse"] | null;
             /** Total Bytes */
             total_bytes: number;
             /** Type */
             type: string;
+        };
+        /** ConnectorSpendResponse */
+        ConnectorSpendResponse: {
+            /**
+             * Connector Id
+             * Format: uuid
+             */
+            connector_id: string;
+            /** Documents */
+            documents: number;
+            /** Name */
+            name: string | null;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
         };
         /** ConnectorUpdateRequest */
         ConnectorUpdateRequest: {
@@ -2083,6 +2205,10 @@ export interface components {
             description?: string | null;
             /** Name */
             name?: string | null;
+            /** Summarization */
+            summarization?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * CredentialStatus
@@ -2237,10 +2363,19 @@ export interface components {
             chunk_index: number | null;
             /** Chunk Strategy */
             chunk_strategy?: string | null;
+            /** Context */
+            context?: string | null;
+            /** Embedded Because */
+            embedded_because?: string | null;
             /** Embedded Text */
             embedded_text?: string | null;
             /** Id */
             id: string;
+            /**
+             * Kind
+             * @default source
+             */
+            kind: string;
             /** Page Or Section */
             page_or_section: string | null;
             /** Text */
@@ -2303,6 +2438,20 @@ export interface components {
             stale: boolean;
             /** Status */
             status: string;
+            /** Summarized At */
+            summarized_at?: string | null;
+            /** Summary */
+            summary?: string | null;
+            /** Summary Error */
+            summary_error?: string | null;
+            /** Summary Model */
+            summary_model?: string | null;
+            /** Summary Status */
+            summary_status?: string | null;
+            /** Summary Tokens In */
+            summary_tokens_in?: number | null;
+            /** Summary Tokens Out */
+            summary_tokens_out?: number | null;
             /** Tokenizer */
             tokenizer: string | null;
             /**
@@ -3460,6 +3609,17 @@ export interface components {
             /** Upstream Model Id */
             upstream_model_id: string;
         };
+        /** ModelSpendResponse */
+        ModelSpendResponse: {
+            /** Model Name */
+            model_name: string;
+            /** Runs */
+            runs: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
         /**
          * ModelTestRequest
          * @description An unsaved draft to probe.
@@ -3856,6 +4016,8 @@ export interface components {
         };
         /** PreviewChunkResponse */
         PreviewChunkResponse: {
+            /** Context */
+            context?: string | null;
             /** Embedded Text */
             embedded_text: string | null;
             /** Index */
@@ -4375,6 +4537,222 @@ export interface components {
             quota_bytes?: number | null;
         };
         /**
+         * SummarizationConfig
+         * @description Task 102's knobs, per connector. Off by default: it costs a model call a document.
+         */
+        SummarizationConfig: {
+            /** Daily Document Cap */
+            daily_document_cap?: number | null;
+            /**
+             * Max Input Tokens
+             * @default 12000
+             */
+            max_input_tokens: number;
+            /**
+             * Max Summary Tokens
+             * @default 150
+             */
+            max_summary_tokens: number;
+            /**
+             * Mode
+             * @default off
+             * @enum {string}
+             */
+            mode: "off" | "summary_chunk" | "contextual" | "both";
+            /** Model Id */
+            model_id?: string | null;
+            /** Overrides */
+            overrides?: {
+                [key: string]: components["schemas"]["SummarizationOverride"];
+            };
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /**
+         * SummarizationCostResponse
+         * @description The summarization call's share of one ingestion, on the comparison (task 102).
+         */
+        SummarizationCostResponse: {
+            /** Mode */
+            mode: string;
+            /** Prefixes */
+            prefixes: boolean;
+            /** Summary */
+            summary: string | null;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
+        /** SummarizationDayResponse */
+        SummarizationDayResponse: {
+            /**
+             * Capped
+             * @default 0
+             */
+            capped: number;
+            /**
+             * Day
+             * Format: date-time
+             */
+            day: string;
+            /**
+             * Documents
+             * @default 0
+             */
+            documents: number;
+            /**
+             * Failures
+             * @default 0
+             */
+            failures: number;
+            /**
+             * Tokens In
+             * @default 0
+             */
+            tokens_in: number;
+            /**
+             * Tokens Out
+             * @default 0
+             */
+            tokens_out: number;
+        };
+        /**
+         * SummarizationDefaults
+         * @description ``organizations.settings["summarization"]``: the model, when an organization wants
+         *     it different from the one that distils.
+         */
+        SummarizationDefaults: {
+            /** Model Id */
+            model_id?: string | null;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /**
+         * SummarizationHealthResponse
+         * @description The Monitoring panel's block (SPEC §10.1 as amended by task 102).
+         *
+         *     Per day, per model, per connector, the totals, and the documents parked on a cap. The
+         *     failure rate is computed here for the reason the memory-health one is: a denominator
+         *     that is easy to get subtly wrong belongs in one place.
+         */
+        SummarizationHealthResponse: {
+            /** By Model */
+            by_model: components["schemas"]["ModelSpendResponse"][];
+            /**
+             * Capped
+             * @default 0
+             */
+            capped: number;
+            /** Days */
+            days: components["schemas"]["SummarizationDayResponse"][];
+            /**
+             * Documents
+             * @default 0
+             */
+            documents: number;
+            /**
+             * Estimated Runs
+             * @default 0
+             */
+            estimated_runs: number;
+            /**
+             * Failure Rate
+             * @default 0
+             */
+            failure_rate: number;
+            /**
+             * Failures
+             * @default 0
+             */
+            failures: number;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Tokens In
+             * @default 0
+             */
+            tokens_in: number;
+            /**
+             * Tokens Out
+             * @default 0
+             */
+            tokens_out: number;
+            /** Top Connectors */
+            top_connectors: components["schemas"]["ConnectorSpendResponse"][];
+            /** Waiting */
+            waiting: components["schemas"]["WaitingConnectorResponse"][];
+            /**
+             * Waiting Documents
+             * @default 0
+             */
+            waiting_documents: number;
+        };
+        /**
+         * SummarizationOverride
+         * @description A partial :class:`SummarizationConfig`, for one format kind.
+         *
+         *     Spelled out rather than derived, for the reason
+         *     :class:`~app.schemas.connector_config.ChunkingOverride` gives: these fields are the API.
+         */
+        SummarizationOverride: {
+            /** Max Input Tokens */
+            max_input_tokens?: number | null;
+            /** Max Summary Tokens */
+            max_summary_tokens?: number | null;
+            /** Mode */
+            mode?: ("off" | "summary_chunk" | "contextual" | "both") | null;
+            /** Model Id */
+            model_id?: string | null;
+        };
+        /** SummarizationSettingsRequest */
+        SummarizationSettingsRequest: {
+            /** Model Id */
+            model_id?: string | null;
+        };
+        /** SummarizationSettingsResponse */
+        SummarizationSettingsResponse: {
+            config: components["schemas"]["SummarizationDefaults"];
+            /** Effective Model Id */
+            effective_model_id?: string | null;
+            /** Effective Model Name */
+            effective_model_name?: string | null;
+            /** Effective Model Source */
+            effective_model_source?: string | null;
+        };
+        /**
+         * SummaryEditRequest
+         * @description The operator's own summary. Replaces the model's, and is never charged to a cap.
+         */
+        SummaryEditRequest: {
+            /** Summary */
+            summary: string;
+        };
+        /**
+         * SummaryModelResponse
+         * @description What a connector's summarization ``model_id`` resolves to (task 102).
+         */
+        SummaryModelResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Inherited */
+            inherited: boolean;
+            /** Name */
+            name: string;
+        };
+        /**
          * SummaryResponse
          * @description The cards, the latency numbers, and the two distribution charts.
          */
@@ -4701,6 +5079,18 @@ export interface components {
             target: string;
             /** Target Collection */
             target_collection: string;
+        };
+        /** WaitingConnectorResponse */
+        WaitingConnectorResponse: {
+            /**
+             * Connector Id
+             * Format: uuid
+             */
+            connector_id: string;
+            /** Documents */
+            documents: number;
+            /** Name */
+            name: string | null;
         };
         /**
          * ReindexRequest
@@ -5497,6 +5887,72 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    summarize_document_api_v1_documents__document_id__summarize_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_summary_api_v1_documents__document_id__summary_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SummaryEditRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -7516,6 +7972,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RetentionCeilingsResponse"];
+                };
+            };
+        };
+    };
+    get_summarization_settings_api_v1_summarization_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummarizationSettingsResponse"];
+                };
+            };
+        };
+    };
+    update_summarization_settings_api_v1_summarization_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SummarizationSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummarizationSettingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_summarization_health_api_v1_summarization_health_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+                connector_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummarizationHealthResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

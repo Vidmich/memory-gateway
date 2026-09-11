@@ -26,6 +26,7 @@ import {
 import { DataTable, type Column } from '@/components/DataTable'
 import { StatusBadge } from '@/components/StatusBadge'
 import { MemoryHealthPanel } from '@/pages/MemoryHealthPanel'
+import { SummarizationHealthPanel } from '@/pages/SummarizationHealthPanel'
 import { ThrottledPanel } from '@/pages/ThrottledPanel'
 import { RequestDrawer } from '@/pages/RequestDrawer'
 
@@ -270,6 +271,12 @@ export function MonitoringPage() {
 
       <div className="mt-4">
         <MemoryHealthPanel />
+      </div>
+
+      {/* Task 102. The page's own window, not the memory chart's thirty days: summaries
+          are written when documents arrive, so a short window has an answer here. */}
+      <div className="mt-4">
+        <SummarizationHealthPanel window={window} />
       </div>
 
       <section className="mt-8">

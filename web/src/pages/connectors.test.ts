@@ -115,6 +115,7 @@ describe('documentTone', () => {
     ['skipped', 'warn'],
     ['pending', 'info'],
     ['extracting', 'info'],
+    ['summarizing', 'info'],
     ['embedding', 'info'],
   ])('renders %s as %s', (status, tone) => {
     expect(documentTone(status)).toBe(tone)

@@ -18,6 +18,7 @@ import {
 } from '@/pages/ConnectorDetail'
 import { DOCUMENT_STATUSES, formatBytes, resyncSummary, statusSummary } from '@/pages/connectors'
 import { ObjectAudit } from '@/pages/ObjectAudit'
+import { SummarizationPanel } from '@/pages/SummarizationPanel'
 
 /**
  * One connector: upload, watch, tune, search (SPEC §13.1).
@@ -145,6 +146,13 @@ export function ConnectorDetailPage() {
           <h2 className="mb-3 text-sm font-semibold text-slate-900">Try retrieval</h2>
           <SearchPanel connectorId={connector.id} />
         </section>
+
+        {writes ? (
+          <section className="rounded-lg border border-slate-200 bg-white p-4">
+            <h2 className="mb-3 text-sm font-semibold text-slate-900">Summarization</h2>
+            <SummarizationPanel connector={connector} />
+          </section>
+        ) : null}
       </div>
 
       {writes ? (

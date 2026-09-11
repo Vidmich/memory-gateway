@@ -18,6 +18,7 @@ const KNOWN: Record<string, Tone> = {
   // the same as work finished, and a row that looked done while it was still embedding
   // would be the one thing this table must not say.
   extracting: 'info',
+  summarizing: 'info',
   chunking: 'info',
   embedding: 'info',
   syncing: 'info',

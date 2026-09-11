@@ -113,7 +113,7 @@ its owner chooses under Gateways → Prompt:
 | Mode | What you receive |
 |---|---|
 | `off` (default) | The answer exactly as the model wrote it. `[2]` stays `[2]`. |
-| `metadata` | The message carries a `citations` array — one entry per cited chunk with `handle`, `document_name`, `section`, `chunk_id`, `document_id`, `connector_id` and a `url` into the control plane's chunk inspector — and a `citations_unresolved` list of handles that named nothing. The text is untouched, and every OpenAI SDK ignores fields it does not know, so nothing breaks for a client that never reads them. |
+| `metadata` | The message carries a `citations` array — one entry per cited chunk with `handle`, `document_name`, `section`, `kind`, `chunk_id`, `document_id`, `connector_id` and a `url` into the control plane's chunk inspector — and a `citations_unresolved` list of handles that named nothing. The text is untouched, and every OpenAI SDK ignores fields it does not know, so nothing breaks for a client that never reads them. |
 | `footer` | A `Sources:` block is appended to the answer's content, one line per cited chunk, in the model's own numbering. For a terminal, a Slack bot, anything that renders `content` and nothing else. Handles that named nothing are removed from the text. |
 
 Streaming, `metadata` arrives as one extra chunk after the last content frame and before
@@ -130,6 +130,18 @@ for citation in getattr(message, "citations", []):
 
 Whatever the mode, the gateway records which injected chunks each answer cited, and the
 request's detail view in Monitoring shows it.
+
+## Summaries in the reference material
+
+A connector can have a model summarize each document as it is ingested. When it does, one of
+two things reaches your prompt, and you can tell them apart. Under `summary_chunk` the
+reference block may contain an entry headed `[n] summary of: handbook.pdf` rather than
+`[n] source: …` — a short description of the whole document, written by a model, so a
+question *about* the corpus ("do we have a travel policy?") finds something. It is never a
+quote, and a citation of it carries `"kind": "summary"` and no `section`; a `source` entry
+carries `"kind": "source"`. Under `contextual` nothing in the prompt changes at all: the
+summary was prefixed to each chunk when it was *embedded*, which is what makes a chunk about
+"the second option" retrievable as a chunk about the second option of the expense policy.
 
 ## Token counts
 

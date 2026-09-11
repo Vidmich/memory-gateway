@@ -14,6 +14,8 @@ import {
   makeDocument,
   makeDocumentChunk,
   makeSearchHit,
+  makeSummarization,
+  makeSummarizationHealth,
   makeSummary,
   makeUser,
 } from '@/test/factories'
@@ -28,6 +30,8 @@ type ServerOptions = {
   resync?: { added: number; updated: number; deleted: number; unchanged: number; skipped: number }
   preview?: ReturnType<typeof makeChunkingPreview>
   saveError?: { status: number; code: string; message: string; param?: string }
+  /** Task 102: what `GET /summarization/health` answers. */
+  summarization?: ReturnType<typeof makeSummarizationHealth>
 }
 
 /**
@@ -65,6 +69,21 @@ function fakeServer(options: ServerOptions = {}) {
     if (path.startsWith('/api/v1/metrics/summary')) return Promise.resolve(json(makeSummary()))
     if (path.startsWith('/api/v1/gateways')) {
       return Promise.resolve(json({ items: [], next_cursor: null }))
+    }
+    if (path.startsWith('/api/v1/summarization/health')) {
+      return Promise.resolve(json(options.summarization ?? makeSummarizationHealth()))
+    }
+    if (path.startsWith('/api/v1/models')) {
+      return Promise.resolve(json({ items: [], next_cursor: null }))
+    }
+    if (path.startsWith('/api/v1/documents/') && path.endsWith('/summary') && method === 'PATCH') {
+      const body = bodyOf<{ summary: string }>(init)
+      return Promise.resolve(
+        json(makeDocument({ summary: body.summary, summary_status: 'summarized', summary_model: 'manual' })),
+      )
+    }
+    if (path.startsWith('/api/v1/documents/') && path.endsWith('/summarize') && method === 'POST') {
+      return Promise.resolve(json(makeDocument({ summary_status: null })))
     }
 
     if (path.endsWith('/search') && method === 'POST') {
@@ -721,6 +740,31 @@ describe('the dashboard card', () => {
 })
 
 
+describe('the dashboard’s summarization cap card (task 102)', () => {
+  it('is absent when nothing is waiting', async () => {
+    renderAt('/', fakeServer())
+
+    await screen.findByRole('heading', { name: 'Dashboard' })
+    expect(screen.queryByText(/Waiting on a summarization cap/)).not.toBeInTheDocument()
+  })
+
+  it('names the connectors with parked documents and links to them', async () => {
+    renderAt(
+      '/',
+      fakeServer({
+        summarization: makeSummarizationHealth({
+          waiting_documents: 5,
+          waiting: [{ connector_id: 'c1', name: 'Product docs', documents: 5 }],
+        }),
+      }),
+    )
+
+    expect(await screen.findByText('Waiting on a summarization cap')).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: 'Product docs: 5 waiting' })
+    expect(link).toHaveAttribute('href', '/connectors/c1')
+  })
+})
+
 describe('chunking comparison', () => {
   it('runs the settings on screen against one document and shows both columns', async () => {
     // The demoable half of task 20. Without it the release is three more words in a
@@ -781,6 +825,243 @@ describe('chunking comparison', () => {
       )
       expect(call?.body.formats).toEqual(['code'])
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// summarization (task 102)
+// ---------------------------------------------------------------------------
+
+describe('the summarization panel', () => {
+  it('starts off, and prices the change before it is saved', async () => {
+    const server = fakeServer()
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    const mode = await screen.findByLabelText('Mode')
+    expect(mode).toHaveValue('off')
+    expect(screen.queryByTestId('summarization-cost')).not.toBeInTheDocument()
+
+    await user.selectOptions(mode, 'summary_chunk')
+    expect(screen.getByTestId('summarization-cost')).toHaveTextContent(
+      /2 documents: about 1,324 tokens at the summarization model\. Nothing already indexed is recut/,
+    )
+    // Summary chunk changes no vector: no warning about stale documents.
+    expect(screen.queryByText(/become stale/)).not.toBeInTheDocument()
+  })
+
+  it('says what contextual will cost and that every document becomes stale', async () => {
+    renderAt('/connectors/c1', fakeServer())
+    const user = userEvent.setup()
+
+    await user.selectOptions(await screen.findByLabelText('Mode'), 'contextual')
+
+    expect(screen.getByTestId('summarization-cost')).toHaveTextContent(/plus re-embedding every chunk/)
+    expect(screen.getByText(/2 documents already indexed become stale/)).toBeInTheDocument()
+  })
+
+  it('shows the inherited model greyed and sends the whole section on save', async () => {
+    const connector = makeConnector({
+      summary_model: { id: 'mo9', name: 'cheap-summarizer', inherited: true },
+    })
+    const server = fakeServer({ connectors: [connector] })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    await user.selectOptions(await screen.findByLabelText('Mode'), 'summary_chunk')
+    expect(screen.getByRole('option', { name: 'cheap-summarizer (inherited)' })).toBeInTheDocument()
+    const cap = screen.getByLabelText(/daily cap/i)
+    await user.type(cap, '40')
+    await user.click(screen.getByRole('button', { name: /save summarization/i }))
+
+    await waitFor(() => {
+      const patch = server.requests.find(
+        (request) => request.path === '/api/v1/connectors/c1' && request.method === 'PATCH',
+      )
+      expect(patch?.body.summarization).toEqual({
+        mode: 'summary_chunk',
+        model_id: null,
+        max_summary_tokens: 150,
+        max_input_tokens: 12000,
+        daily_document_cap: 40,
+      })
+    })
+  })
+
+  it('warns when no model resolves anywhere', async () => {
+    renderAt('/connectors/c1', fakeServer({ connectors: [makeConnector({ summary_model: null })] }))
+    const user = userEvent.setup()
+
+    await user.selectOptions(await screen.findByLabelText('Mode'), 'summary_chunk')
+
+    expect(screen.getByText(/No summarization model resolves/)).toBeInTheDocument()
+  })
+
+  it('offers the re-embed when contextual made the vectors stale', async () => {
+    const connector = makeConnector({
+      summarization: makeSummarization({ mode: 'contextual' }),
+      reindex_required: true,
+      reindex_formats: [],
+    })
+    const server = fakeServer({ connectors: [connector] })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: /re-embed every document/i }))
+
+    await waitFor(() => {
+      expect(
+        server.requests.some(
+          (request) => request.path.endsWith('/reindex') && request.method === 'POST',
+        ),
+      ).toBe(true)
+    })
+  })
+
+  it("shows this connector's own slice of the spend", async () => {
+    renderAt('/connectors/c1', fakeServer())
+
+    const spend = await screen.findByTestId('connector-summarization-spend')
+    expect(spend).toHaveTextContent('Summarized (24 h)12')
+    expect(spend).toHaveTextContent('Tokens25,800')
+  })
+})
+
+describe('the document summary', () => {
+  it('shows the summary status in the table, without calling a failed summary a failed document', async () => {
+    renderAt(
+      '/connectors/c1',
+      fakeServer({
+        documents: [
+          makeDocument({ id: 'd1', source_name: 'ok.md', summary_status: 'summarized', summary_model: 'cheap' }),
+          makeDocument({
+            id: 'd2',
+            source_name: 'no.md',
+            summary_status: 'failed',
+            summary_error: 'cheap refused the summarization request.',
+          }),
+          makeDocument({ id: 'd3', source_name: 'later.md', summary_status: 'capped' }),
+        ],
+      }),
+    )
+
+    expect(await screen.findByText('summarized')).toBeInTheDocument()
+    expect(screen.getByText('summary failed')).toBeInTheDocument()
+    expect(screen.getByText('waiting on cap')).toBeInTheDocument()
+    // Three indexed rows, still — plus the status filter's own option.
+    expect(screen.getAllByText('indexed')).toHaveLength(4)
+  })
+
+  it('shows the summary at the top of the inspector and edits it in place', async () => {
+    const server = fakeServer({
+      documents: [
+        makeDocument({
+          summary: 'The handbook: leave, expenses and travel.',
+          summary_status: 'summarized',
+          summary_model: 'cheap',
+          summary_tokens_in: 900,
+          summary_tokens_out: 60,
+        }),
+      ],
+    })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Chunks' }))
+    const view = await screen.findByTestId('document-summary')
+    expect(view).toHaveTextContent('The handbook: leave, expenses and travel.')
+    expect(view).toHaveTextContent('by cheap, 960 tokens')
+
+    await user.click(within(view).getByRole('button', { name: 'Edit' }))
+    const box = within(view).getByLabelText('Summary')
+    await user.clear(box)
+    await user.type(box, 'By hand.')
+    await user.click(within(view).getByRole('button', { name: 'Save summary' }))
+
+    await waitFor(() => {
+      const call = server.requests.find(
+        (request) => request.path === '/api/v1/documents/d1/summary' && request.method === 'PATCH',
+      )
+      expect(call?.body).toEqual({ summary: 'By hand.' })
+    })
+  })
+
+  it('offers Summarize on a failed summary and Regenerate on a good one', async () => {
+    const server = fakeServer({
+      documents: [makeDocument({ summary_status: 'failed', summary_error: 'cheap said no.' })],
+    })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Chunks' }))
+    const view = await screen.findByTestId('document-summary')
+    expect(view).toHaveTextContent('cheap said no.')
+    await user.click(within(view).getByRole('button', { name: 'Summarize' }))
+
+    await waitFor(() => {
+      expect(
+        server.requests.some(
+          (request) => request.path === '/api/v1/documents/d1/summarize' && request.method === 'POST',
+        ),
+      ).toBe(true)
+    })
+  })
+
+  it('shows the embedded prefix above the returned text, and labels the summary point', async () => {
+    const server = fakeServer({
+      chunks: [
+        makeDocumentChunk({
+          id: 's',
+          chunk_index: -1,
+          kind: 'summary',
+          page_or_section: 'Summary',
+          text: 'The handbook, in brief.',
+        }),
+        makeDocumentChunk({
+          id: 'p1',
+          context: 'The handbook, in brief.',
+          embedded_because: 'context',
+          text: 'Everyone gets twenty-five days of annual leave.',
+        }),
+      ],
+    })
+    renderAt('/connectors/c1', server)
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'Chunks' }))
+
+    expect(await screen.findByTestId('summary-point')).toHaveTextContent('summary point')
+    expect(screen.getByTestId('embedded-context')).toHaveTextContent('The handbook, in brief.')
+    expect(screen.getByText(/italic prefix was embedded with this chunk/)).toBeInTheDocument()
+    // The summary point is not one of the document's chunks.
+    expect(screen.getByText(/1 chunk in the index, plus the summary/)).toBeInTheDocument()
+  })
+})
+
+describe('the comparison under contextual', () => {
+  it('prices the summarization call and shows the prefix on each candidate chunk', async () => {
+    const preview = makeChunkingPreview()
+    preview.summarization = {
+      mode: 'contextual',
+      tokens_in: 780,
+      tokens_out: 150,
+      summary: 'The handbook, in brief.',
+      prefixes: true,
+    }
+    for (const candidate of preview.candidates) {
+      for (const chunk of candidate.chunks) chunk.context = 'The handbook, in brief.'
+    }
+    renderAt('/connectors/c1', fakeServer({ preview }))
+    const user = userEvent.setup()
+    await screen.findByRole('heading', { name: /product docs/i })
+
+    await user.click(await screen.findByRole('button', { name: /^compare$/i }))
+    await screen.findByRole('option', { name: 'handbook.md' })
+    await user.click(await screen.findByRole('button', { name: /run comparison/i }))
+
+    const cost = await screen.findByTestId('comparison-summarization')
+    expect(cost).toHaveTextContent(/one model call of about 780 tokens in and up to 150 out/)
+    expect(screen.getAllByTestId('preview-context').length).toBeGreaterThan(0)
   })
 })
 

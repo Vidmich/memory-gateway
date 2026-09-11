@@ -42,6 +42,9 @@ import type {
   RequestDetailResponse,
   RequestLogResponse,
   SearchHit,
+  SummarizationConfig,
+  SummarizationHealth,
+  SummarizationSettings,
   SeriesResponse,
   SummaryResponse,
   ThrottledEndUser,
@@ -466,7 +469,62 @@ const CHUNKING: ChunkingConfig = {
   overrides: {},
 }
 
+/** Task 102's defaults: off, and every format resolving to off. */
+const SUMMARIZATION: SummarizationConfig = {
+  version: 1,
+  mode: 'off',
+  model_id: null,
+  max_summary_tokens: 150,
+  max_input_tokens: 12000,
+  daily_document_cap: null,
+  overrides: {},
+}
+
+export function makeSummarization(
+  overrides: Partial<SummarizationConfig> = {},
+): SummarizationConfig {
+  return { ...SUMMARIZATION, ...overrides }
+}
+
+export function makeSummarizationHealth(
+  overrides: Partial<SummarizationHealth> = {},
+): SummarizationHealth {
+  return {
+    days: [
+      { day: NOW, documents: 12, failures: 1, capped: 0, tokens_in: 24000, tokens_out: 1800 },
+    ],
+    runs: 13,
+    documents: 12,
+    failures: 1,
+    capped: 0,
+    tokens_in: 24000,
+    tokens_out: 1800,
+    estimated_runs: 0,
+    failure_rate: 1 / 13,
+    by_model: [{ model_name: 'cheap-summarizer', runs: 13, tokens_in: 24000, tokens_out: 1800 }],
+    top_connectors: [
+      { connector_id: 'c1', name: 'Product docs', documents: 12, tokens_in: 24000, tokens_out: 1800 },
+    ],
+    waiting: [],
+    waiting_documents: 0,
+    ...overrides,
+  }
+}
+
+export function makeSummarizationSettings(
+  overrides: Partial<SummarizationSettings> = {},
+): SummarizationSettings {
+  return {
+    config: { version: 1, model_id: null },
+    effective_model_id: 'mo1',
+    effective_model_name: 'acme-gpt',
+    effective_model_source: 'platform',
+    ...overrides,
+  }
+}
+
 export function makeConnector(overrides: Partial<ConnectorResponse> = {}): ConnectorResponse {
+  const summarization = overrides.summarization ?? SUMMARIZATION
   return {
     id: 'c1',
     name: 'Product docs',
@@ -496,6 +554,26 @@ export function makeConnector(overrides: Partial<ConnectorResponse> = {}): Conne
     reindex_formats: [],
     last_synced_at: NOW,
     created_at: NOW,
+    summarization,
+    effective_summarization: Object.fromEntries(
+      ['pdf', 'docx', 'pptx', 'xlsx', 'markdown', 'html', 'csv', 'json', 'text', 'code', 'other'].map(
+        (kind) => {
+          const override = summarization.overrides?.[kind]
+          return [
+            kind,
+            {
+              ...summarization,
+              overrides: {},
+              ...(override?.mode ? { mode: override.mode } : {}),
+              ...(override?.max_summary_tokens ? { max_summary_tokens: override.max_summary_tokens } : {}),
+              ...(override?.max_input_tokens ? { max_input_tokens: override.max_input_tokens } : {}),
+              ...(override?.model_id ? { model_id: override.model_id } : {}),
+            },
+          ]
+        },
+      ),
+    ),
+    summary_model: null,
     ...overrides,
   }
 }
@@ -521,6 +599,13 @@ export function makeDocument(overrides: Partial<DocumentResponse> = {}): Documen
     indexed_at: NOW,
     created_at: NOW,
     updated_at: NOW,
+    summary: null,
+    summary_status: null,
+    summary_error: null,
+    summary_model: null,
+    summary_tokens_in: null,
+    summary_tokens_out: null,
+    summarized_at: null,
     ...overrides,
   }
 }
@@ -532,6 +617,7 @@ export function makeDocumentChunk(overrides: Partial<DocumentChunk> = {}): Docum
     page_or_section: 'Leave',
     token_count: 42,
     text: 'Everyone gets twenty-five days of annual leave.',
+    kind: 'source',
     ...overrides,
   }
 }

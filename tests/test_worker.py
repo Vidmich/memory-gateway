@@ -23,6 +23,7 @@ from app.services.jobs import (
     JOB_NAMES,
     MIGRATE_VECTORS,
     REINDEX,
+    SUMMARIZE_DOCUMENT,
 )
 from app.workers.main import WorkerSettings, run_gateway_job
 from app.workers.runtime import (
@@ -77,6 +78,7 @@ def test_there_is_a_handler_for_every_job_this_build_can_enqueue() -> None:
     assert set(JOB_NAMES) == {
         INGEST_DOCUMENT,
         DELETE_CONNECTOR,
+        SUMMARIZE_DOCUMENT,
         DISTIL_MEMORY,
         REINDEX,
         MIGRATE_VECTORS,
@@ -84,13 +86,13 @@ def test_there_is_a_handler_for_every_job_this_build_can_enqueue() -> None:
     }
 
 
-def test_a_worker_without_conversation_memory_registers_two_handlers() -> None:
-    """A deployment that has not enabled it runs a worker with two, and a ``distil_memory``
-    job arriving there is dead-lettered *by name* — a visible bad deploy rather than a
-    silent one."""
+def test_a_worker_without_conversation_memory_registers_the_ingestion_handlers() -> None:
+    """A deployment that has not enabled it runs a worker with the ingestion three — task
+    102's summarize-only job is part of ingestion — and a ``distil_memory`` job arriving
+    there is dead-lettered *by name*: a visible bad deploy rather than a silent one."""
     handlers = build_handlers(_ingestion_of(build_connectors(make_organization())))
 
-    assert set(handlers) == {INGEST_DOCUMENT, DELETE_CONNECTOR}
+    assert set(handlers) == {INGEST_DOCUMENT, DELETE_CONNECTOR, SUMMARIZE_DOCUMENT}
 
 
 async def test_the_reindex_handler_turns_a_string_run_id_back_into_a_uuid() -> None:
@@ -230,6 +232,8 @@ def _ingestion_of(fixture: Any) -> Any:
         # Never used: the pool is lazy, and the pipeline this fixture holds was built
         # without one, so no subprocess is started by anything below.
         pool=ExtractionPool(),
+        summaries=fixture.summaries,
+        summary_models=fixture.summary_models,
     )
 
 

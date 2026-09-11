@@ -38,6 +38,7 @@ from app.services.memory_preview import MemoryPreview
 from app.services.metrics_store import MemoryMetricsRepository
 from app.services.model_probe import Probe
 from app.services.monitoring import MonitoringService
+from app.services.summarization_service import SummarizationService
 from tests.catalog_support import FakeProbe
 from tests.connector_support import TOKENIZER, ConnectorFixture, build_connectors
 from tests.distillation_support import DistillationFixture
@@ -107,6 +108,9 @@ class AuthFixture:
     #: Task 13's write half, over the same rows. ``None`` for a platform-only fixture,
     #: which has no organization for a conversation to belong to.
     distillation: DistillationFixture | None
+    #: Task 102's control-plane half, over the connector fixture's ledger and model chain.
+    #: ``None`` without an organization, like the fixture it reads from.
+    summarization: SummarizationService | None
     #: Task 15's read half, over the same rows every mutation above records into —
     #: which is the point: an audit test drives a real endpoint and then reads the log
     #: the same screen would, rather than inspecting whatever the service happened to
@@ -244,6 +248,15 @@ def build_auth(
         if organization is not None and end_users is not None
         else None
     )
+    summarization = (
+        SummarizationService(
+            connectors.summaries,
+            directory=MemoryDirectoryStore(database),
+            models=connectors.summary_models,
+        )
+        if connectors is not None
+        else None
+    )
     limit_buckets = MemoryLimitStore()
     audit_store = MemoryAuditStore(database)
     return AuthFixture(
@@ -257,6 +270,7 @@ def build_auth(
         preview=preview,
         end_users=end_users,
         distillation=distillation,
+        summarization=summarization,
         audit=AuditService(audit_store),
         audit_store=audit_store,
         # The same throttle store the login backoff uses, so a test that makes two assumed

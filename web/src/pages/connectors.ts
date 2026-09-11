@@ -24,6 +24,7 @@ import { toneFor, type Tone } from '@/components/status'
 export const DOCUMENT_STATUSES = [
   'pending',
   'extracting',
+  'summarizing',
   'chunking',
   'embedding',
   'indexed',
@@ -41,6 +42,7 @@ export const DOCUMENT_STATUSES = [
 export const IN_FLIGHT_STATUSES: readonly string[] = [
   'pending',
   'extracting',
+  'summarizing',
   'chunking',
   'embedding',
 ]

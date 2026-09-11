@@ -59,6 +59,11 @@ AUDITED: dict[tuple[str, str], str] = {
     ("POST", f"{API}/connectors/{{connector_id}}/resync"): "connector.resync",
     ("POST", f"{API}/connectors/{{connector_id}}/upload"): "connector.upload",
     ("PATCH", f"{API}/distillation"): "organization.distillation.update",
+    ("PATCH", f"{API}/summarization"): "organization.summarization.update",
+    # Task 102. An operator rewriting a summary is content the trail has to show, and a
+    # regeneration is a spending decision.
+    ("PATCH", f"{API}/documents/{{document_id}}/summary"): "document.summary.update",
+    ("POST", f"{API}/documents/{{document_id}}/summarize"): "document.summarize",
     ("DELETE", f"{API}/documents/{{document_id}}"): "document.delete",
     ("POST", f"{API}/documents/{{document_id}}/reindex"): "document.reindex",
     ("POST", f"{API}/end-users/{{end_user_id}}/distil"): "end_user.memory.distil",
@@ -460,6 +465,28 @@ async def tour(directory: DirectoryHarness) -> list[str]:
     ok(await directory.as_user(admin, "POST", f"{API}/connectors/{connector['id']}/reindex"))
     ok(await directory.as_user(admin, "POST", f"{API}/connectors/{connector['id']}/resync"))
     ok(await directory.as_user(admin, "POST", f"{API}/documents/{world.acme_document.id}/reindex"))
+    # Task 102: the summary routes want summarization on for the document's format.
+    ok(
+        await directory.as_user(
+            admin,
+            "PATCH",
+            f"{API}/connectors/{world.acme_connector.id}",
+            json_body={"summarization": {"mode": "summary_chunk"}},
+        )
+    )
+    ok(
+        await directory.as_user(
+            admin,
+            "PATCH",
+            f"{API}/documents/{world.acme_document.id}/summary",
+            json_body={"summary": "The handbook, rewritten by hand."},
+        )
+    )
+    ok(
+        await directory.as_user(
+            admin, "POST", f"{API}/documents/{world.acme_document.id}/summarize"
+        )
+    )
     ok(
         await directory.as_user(admin, "DELETE", f"{API}/documents/{world.acme_document.id}"),
         expect=(204,),
@@ -493,6 +520,11 @@ async def tour(directory: DirectoryHarness) -> list[str]:
     ok(
         await directory.as_user(
             admin, "PATCH", f"{API}/distillation", json_body={"debounce_seconds": 120}
+        )
+    )
+    ok(
+        await directory.as_user(
+            admin, "PATCH", f"{API}/summarization", json_body={"model_id": None}
         )
     )
 

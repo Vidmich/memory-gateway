@@ -18,20 +18,27 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.config import Settings, get_settings
+from app.core.crypto import SecretBox
 from app.core.ids import uuid7
-from app.core.metrics import ChunkingMetrics, ExtractionMetrics
+from app.core.metrics import ChunkingMetrics, ExtractionMetrics, SummarizationMetrics
 from app.core.tenancy import Actor, TenantScope
-from app.db.models import Connector, Document, Organization
+from app.db.models import Connector, Document, Organization, UpstreamModel
+from app.schemas.openai import ChatResponse, Choice, ResponseMessage, Usage
+from app.services.catalog_store import MemoryCatalogStore
 from app.services.connector_source import storage_prefix
 from app.services.connector_store import MemoryConnectorStore
 from app.services.connectors import ConnectorService
+from app.services.distillation_models import CatalogModelResolver
 from app.services.embeddings import Embedder, HashEmbedder
+from app.services.end_user_store import MemoryEndUserStore
 from app.services.extraction import ExtractorRegistry, build_registry
 from app.services.ingestion import IngestionPipeline, IngestionSettings
 from app.services.job_queue import MemoryJobQueue
 from app.services.jobs import (
     DELETE_CONNECTOR,
     INGEST_DOCUMENT,
+    SUMMARIZE_DOCUMENT,
+    JobRequest,
     JobRunner,
     MemoryDeadLetters,
     RetryPolicy,
@@ -39,7 +46,10 @@ from app.services.jobs import (
 from app.services.locks import MemoryLock
 from app.services.memory_db import MemoryDatabase
 from app.services.object_store import MemoryObjectStore
+from app.services.proxy import Prepared
 from app.services.retrieval import MemoryService, Retriever
+from app.services.summarization_store import MemorySummarizationStore
+from app.services.summarizer import SummarizationModelResolver, Summarizer
 from app.services.tokenizer import Tokenizer, WordTokenizer
 from app.services.vector_store import MemoryVectorStore
 
@@ -52,6 +62,85 @@ TOKENIZER: Tokenizer = WordTokenizer()
 #: should ask for more — the local embedder hashes words into buckets, and at 64 buckets a
 #: few hundred documents collide often enough that ranking stops being about the text.
 DIMENSION = 64
+
+
+class ScriptedSummaryModel:
+    """A :class:`~app.services.summarizer.Completer` that answers from a queue (task 102).
+
+    Replies are consumed in order and the last one repeats, like the distillation double.
+    A queued :class:`Exception` is raised instead of returned. ``usage`` is what the
+    provider reports; ``None`` reports nothing, which is how the estimate path is reached.
+    """
+
+    def __init__(self, *replies: str | Exception, usage: tuple[int, int] | None = (120, 40)):
+        self.replies: list[str | Exception] = list(replies) or ["A summary of the document."]
+        self.usage = usage
+        self.requests: list[Prepared] = []
+
+    def queue(self, *replies: str | Exception) -> None:
+        self.replies.extend(replies)
+
+    @property
+    def calls(self) -> int:
+        return len(self.requests)
+
+    @property
+    def last_prompt(self) -> str:
+        prepared = self.requests[-1]
+        return "\n".join(str(message.content or "") for message in prepared.request.messages)
+
+    async def complete(self, prepared: Prepared) -> ChatResponse:
+        self.requests.append(prepared)
+        reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        if isinstance(reply, Exception):
+            raise reply
+        usage = (
+            Usage(
+                prompt_tokens=self.usage[0],
+                completion_tokens=self.usage[1],
+                total_tokens=sum(self.usage),
+            )
+            if self.usage is not None
+            else None
+        )
+        return ChatResponse(
+            id="chatcmpl-summary",
+            model=prepared.target.upstream_model_id,
+            choices=[Choice(index=0, message=ResponseMessage(role="assistant", content=reply))],
+            usage=usage,
+        )
+
+
+def make_summary_model(name: str = "cheap-summarizer") -> UpstreamModel:
+    """A global, credential-less model row for the summarizer to resolve to."""
+    return UpstreamModel(
+        id=uuid7(),
+        organization_id=None,
+        scope="global",
+        name=name,
+        description=None,
+        base_url="https://api.example.com/v1",
+        dialect="openai",
+        upstream_model_id="gpt-4o-mini",
+        auth_type="none",
+        extra_headers={},
+        system_context=None,
+        default_params={},
+        timeout_seconds=30,
+        enabled=True,
+    )
+
+
+def park_delayed(queue: MemoryJobQueue) -> list[JobRequest]:
+    """Take the jobs waiting on a delay out of the queue, and return them.
+
+    The memory queue ignores ``delay_seconds`` — a drain would run a cap retry
+    immediately, find the cap still spent, and park the document again forever — so a
+    test that has parked something takes the delayed jobs out first and asserts on them.
+    """
+    delayed = [job for job in queue.pending if job.delay_seconds > 0]
+    queue.pending[:] = [job for job in queue.pending if job.delay_seconds <= 0]
+    return delayed
 
 
 class MemoryUpload:
@@ -97,7 +186,16 @@ class ConnectorFixture:
     runner: JobRunner
     organization: Organization
     connector: Connector
+    #: Task 102. The ledger, the model chain, the scripted model, and the row it resolves
+    #: to — a global model that is also the platform default, so a connector that names
+    #: nothing still finds one.
+    summaries: MemorySummarizationStore
+    summary_models: SummarizationModelResolver
+    summary_model: ScriptedSummaryModel
+    summary_row: UpstreamModel
     user_id: uuid.UUID = field(default_factory=uuid7)
+    #: Jobs :meth:`run_jobs_until_parked` set aside because they were waiting on a delay.
+    parked: list[JobRequest] = field(default_factory=list)
 
     @property
     def actor(self) -> Actor:
@@ -131,6 +229,30 @@ class ConnectorFixture:
         """Drain the queue, exactly as a worker would."""
         return await self.queue.drain(self.runner)
 
+    async def run_jobs_until_parked(self) -> int:
+        """Drain the queue, setting aside the jobs waiting on a delay (task 102's cap
+        retries), which a real queue would hold until tomorrow and this one would run at
+        once — see :func:`park_delayed`."""
+        done = 0
+        while True:
+            self.parked.extend(park_delayed(self.queue))
+            if not self.queue.pending:
+                return done
+            await self.runner.run(self.queue.pending.pop(0))
+            done += 1
+
+    async def summaries_health(self, *, connector_id: uuid.UUID | None = None) -> Any:
+        """The Monitoring panel's block over the last day, straight from the ledger."""
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        async with self.summaries.begin(TenantScope.of_organization(self.organization_id)) as tx:
+            return await tx.health(
+                start=now - timedelta(days=1),
+                end=now + timedelta(minutes=1),
+                connector_id=connector_id,
+            )
+
     async def ingest(self, *files: tuple[str, bytes]) -> None:
         """Upload and index, the common two-step of most tests here."""
         await self.upload(*files)
@@ -154,6 +276,22 @@ class ConnectorFixture:
         return await self.vectors.count(
             self.organization_id, connector_id=self.connector.id, document_id=document_id
         )
+
+    async def configure_summarization(self, **values: Any) -> None:
+        """Set the connector's summarization section, as the panel's PATCH would."""
+        from app.services.connectors import ConnectorPatch
+
+        await self.service.update_connector(
+            self.actor, self.connector.id, ConnectorPatch(summarization=values)
+        )
+
+    def runs(self) -> list[Any]:
+        """Every ledger row, oldest first."""
+        return sorted(self.database.summarization_runs.values(), key=lambda row: row.created_at)
+
+    async def points(self, document_id: uuid.UUID) -> list[Any]:
+        """A document's stored points, in cut order — the summary point first."""
+        return await self.vectors.chunks(self.organization_id, document_id)
 
 
 async def _stream(data: bytes) -> AsyncIterator[bytes]:
@@ -221,6 +359,9 @@ def build_connectors(
     #: Task 101: a tokenizer, or a function returning the current one, for the tests that
     #: move it under a running pipeline. Defaults to the word tokenizer like everything.
     tokenizer: Tokenizer | Callable[[], Tokenizer] | None = None,
+    #: Task 102: the scripted summarization model, and its metrics.
+    summary_model: ScriptedSummaryModel | None = None,
+    summarization_metrics: SummarizationMetrics | None = None,
 ) -> ConnectorFixture:
     settings = settings or get_settings()
     database = database or MemoryDatabase()
@@ -232,6 +373,27 @@ def build_connectors(
     queue = MemoryJobQueue()
     lock = MemoryLock()
     limits = limits or IngestionSettings()
+
+    # Task 102. A global model row that is also the platform default, so a connector
+    # that names no model still resolves one through the whole chain; the scripted
+    # completer stands in for the provider. The row exists only when a test asked for a
+    # model — every other test's catalog stays exactly what it seeded.
+    summary_row = make_summary_model()
+    if summary_model is not None:
+        database.add_model(summary_row)
+    summaries = MemorySummarizationStore(database)
+    summary_models = SummarizationModelResolver(
+        CatalogModelResolver(
+            MemoryCatalogStore(database),
+            secret_box=SecretBox.from_settings(settings),
+            platform_default_id=summary_row.id,
+        ),
+        settings=MemoryEndUserStore(database),
+    )
+    scripted = summary_model or ScriptedSummaryModel()
+    summarizer = Summarizer(
+        summaries, models=summary_models, proxy=scripted, metrics=summarization_metrics
+    )
 
     pipeline = IngestionPipeline(
         store,
@@ -248,6 +410,7 @@ def build_connectors(
         # `tests/test_extraction_pool.py` is about.
         metrics=metrics,
         chunking_metrics=chunking_metrics,
+        summarizer=summarizer,
     )
     service = ConnectorService(
         store,
@@ -277,8 +440,15 @@ def build_connectors(
             connector_id=uuid.UUID(str(payload["connector_id"])),
         )
 
+    async def summarize(payload: Mapping[str, Any]) -> None:
+        await pipeline.summarize(
+            organization_id=uuid.UUID(str(payload["organization_id"])),
+            document_id=uuid.UUID(str(payload["document_id"])),
+            regenerate=bool(payload.get("regenerate", False)),
+        )
+
     runner = JobRunner(
-        {INGEST_DOCUMENT: ingest, DELETE_CONNECTOR: purge},
+        {INGEST_DOCUMENT: ingest, DELETE_CONNECTOR: purge, SUMMARIZE_DOCUMENT: summarize},
         queue=queue,
         dead_letters=dead_letters,
         # No jitter in tests: a retry schedule asserted against a random draw is a test
@@ -306,6 +476,10 @@ def build_connectors(
         runner=runner,
         organization=organization,
         connector=row,
+        summaries=summaries,
+        summary_models=summary_models,
+        summary_model=scripted,
+        summary_row=summary_row,
     )
 
 
@@ -314,7 +488,10 @@ __all__ = [
     "TOKENIZER",
     "ConnectorFixture",
     "MemoryUpload",
+    "ScriptedSummaryModel",
     "build_connectors",
     "make_connector",
     "make_document",
+    "make_summary_model",
+    "park_delayed",
 ]

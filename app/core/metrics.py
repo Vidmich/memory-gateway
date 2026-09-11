@@ -228,6 +228,21 @@ class DistillationMetrics:
 
 
 @dataclass(frozen=True)
+class SummarizationMetrics:
+    """Summarizing documents, as three numbers (task 102).
+
+    ``runs`` by outcome is what an alert fires on; the ledger rows draw the charts.
+    ``tokens`` is labelled by direction and model because that is the shape of a bill,
+    and it is the first counter in this process that measures spend at a model rather
+    than traffic through one.
+    """
+
+    runs: Counter
+    tokens: Counter
+    duration: Histogram
+
+
+@dataclass(frozen=True)
 class RateLimitMetrics:
     """Throttling, as four numbers (SPEC §11, task 14).
 
@@ -318,6 +333,7 @@ class Metrics:
     extraction: ExtractionMetrics
     chunking: ChunkingMetrics
     distillation: DistillationMetrics
+    summarization: SummarizationMetrics
     rate_limits: RateLimitMetrics
     audit: AuditMetrics
     maintenance: MaintenanceMetrics
@@ -368,6 +384,7 @@ def build_metrics(*, service_name: str, version: str) -> Metrics:
         extraction=build_extraction_metrics(registry),
         chunking=build_chunking_metrics(registry),
         distillation=build_distillation_metrics(registry),
+        summarization=build_summarization_metrics(registry),
         rate_limits=build_rate_limit_metrics(registry),
         audit=build_audit_metrics(registry),
         maintenance=build_maintenance_metrics(registry),
@@ -499,6 +516,29 @@ def build_distillation_metrics(registry: CollectorRegistry) -> DistillationMetri
             "distillation_facts_total",
             "What became of each proposed fact: inserted, deduped, superseded, rejected, evicted.",
             labelnames=("disposition",),
+            registry=registry,
+        ),
+    )
+
+
+def build_summarization_metrics(registry: CollectorRegistry) -> SummarizationMetrics:
+    return SummarizationMetrics(
+        runs=Counter(
+            "summarization_runs_total",
+            "Document summarization attempts by outcome: succeeded, failed, skipped.",
+            labelnames=("outcome",),
+            registry=registry,
+        ),
+        tokens=Counter(
+            "summarization_tokens_total",
+            "Tokens spent summarizing documents, by direction (in, out) and model.",
+            labelnames=("direction", "model"),
+            registry=registry,
+        ),
+        duration=Histogram(
+            "summarization_duration_seconds",
+            "How long one document summarization took, model call included.",
+            buckets=(0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 60.0),
             registry=registry,
         ),
     )

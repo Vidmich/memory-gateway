@@ -13,6 +13,7 @@ import {
   makeGatewayLimits,
   makeLimitUsage,
   makeMemoryHealth,
+  makeSummarizationHealth,
   makeModel,
   makeSummary,
   makeThrottledEndUser,
@@ -72,6 +73,10 @@ function fakeServer(options: ServerOptions = {}) {
     // to the catch-all and the page crashes on a shape that is not a health report.
     if (path.startsWith('/api/v1/distillation/health')) {
       return Promise.resolve(json(makeMemoryHealth()))
+    }
+    // Task 102's panel, for the same reason.
+    if (path.startsWith('/api/v1/summarization/health')) {
+      return Promise.resolve(json(makeSummarizationHealth()))
     }
     if (path.startsWith('/api/v1/metrics/timeseries')) {
       return Promise.resolve(json({ interval_seconds: 60, buckets: [] }))

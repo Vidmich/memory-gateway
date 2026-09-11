@@ -30,6 +30,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from app.core.errors import Conflict, NotFound, Validation
@@ -44,6 +45,15 @@ from app.schemas.connector_config import (
     effective,
     fingerprint,
 )
+from app.schemas.summarization import (
+    ContextIdentity,
+    SummarizationConfig,
+    adds_summary_chunk,
+    context_identity,
+    prefixes_context,
+)
+from app.schemas.summarization import changed_formats as changed_summarization
+from app.schemas.summarization import effective as summarization_for
 from app.services.audit import Target, summarize
 from app.services.audit_snapshots import subject, target_of
 from app.services.chunking_preview import (
@@ -54,20 +64,25 @@ from app.services.chunking_preview import (
 )
 from app.services.connector_source import storage_prefix
 from app.services.connector_store import ConnectorStore, ConnectorTransaction, DocumentDraft
+from app.services.distillation_models import ModelChoice
 from app.services.embeddings import Embedder
-from app.services.filetypes import SNIFF_BYTES, format_label, sniff
+from app.services.filetypes import FORMAT_KINDS, SNIFF_BYTES, format_label, sniff
 from app.services.ingestion import IngestionPipeline, IngestionSettings, ResyncSummary
 from app.services.jobs import (
     DELETE_CONNECTOR,
     INGEST_DOCUMENT,
+    SUMMARIZE_DOCUMENT,
     JobOutbox,
     JobQueue,
     delete_key,
     ingest_key,
     queue_for,
+    summarize_key,
 )
 from app.services.object_store import ObjectStore, ObjectTooLarge
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
+from app.services.summarization import MANUAL, PROMPT_VERSION
+from app.services.summarizer import SUMMARIZED
 from app.services.vector_store import Match, Stored, VectorStore
 
 logger = logging.getLogger(__name__)
@@ -110,6 +125,7 @@ class ConnectorDraft:
     description: str | None = None
     type: str = "managed_file_drop"
     chunking: Mapping[str, Any] = field(default_factory=dict)
+    summarization: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +133,7 @@ class ConnectorPatch:
     name: str | None = None
     description: str | None = None
     chunking: Mapping[str, Any] | None = None
+    summarization: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +163,11 @@ class ConnectorView:
     #: and leave the PDFs alone — see
     #: :func:`~app.schemas.connector_config.changed_formats`.
     reindex_formats: frozenset[str] = frozenset()
+    #: Task 102. What the connector's summarization ``model_id`` resolves to through the
+    #: whole chain — its own choice, the organization's default, the distillation model,
+    #: the platform's — so the panel can show the fallback greyed rather than a blank.
+    #: ``None`` when nothing is configured anywhere, or on the list where it is not read.
+    summary_model: ModelChoice | None = None
 
     @property
     def document_count(self) -> int:
@@ -255,7 +277,12 @@ class ConnectorService:
             connector=connector,
             counts=dict(counts.get(connector_id, {})),
             total_bytes=sizes.get(connector_id, 0),
+            summary_model=await self._summary_model(connector),
         )
+
+    async def _summary_model(self, connector: Connector) -> ModelChoice | None:
+        config = SummarizationConfig.load(connector.summarization)
+        return await self._pipeline.summary_model(connector.organization_id, config.model_id)
 
     async def list_documents(
         self,
@@ -274,16 +301,49 @@ class ConnectorService:
             )
         page = page_of(rows, limit=size, cursor_of=lambda row: row.id)
         chunking = ChunkingConfig.load(connector.chunking)
+        contexts = await self._contexts(
+            connector.organization_id, SummarizationConfig.load(connector.summarization)
+        )
         return DocumentPage(
             items=page.items,
             next_cursor=page.next_cursor,
-            stale=frozenset(row.id for row in page.items if self._stale(chunking, row)),
+            stale=frozenset(row.id for row in page.items if self._stale(chunking, contexts, row)),
         )
 
-    def _stale(self, chunking: ChunkingConfig, document: Document) -> bool:
+    async def _contexts(
+        self, organization_id: uuid.UUID, summarization: SummarizationConfig
+    ) -> dict[str, ContextIdentity | None]:
+        """What the ``contextual`` half of the fingerprint is *now*, per format kind.
+
+        Resolved once per listing rather than per row: the model lookup is a catalog read,
+        and a page of two hundred documents under one connector shares at most a handful
+        of distinct settings.
+        """
+        resolved: dict[uuid.UUID | None, uuid.UUID | None] = {}
+        contexts: dict[str, ContextIdentity | None] = {}
+        for kind in FORMAT_KINDS:
+            config = summarization_for(summarization, kind)
+            if not prefixes_context(config.mode):
+                contexts[kind] = None
+                continue
+            if config.model_id not in resolved:
+                choice = await self._pipeline.summary_model(organization_id, config.model_id)
+                resolved[config.model_id] = choice.id if choice else None
+            contexts[kind] = context_identity(
+                config, resolved[config.model_id], prompt_version=PROMPT_VERSION
+            )
+        return contexts
+
+    def _stale(
+        self,
+        chunking: ChunkingConfig,
+        contexts: Mapping[str, ContextIdentity | None],
+        document: Document,
+    ) -> bool:
         """Whether this document's chunks were cut under a configuration that is no
         longer the current one — the connector's settings, the embedding model where the
-        strategy depends on it, or the tokenizer (task 101).
+        strategy depends on it, the tokenizer (task 101), or the contextual summarization
+        the vectors were built with (task 102).
 
         Compared on the fingerprint the document recorded against the one ingestion would
         write *now*, which is the same function with the same inputs. A row without a
@@ -292,10 +352,12 @@ class ConnectorService:
         """
         if document.status != "indexed" or not document.chunk_fingerprint:
             return False
+        kind = format_label(document.mime_type or "")
         current = fingerprint(
-            effective(chunking, format_label(document.mime_type or "")),
+            effective(chunking, kind),
             embedding_model=self._embedder.model,
             tokenizer=self._pipeline.tokenizer.name,
+            context=contexts.get(kind),
         )
         return document.chunk_fingerprint != current
 
@@ -310,6 +372,9 @@ class ConnectorService:
                 param="type",
             )
         chunking = merge_config(ChunkingConfig, {}, draft.chunking, field="chunking")
+        summarization = merge_config(
+            SummarizationConfig, {}, draft.summarization, field="summarization"
+        )
 
         async with self._store.begin(actor.scope) as transaction:
             if await transaction.name_taken(name):
@@ -320,6 +385,7 @@ class ConnectorService:
                 description=_trimmed(draft.description),
                 type=draft.type,
                 chunking=chunking,
+                summarization=summarization,
                 status="ready",
             )
             await transaction.add_connector(connector)
@@ -343,7 +409,12 @@ class ConnectorService:
             "connector created",
             extra={"connector_id": str(connector.id), "audit_action": "connector.create"},
         )
-        return ConnectorView(connector=connector, counts={}, total_bytes=0)
+        return ConnectorView(
+            connector=connector,
+            counts={},
+            total_bytes=0,
+            summary_model=await self._summary_model(connector),
+        )
 
     async def update_connector(
         self, actor: Actor, connector_id: uuid.UUID, patch: ConnectorPatch
@@ -352,6 +423,7 @@ class ConnectorService:
             connector = await self._require(transaction, connector_id)
             recorded = subject(connector)
             before = ChunkingConfig.load(connector.chunking)
+            summarized_before = SummarizationConfig.load(connector.summarization)
 
             if patch.name is not None:
                 name = _name(patch.name)
@@ -364,9 +436,21 @@ class ConnectorService:
                 connector.chunking = merge_config(
                     ChunkingConfig, connector.chunking, patch.chunking, field="chunking"
                 )
+            if patch.summarization is not None:
+                connector.summarization = merge_config(
+                    SummarizationConfig,
+                    connector.summarization,
+                    patch.summarization,
+                    field="summarization",
+                )
 
             after = ChunkingConfig.load(connector.chunking)
-            changed = changed_formats(before, after)
+            # Two rules, one answer. A chunking change invalidates the chunks; a
+            # `contextual` summarization change invalidates the vectors. The screen asks
+            # one question — reindex what? — and gets the union.
+            changed = changed_formats(before, after) | changed_summarization(
+                summarized_before, SummarizationConfig.load(connector.summarization)
+            )
             # A chunking change is the one edit here with consequences beyond the row —
             # every existing chunk is now stale — so the diff naming `chunking.*` is what
             # explains a reindex that follows it.
@@ -395,7 +479,131 @@ class ConnectorService:
             # reindex an empty connector is noise they will learn to ignore.
             reindex_required=bool(changed) and bool(counts.get(connector_id)),
             reindex_formats=changed,
+            summary_model=await self._summary_model(connector),
         )
+
+    # -- summaries (task 102) ---------------------------------------------
+
+    async def edit_summary(self, actor: Actor, document_id: uuid.UUID, text: str) -> Document:
+        """Replace a document's summary with the operator's own, and re-embed what depends
+        on it.
+
+        The edit is the person's: ``summary_model`` becomes ``manual``, no cap is charged,
+        and the reuse rule keeps it across later reindexes of the same bytes. What has to
+        be re-embedded depends on the mode — the summary point alone under
+        ``summary_chunk``, every chunk under ``contextual`` — and both go through the
+        pipeline's own paths rather than a shortcut here.
+        """
+        summary = " ".join(text.split())
+        if not summary:
+            raise Validation("A summary cannot be empty.", param="summary")
+        outbox = JobOutbox(self._queue)
+        async with self._store.begin(actor.scope) as transaction:
+            document = await transaction.document(document_id)
+            if document is None:
+                raise NotFound("Document not found.")
+            connector = await self._require(transaction, document.connector_id)
+            config = summarization_for(
+                SummarizationConfig.load(connector.summarization),
+                format_label(document.mime_type or ""),
+            )
+            if config.mode == "off":
+                raise Validation(
+                    "Summarization is off for this document's format. Turn it on for the "
+                    "connector before writing a summary, or the summary would be stored "
+                    "and never embedded.",
+                    param="summary",
+                )
+            before = subject(document)
+            document.summary = summary
+            document.summary_status = SUMMARIZED
+            document.summary_error = None
+            document.summary_model = MANUAL
+            document.summary_model_id = None
+            document.summary_prompt_version = None
+            document.summary_tokens_in = None
+            document.summary_tokens_out = None
+            document.summarized_at = datetime.now(UTC)
+            self._queue_summary_work(outbox, document, config.mode, regenerate=False)
+            transaction.audit(
+                actor,
+                "document.summary.update",
+                before=before,
+                after=subject(document),
+                organization_id=document.organization_id,
+            )
+            await transaction.commit()
+        await outbox.flush()
+        return document
+
+    async def regenerate_summary(self, actor: Actor, document_id: uuid.UUID) -> Document:
+        """**Regenerate**, and the **Summarize** retry after a failure: ask the model again.
+
+        The stored summary is cleared first so the reuse rule cannot hand it back, then the
+        same job the pipeline would have run is enqueued — the whole ingestion under
+        ``contextual``, the summary phase alone under ``summary_chunk``. Charged to the
+        cap like any other call, because it is one.
+        """
+        outbox = JobOutbox(self._queue)
+        async with self._store.begin(actor.scope) as transaction:
+            document = await transaction.document(document_id)
+            if document is None:
+                raise NotFound("Document not found.")
+            connector = await self._require(transaction, document.connector_id)
+            config = summarization_for(
+                SummarizationConfig.load(connector.summarization),
+                format_label(document.mime_type or ""),
+            )
+            if config.mode == "off":
+                raise Validation(
+                    "Summarization is off for this document's format.", param="document_id"
+                )
+            before = subject(document)
+            document.summary_status = None
+            document.summary_error = None
+            self._queue_summary_work(outbox, document, config.mode, regenerate=True)
+            transaction.audit(
+                actor,
+                "document.summarize",
+                before=before,
+                after=subject(document),
+                organization_id=document.organization_id,
+            )
+            await transaction.commit()
+        await outbox.flush()
+        return document
+
+    @staticmethod
+    def _queue_summary_work(
+        outbox: JobOutbox, document: Document, mode: str, *, regenerate: bool
+    ) -> None:
+        payload = {
+            "organization_id": str(document.organization_id),
+            "document_id": str(document.id),
+        }
+        verb = "regenerate" if regenerate else "reembed"
+        if prefixes_context(mode) or document.status != "indexed":
+            # Every vector depends on the prefix, so this is the ordinary ingestion —
+            # which reuses a manual summary and regenerates a cleared one. A document
+            # that is not indexed has no summary point to update on its own either.
+            document.status = "pending"
+            document.error = None
+            document.reason = None
+            document.chunk_count = 0
+            document.indexed_at = None
+            outbox.add(
+                INGEST_DOCUMENT,
+                payload,
+                idempotency_key=f"{ingest_key(document.id, document.content_hash)}:{verb}",
+                queue=queue_for(document.source_name),
+            )
+        elif adds_summary_chunk(mode):
+            outbox.add(
+                SUMMARIZE_DOCUMENT,
+                {**payload, "regenerate": regenerate},
+                idempotency_key=f"{summarize_key(document.id, document.content_hash)}:{verb}",
+                queue=queue_for(document.source_name),
+            )
 
     async def delete_connector(self, actor: Actor, connector_id: uuid.UUID) -> None:
         """Mark it going, then let the worker take the bytes and the vectors."""
@@ -531,6 +739,12 @@ class ConnectorService:
             media_type=read.media_type,
             format_kind=kind,
             query=query,
+            # The connector's summarization for this format, and the summary the row
+            # already holds: the comparison shows the prefix each chunk would be embedded
+            # with, and its cost line includes the call that produced it. A comparison
+            # that hid half the embedding cost is the thing task 20 refused to build.
+            summarization=summarization_for(read.summarization, kind),
+            summary=read.summary if read.summary_status == SUMMARIZED else None,
         )
 
     async def reindex_document(self, actor: Actor, document_id: uuid.UUID) -> Document:

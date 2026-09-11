@@ -38,8 +38,8 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.core.errors import NotFound
@@ -49,6 +49,13 @@ from app.core.tracing import phase, record_error
 from app.db.models import Connector, Document
 from app.db.models.connector import TERMINAL_DOCUMENT_STATUSES
 from app.schemas.connector_config import ChunkingConfig, effective, fingerprint
+from app.schemas.summarization import (
+    SummarizationConfig,
+    adds_summary_chunk,
+    context_identity,
+    prefixes_context,
+)
+from app.schemas.summarization import effective as summarization_for
 from app.services.audit import Attribution
 from app.services.audit_snapshots import subject
 from app.services.chunking import (
@@ -61,6 +68,7 @@ from app.services.chunking import (
 )
 from app.services.connector_source import ConnectorSource, build_source
 from app.services.connector_store import ConnectorStore, DocumentDraft
+from app.services.distillation_models import ModelChoice
 from app.services.embeddings import Embedder, EmbeddingError
 from app.services.extraction import (
     Extracted,
@@ -73,15 +81,29 @@ from app.services.extraction_pool import ExtractionPool
 from app.services.filetypes import SNIFF_BYTES, describe, format_label, sniff
 from app.services.jobs import (
     INGEST_DOCUMENT,
+    SUMMARIZE_DOCUMENT,
     JobOutbox,
     JobQueue,
+    JobRequest,
     PermanentJobError,
     ingest_key,
     queue_for,
     resync_key,
+    summarize_key,
 )
 from app.services.locks import Lock
 from app.services.object_store import ObjectRef, ObjectStore
+from app.services.summarization import (
+    KIND_SOURCE,
+    KIND_SUMMARY,
+    MANUAL,
+    PROMPT_VERSION,
+    SUMMARY_INDEX,
+    SUMMARY_SECTION,
+    token_estimate,
+)
+from app.services.summarization_store import WAITING_ON_CAP
+from app.services.summarizer import CAPPED, SUMMARIZED, Summarizer, SummaryOutcome
 from app.services.tokenizer import Tokenizer
 from app.services.vector_store import ChunkPoint, VectorStore, point_id
 
@@ -94,6 +116,14 @@ type TokenizerSource = Callable[[], Tokenizer]
 def _constant(tokenizer: Tokenizer) -> TokenizerSource:
     return lambda: tokenizer
 
+
+#: ``documents.reason`` when a document failed *because* its summary did, under
+#: ``contextual`` (task 102). The sentence beside it names the model.
+SUMMARIZATION_FAILED = "summarization"
+
+#: Seconds past UTC midnight a capped document is retried. A small margin, so a clock
+#: skewed by a second does not wake the job on the wrong side of the cap's reset.
+CAP_RETRY_MARGIN_SECONDS = 30
 
 DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024
 DEFAULT_EXTRACTION_TIMEOUT_SECONDS = 120.0
@@ -165,6 +195,26 @@ class ReadDocument:
     connector_id: uuid.UUID
     source_uri: str
     content_hash: str
+    #: Task 102. The connector's summarization settings, unresolved like ``chunking``, and
+    #: the summary the row already holds — so a recut and a **Compare** can carry the
+    #: stored prefix without calling a model.
+    summarization: SummarizationConfig = field(default_factory=SummarizationConfig)
+    summary: str | None = None
+    summary_status: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Summarized:
+    """What the summarization phase decided for one document.
+
+    ``summary`` is the text to use — from the model, or reused from the row — or ``None``
+    when the document goes on without one. ``outcome`` is set when the document does
+    *not* go on: parked on the cap, or failed, both under ``contextual``.
+    """
+
+    summary: str | None
+    model_id: uuid.UUID | None
+    outcome: IngestOutcome | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,11 +251,16 @@ class IngestionPipeline:
         pool: ExtractionPool | None = None,
         metrics: ExtractionMetrics | None = None,
         chunking_metrics: ChunkingMetrics | None = None,
+        summarizer: Summarizer | None = None,
     ) -> None:
         self._store = store
         self._objects = objects
         self._vectors = vectors
         self._embedder = embedder
+        #: Task 102. ``None`` means no model call can be made from this process; a
+        #: connector with summarization switched on then behaves as if no model were
+        #: configured, which the document row says in as many words.
+        self._summarizer = summarizer
         #: A tokenizer, or a function that returns the current one. Production passes the
         #: function (task 101): the tokenizer is the embedding model's, the embedding model
         #: is a platform setting cached per worker, and a change to it mid-run is exactly
@@ -247,6 +302,8 @@ class IngestionPipeline:
 
             source = self._source(connector)
             chunking = ChunkingConfig.load(connector.chunking)
+            summarization = SummarizationConfig.load(connector.summarization)
+            connector_id = connector.id
             reference = ObjectRef(
                 key=document.source_uri, size_bytes=document.size_bytes, etag=document.etag
             )
@@ -298,18 +355,55 @@ class IngestionPipeline:
             )
             return outcome
 
+        # Resolved here rather than above, because the format is only known once the bytes
+        # have been sniffed — which is the whole point of per-format overrides: a
+        # connector is a source, and what is in it is discovered one file at a time.
+        kind = format_label(read.media_type)
+        cutting = effective(chunking, kind)
+        summarizing = summarization_for(summarization, kind)
+        # Read once per document, so the fingerprint, the cut and the row agree even if
+        # the platform setting moves while this file is in flight.
+        tokenizer = self.tokenizer
+
+        # Task 102's phase, between extraction and chunking. What a failure here means
+        # depends on the mode, and `_summarize_phase` says; a retryable provider error
+        # raises out of it like every other "the world is bad" case in this method.
+        summarized = await self._summarize_phase(
+            scope,
+            organization_id=organization_id,
+            connector_id=connector_id,
+            document_id=document_id,
+            source_name=reference.name,
+            text=extracted.text,
+            content_hash=read.content_hash,
+            tokenizer=tokenizer,
+            config=summarizing,
+            queue_name=queue_for(reference.name),
+        )
+        if summarized.outcome is not None:
+            await self._finish(
+                scope,
+                document_id,
+                summarized.outcome,
+                error=summarized.outcome.error,
+                media_type=read.media_type,
+                size_bytes=read.size_bytes,
+                content_hash=read.content_hash,
+            )
+            return summarized.outcome
+
         async with self._store.begin(scope) as transaction:
             document = await self._require(transaction, document_id)
             await self._advance(transaction, document, "chunking")
 
-        # Resolved here rather than above, because the format is only known once the bytes
-        # have been sniffed — which is the whole point of per-format overrides: a
-        # connector is a source, and what is in it is discovered one file at a time.
-        cutting = effective(chunking, format_label(read.media_type))
-        # Read once per document, so the fingerprint, the cut and the row agree even if
-        # the platform setting moves while this file is in flight.
-        tokenizer = self.tokenizer
-        cut = fingerprint(cutting, embedding_model=self._embedder.model, tokenizer=tokenizer.name)
+        cut = fingerprint(
+            cutting,
+            embedding_model=self._embedder.model,
+            tokenizer=tokenizer.name,
+            context=context_identity(
+                summarizing, summarized.model_id, prompt_version=PROMPT_VERSION
+            ),
+        )
         try:
             chunks = await self._chunk(
                 extracted, cutting, media_type=read.media_type, tokenizer=tokenizer
@@ -367,10 +461,14 @@ class IngestionPipeline:
 
         async with self._store.begin(scope) as transaction:
             document = await self._require(transaction, document_id)
-            connector_id = document.connector_id
             name = document.source_name
             await self._advance(transaction, document, "embedding")
 
+        # The two uses of a summary (task 102). Under `contextual` every source chunk is
+        # embedded with the summary in front of it and returned without; under
+        # `summary_chunk` the summary is one more point, labelled as one.
+        if prefixes_context(summarizing.mode):
+            chunks = [chunk.with_context(summarized.summary) for chunk in chunks]
         await self._index(
             organization_id=organization_id,
             connector_id=connector_id,
@@ -381,7 +479,8 @@ class IngestionPipeline:
             chunks=chunks,
             config=cutting,
             cut=cut,
-            tokenizer=tokenizer.name,
+            tokenizer=tokenizer,
+            summary=summarized.summary if adds_summary_chunk(summarizing.mode) else None,
         )
 
         outcome = IngestOutcome(
@@ -408,9 +507,301 @@ class IngestionPipeline:
                 "embedding_model": self._embedder.model,
                 "chunk_strategy": cutting.strategy,
                 "tokenizer": tokenizer.name,
+                "summarization": summarizing.mode,
             },
         )
         return outcome
+
+    # -- summarization (task 102) ----------------------------------------
+
+    async def _summarize_phase(
+        self,
+        scope: TenantScope,
+        *,
+        organization_id: uuid.UUID,
+        connector_id: uuid.UUID,
+        document_id: uuid.UUID,
+        source_name: str,
+        text: str,
+        content_hash: str,
+        tokenizer: Tokenizer,
+        config: SummarizationConfig,
+        queue_name: str | None,
+        allow_reuse: bool = True,
+    ) -> _Summarized:
+        """Decide the document's summary, and what its absence means.
+
+        Three outcomes. The summary is *reused* from the row when the bytes have not
+        changed and it was written by the same model under the same prompt, or by hand —
+        so a chunking change does not buy the corpus a second round of model calls. It is
+        *generated* otherwise. Or there is none, and the mode decides: under
+        ``summary_chunk`` the document indexes without it and the row says why; under
+        ``contextual`` a failure fails the document and the cap parks it, because half a
+        corpus embedded with context and half without is two corpora that rank
+        differently.
+        """
+        if config.mode == "off":
+            return _Summarized(summary=None, model_id=None)
+
+        model_id = await self._context_model(organization_id, config)
+        async with self._store.begin(scope) as transaction:
+            document = await self._require(transaction, document_id)
+            if allow_reuse and _reusable(document, content_hash, model_id):
+                await self._advance(transaction, document, "summarizing")
+                return _Summarized(summary=document.summary, model_id=model_id)
+            await self._advance(transaction, document, "summarizing")
+
+        if self._summarizer is None:
+            result = SummaryOutcome(
+                status="failed",
+                reason="no_summarization_model",
+                error="This worker has no summarization model to call.",
+            )
+        else:
+            result = await self._summarizer.summarize(
+                organization_id=organization_id,
+                connector_id=connector_id,
+                document_id=document_id,
+                source_name=source_name,
+                text=text,
+                tokenizer=tokenizer,
+                config=config,
+            )
+        await self._store_summary(scope, document_id, result)
+
+        if result.succeeded:
+            return _Summarized(summary=result.summary, model_id=model_id)
+
+        contextual = prefixes_context(config.mode)
+        if result.status == CAPPED:
+            if contextual:
+                # Parked, not failed. The job comes back after midnight and finds the cap
+                # reset; until then the row says what it is waiting for.
+                await self._retry_after_midnight(
+                    INGEST_DOCUMENT,
+                    {"organization_id": str(organization_id), "document_id": str(document_id)},
+                    key=f"{ingest_key(document_id, content_hash)}:cap",
+                    queue_name=queue_name,
+                )
+                return _Summarized(
+                    summary=None,
+                    model_id=model_id,
+                    outcome=IngestOutcome(
+                        status="pending", reason=WAITING_ON_CAP, error=result.error
+                    ),
+                )
+            # Indexed without a summary today, summarized tomorrow.
+            await self._retry_after_midnight(
+                SUMMARIZE_DOCUMENT,
+                {"organization_id": str(organization_id), "document_id": str(document_id)},
+                key=summarize_key(document_id, content_hash),
+                queue_name=queue_name,
+            )
+            return _Summarized(summary=None, model_id=model_id)
+
+        if contextual:
+            return _Summarized(
+                summary=None,
+                model_id=model_id,
+                outcome=IngestOutcome(
+                    status="failed", reason=SUMMARIZATION_FAILED, error=result.error
+                ),
+            )
+        return _Summarized(summary=None, model_id=model_id)
+
+    async def _context_model(
+        self, organization_id: uuid.UUID, config: SummarizationConfig
+    ) -> uuid.UUID | None:
+        """Which model the connector's settings resolve to, by id — the identity the
+        ``contextual`` fingerprint carries. ``None`` when nothing is configured or when
+        this process cannot resolve one."""
+        choice = await self.summary_model(organization_id, config.model_id)
+        return choice.id if choice is not None else None
+
+    async def summary_model(
+        self, organization_id: uuid.UUID, model_id: uuid.UUID | None
+    ) -> ModelChoice | None:
+        """The model a summarization setting resolves to, through the whole chain, or
+        ``None``. Public so the connector screen and the staleness comparison use the
+        resolver ingestion uses rather than one that agrees with it most of the time."""
+        if self._summarizer is None:
+            return None
+        return await self._summarizer.models.describe(organization_id, model_id)
+
+    @property
+    def summarizes(self) -> bool:
+        """Whether this process can call a summarization model at all."""
+        return self._summarizer is not None
+
+    async def _store_summary(
+        self, scope: TenantScope, document_id: uuid.UUID, result: SummaryOutcome
+    ) -> None:
+        async with self._store.begin(scope) as transaction:
+            document = await transaction.document(document_id)
+            if document is None:
+                return
+            document.summary = result.summary
+            document.summary_status = result.status
+            document.summary_error = result.error
+            document.summary_model = result.model_name
+            document.summary_model_id = result.model_id
+            document.summary_prompt_version = result.prompt_version
+            document.summary_tokens_in = result.tokens_in if result.succeeded else None
+            document.summary_tokens_out = result.tokens_out if result.succeeded else None
+            document.summarized_at = datetime.now(UTC) if result.succeeded else None
+            await transaction.commit()
+
+    async def _retry_after_midnight(
+        self,
+        name: str,
+        payload: dict[str, str],
+        *,
+        key: str,
+        queue_name: str | None,
+    ) -> None:
+        """Enqueue for the moment the daily cap resets. Keyed by the day it will run on,
+        so a document parked twice in one day is one job."""
+        now = datetime.now(UTC)
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        delay = (tomorrow - now).total_seconds() + CAP_RETRY_MARGIN_SECONDS
+        await self._queue.enqueue(
+            JobRequest(
+                name=name,
+                payload=payload,
+                idempotency_key=f"{key}:{tomorrow.date().isoformat()}",
+                delay_seconds=delay,
+                queue=queue_name,
+            )
+        )
+
+    async def summarize(
+        self, *, organization_id: uuid.UUID, document_id: uuid.UUID, regenerate: bool = False
+    ) -> IngestOutcome | SummaryOutcome | None:
+        """Just the summary phase, for a document that is already indexed.
+
+        The **Summarize** retry, the morning after a cap hit, and the re-embed after an
+        operator edits a summary. Under ``contextual`` there is no such thing as "just the
+        summary" — every vector depends on it — so that case is the ordinary ingestion,
+        which reuses a summary that is still valid and regenerates one that is not. Under
+        ``summary_chunk`` it is one model call and one point.
+        """
+        scope = TenantScope.of_organization(organization_id)
+        async with self._store.begin(scope) as transaction:
+            document = await transaction.document(document_id)
+            if document is None:
+                raise PermanentJobError(f"document {document_id} no longer exists")
+            connector = await transaction.connector(document.connector_id)
+            if connector is None or connector.status == "deleting":
+                return None
+            config = summarization_for(
+                SummarizationConfig.load(connector.summarization),
+                format_label(document.mime_type or ""),
+            )
+            connector_id = connector.id
+            name = document.source_name
+            indexed = document.status == "indexed"
+
+        if config.mode == "off":
+            await self._vectors.delete_points(
+                organization_id, [point_id(document_id, SUMMARY_INDEX)]
+            )
+            return None
+        if prefixes_context(config.mode) or not indexed:
+            return await self.ingest(organization_id=organization_id, document_id=document_id)
+
+        try:
+            read = await self.read_document(
+                organization_id=organization_id, document_id=document_id
+            )
+        except (NotFound, ExtractionError):
+            # The document's own row already says why it cannot be read; a summary of
+            # something unreadable is not a thing to retry for.
+            return None
+        tokenizer = self.tokenizer
+        summarized = await self._summarize_phase(
+            scope,
+            organization_id=organization_id,
+            connector_id=connector_id,
+            document_id=document_id,
+            source_name=name,
+            text=read.extracted.text,
+            content_hash=read.content_hash,
+            tokenizer=tokenizer,
+            config=config,
+            queue_name=queue_for(name),
+            allow_reuse=not regenerate,
+        )
+        async with self._store.begin(scope) as transaction:
+            document = await self._require(transaction, document_id)
+            await self._advance(transaction, document, "indexed")
+
+        if summarized.summary is None:
+            await self._vectors.delete_points(
+                organization_id, [point_id(document_id, SUMMARY_INDEX)]
+            )
+            return None
+        if adds_summary_chunk(config.mode):
+            await self._vectors.ensure_collection(
+                organization_id, dimension=self._embedder.dimension
+            )
+            await self._vectors.upsert(
+                organization_id,
+                [
+                    self._summary_point(
+                        organization_id=organization_id,
+                        connector_id=connector_id,
+                        document_id=document_id,
+                        source_name=name,
+                        source_uri=read.source_uri,
+                        content_hash=read.content_hash,
+                        summary=summarized.summary,
+                        tokenizer=tokenizer,
+                        vector=(await self._embedder.embed([summarized.summary]))[0],
+                        ingested_at=datetime.now(UTC).isoformat(),
+                    )
+                ],
+            )
+        return None
+
+    def _summary_point(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        connector_id: uuid.UUID,
+        document_id: uuid.UUID,
+        source_name: str,
+        source_uri: str,
+        content_hash: str,
+        summary: str,
+        tokenizer: Tokenizer,
+        vector: Sequence[float],
+        ingested_at: str,
+    ) -> ChunkPoint:
+        """The one point per document that is *not* a quote, and says so.
+
+        ``kind: summary`` is the label the prompt renderer, the citation resolver and the
+        inspector all switch on. The rest of the payload is the ordinary shape, so every
+        filter that works on a source chunk works on this one.
+        """
+        return ChunkPoint(
+            id=point_id(document_id, SUMMARY_INDEX),
+            vector=list(vector),
+            payload={
+                "org_id": str(organization_id),
+                "connector_id": str(connector_id),
+                "document_id": str(document_id),
+                "source_name": source_name,
+                "source_uri": source_uri,
+                "page_or_section": SUMMARY_SECTION,
+                "chunk_index": SUMMARY_INDEX,
+                "ingested_at": ingested_at,
+                "content_hash": content_hash,
+                "token_count": token_estimate(summary, tokenizer),
+                "text": summary,
+                "kind": KIND_SUMMARY,
+                "tokenizer": tokenizer.name,
+            },
+        )
 
     # -- chunking --------------------------------------------------------
 
@@ -487,8 +878,9 @@ class IngestionPipeline:
         chunks: Sequence[Chunk],
         config: ChunkingConfig,
         cut: str,
-        tokenizer: str,
+        tokenizer: Tokenizer,
         vectors: Sequence[Sequence[float]],
+        summary: str | None = None,
     ) -> list[ChunkPoint]:
         """Chunks and their vectors, as points. The one place a payload is built.
 
@@ -496,9 +888,13 @@ class IngestionPipeline:
         differed by one key from the ordinary path would produce a collection where half
         the chunks answer a filter and half do not — and it would look perfectly healthy
         until somebody searched with that filter.
+
+        ``vectors`` has one entry per chunk, plus one more at the end when ``summary`` is
+        given — the summary point's (task 102).
         """
         ingested_at = datetime.now(UTC).isoformat()
-        return [
+        source_vectors = vectors[: len(chunks)]
+        points = [
             ChunkPoint(
                 id=point_id(document_id, chunk.index),
                 vector=list(vector),
@@ -519,12 +915,30 @@ class IngestionPipeline:
                     "text": chunk.text,
                     "chunk_strategy": config.strategy,
                     "chunk_fingerprint": cut,
-                    "tokenizer": tokenizer,
-                    **_window_payload(chunk, config),
+                    "tokenizer": tokenizer.name,
+                    # Always present, so a reader never infers a kind from its absence.
+                    "kind": KIND_SOURCE,
+                    **_embedding_payload(chunk, config),
                 },
             )
-            for chunk, vector in zip(chunks, vectors, strict=True)
+            for chunk, vector in zip(chunks, source_vectors, strict=True)
         ]
+        if summary is not None:
+            points.append(
+                self._summary_point(
+                    organization_id=organization_id,
+                    connector_id=connector_id,
+                    document_id=document_id,
+                    source_name=source_name,
+                    source_uri=source_uri,
+                    content_hash=content_hash,
+                    summary=summary,
+                    tokenizer=tokenizer,
+                    vector=vectors[len(chunks)],
+                    ingested_at=ingested_at,
+                )
+            )
+        return points
 
     async def _index(
         self,
@@ -538,12 +952,17 @@ class IngestionPipeline:
         chunks: Sequence[Chunk],
         config: ChunkingConfig,
         cut: str,
-        tokenizer: str,
+        tokenizer: Tokenizer,
+        summary: str | None = None,
     ) -> None:
         await self._vectors.ensure_collection(organization_id, dimension=self._embedder.dimension)
-        # `embedded_text`, not `text`. They are the same string under every strategy but
-        # `sentence_window`, where the difference is the entire proposition: the sentence
-        # is what a query is matched against and the window around it is what answers.
+        # `vector_text`, not `text`. They are the same string under every strategy but
+        # `sentence_window`, where the difference is the entire proposition — the sentence
+        # is what a query is matched against and the window around it is what answers —
+        # and under `contextual` summarization, where the summary rides in front.
+        texts = [chunk.vector_text for chunk in chunks]
+        if summary is not None:
+            texts.append(summary)
         points = self._points(
             organization_id=organization_id,
             connector_id=connector_id,
@@ -555,7 +974,8 @@ class IngestionPipeline:
             config=config,
             cut=cut,
             tokenizer=tokenizer,
-            vectors=await self._embedder.embed([chunk.embedded_text for chunk in chunks]),
+            vectors=await self._embedder.embed(texts),
+            summary=summary,
         )
 
         # Delete first, then upsert. Deterministic ids overwrite the points that still
@@ -600,6 +1020,9 @@ class IngestionPipeline:
                 key=document.source_uri, size_bytes=document.size_bytes, etag=document.etag
             )
             chunking = ChunkingConfig.load(connector.chunking)
+            summarization = SummarizationConfig.load(connector.summarization)
+            summary = document.summary
+            summary_status = document.summary_status
             name = document.source_name
             connector_id = document.connector_id
 
@@ -622,6 +1045,9 @@ class IngestionPipeline:
             connector_id=connector_id,
             source_uri=reference.key,
             content_hash=read.content_hash,
+            summarization=summarization,
+            summary=summary,
+            summary_status=summary_status,
         )
 
     async def recut(
@@ -640,7 +1066,9 @@ class IngestionPipeline:
         it is not the live collection: they belong in the one being built beside it.
         """
         read = await self.read_document(organization_id=organization_id, document_id=document_id)
-        config = effective(read.chunking, format_label(read.media_type))
+        kind = format_label(read.media_type)
+        config = effective(read.chunking, kind)
+        summarizing = summarization_for(read.summarization, kind)
         tokenizer = self.tokenizer
         chunks = await self._chunk(
             read.extracted,
@@ -649,6 +1077,15 @@ class IngestionPipeline:
             embedder=embedder,
             tokenizer=tokenizer,
         )
+        # The *stored* summary, not a fresh one: a recut is about the embedding model, and
+        # the summary a document already has is as true under the new model as the old.
+        summary = read.summary if read.summary_status == SUMMARIZED else None
+        if prefixes_context(summarizing.mode):
+            chunks = [chunk.with_context(summary) for chunk in chunks]
+        texts = [chunk.vector_text for chunk in chunks]
+        as_point = summary if adds_summary_chunk(summarizing.mode) else None
+        if as_point is not None:
+            texts.append(as_point)
         return self._points(
             organization_id=organization_id,
             connector_id=read.connector_id,
@@ -658,9 +1095,19 @@ class IngestionPipeline:
             content_hash=read.content_hash,
             chunks=chunks,
             config=config,
-            cut=fingerprint(config, embedding_model=embedder.model, tokenizer=tokenizer.name),
-            tokenizer=tokenizer.name,
-            vectors=await embedder.embed([chunk.embedded_text for chunk in chunks]),
+            cut=fingerprint(
+                config,
+                embedding_model=embedder.model,
+                tokenizer=tokenizer.name,
+                context=context_identity(
+                    summarizing,
+                    await self._context_model(organization_id, summarizing),
+                    prompt_version=PROMPT_VERSION,
+                ),
+            ),
+            tokenizer=tokenizer,
+            vectors=await embedder.embed(texts),
+            summary=as_point,
         )
 
     # -- reading ---------------------------------------------------------
@@ -1022,6 +1469,37 @@ class IngestionPipeline:
             await transaction.commit()
 
 
+def _reusable(document: Document, content_hash: str, model_id: uuid.UUID | None) -> bool:
+    """Whether the summary on the row is still the summary of *these* bytes under *this*
+    configuration — so a chunking change does not buy a second round of model calls, and
+    an operator's own summary survives a reindex."""
+    if not document.summary or document.summary_status != SUMMARIZED:
+        return False
+    if document.content_hash != content_hash:
+        return False
+    if document.summary_model == MANUAL:
+        return True
+    return (
+        document.summary_model_id == model_id and document.summary_prompt_version == PROMPT_VERSION
+    )
+
+
+def _embedding_payload(chunk: Chunk, config: ChunkingConfig) -> dict[str, Any]:
+    """Why and how this chunk's vector differs from its text, or nothing at all.
+
+    Task 20's ``embedded_text`` and ``window_sentences``, and task 102's ``context``, under
+    one ``embedded_because`` that says which applies — because the chunk inspector
+    highlights a matched sentence for one and shows a prefix for the other, and must not
+    have to guess from which keys happen to be present.
+    """
+    payload = _window_payload(chunk, config)
+    if chunk.contextual:
+        payload["context"] = chunk.context
+    if chunk.embedded_because is not None:
+        payload["embedded_because"] = chunk.embedded_because
+    return payload
+
+
 def _window_payload(chunk: Chunk, config: ChunkingConfig) -> dict[str, Any]:
     """The two extra fields a windowed chunk needs, and nothing at all for the rest.
 
@@ -1055,6 +1533,7 @@ async def _close(stream: AsyncIterator[bytes]) -> None:
 __all__ = [
     "DEFAULT_EXTRACTION_TIMEOUT_SECONDS",
     "DEFAULT_MAX_FILE_BYTES",
+    "SUMMARIZATION_FAILED",
     "IngestOutcome",
     "IngestionPipeline",
     "IngestionSettings",

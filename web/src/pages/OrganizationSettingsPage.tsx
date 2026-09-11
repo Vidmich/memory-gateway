@@ -8,6 +8,7 @@ import { Field, Form, SubmitButton, TextInput } from '@/components/Form'
 import { StatusBadge } from '@/components/StatusBadge'
 import { useToast } from '@/components/Toast'
 import { DistillationSettings } from '@/pages/DistillationSettings'
+import { SummarizationSettings } from '@/pages/SummarizationSettings'
 import { useRetentionCeilings } from '@/api/platform'
 
 /**
@@ -117,6 +118,7 @@ export function OrganizationSettingsPage() {
       </div>
 
       <DistillationSettings />
+      <SummarizationSettings />
 
       <RetentionCeilings />
 

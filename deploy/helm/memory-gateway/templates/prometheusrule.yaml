@@ -135,6 +135,21 @@ spec:
               breaks, which is exactly why it needs an alert rather than a complaint.
             runbook_url: {{ $runbook }}/distillation-failures.md
 
+        - alert: SummarizationFailureRateHigh
+          expr: |
+            sum(rate(summarization_runs_total{outcome="failed"}[30m]))
+              / clamp_min(sum(rate(summarization_runs_total[30m])), 0.001) > 0.25
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: A quarter of document summarization attempts are failing
+            description: >-
+              Documents index without their summaries, or under contextual mode fail
+              outright naming the model. Retrieval quietly loses the context the summaries
+              were bought for, which is why this needs an alert rather than a complaint.
+            runbook_url: {{ $runbook }}/summarization-failures.md
+
         - alert: ApiDown
           expr: |
             sum(up{job=~".*{{ include "memory-gateway.fullname" . }}.*"}) == 0

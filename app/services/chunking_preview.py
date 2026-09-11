@@ -35,6 +35,7 @@ from typing import Any
 
 from app.core.errors import Validation
 from app.schemas.connector_config import ChunkingConfig, effective
+from app.schemas.summarization import SummarizationConfig, prefixes_context
 from app.services.chunking import (
     Chunk,
     boundary_signal,
@@ -44,6 +45,7 @@ from app.services.chunking import (
 )
 from app.services.embeddings import Embedder
 from app.services.extraction import Extracted
+from app.services.summarization import excerpt
 from app.services.tokenizer import Tokenizer, count
 from app.services.vector_store import cosine
 
@@ -88,6 +90,9 @@ class PreviewChunk:
     token_count: int
     #: Set only under ``sentence_window``: the sentence inside ``text`` that was embedded.
     embedded_text: str | None = None
+    #: Task 102. The summary this chunk would be embedded behind under ``contextual`` —
+    #: the same string ingestion prefixes, from the same function.
+    context: str | None = None
     #: Similarity to the query, when one was given. ``None`` means no query, which is a
     #: different thing from a score of zero and is rendered differently.
     score: float | None = None
@@ -128,6 +133,25 @@ class CandidateResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SummarizationCost:
+    """What the summarization call adds to one ingestion of this document (task 102).
+
+    ``tokens_in`` is what would be *sent* — the document under ``max_input_tokens`` —
+    and ``tokens_out`` the ceiling on the reply. ``summary`` is the prefix the candidates
+    were shown with: the row's stored summary when there is one, because a preview must
+    not spend a model call, and ``None`` when the document has not been summarized yet —
+    in which case the screen says so rather than inventing one.
+    """
+
+    mode: str
+    tokens_in: int
+    tokens_out: int
+    summary: str | None
+    #: Whether the candidates' vectors would carry the prefix — ``contextual`` or ``both``.
+    prefixes: bool
+
+
+@dataclass(frozen=True, slots=True)
 class PreviewResult:
     document_id: uuid.UUID
     source_name: str
@@ -137,6 +161,8 @@ class PreviewResult:
     format_kind: str
     candidates: tuple[CandidateResult, ...]
     query: str | None = None
+    #: ``None`` when the connector does not summarize this format.
+    summarization: SummarizationCost | None = None
 
 
 class ChunkingPreviewer:
@@ -162,6 +188,8 @@ class ChunkingPreviewer:
         media_type: str | None,
         format_kind: str,
         query: str | None = None,
+        summarization: SummarizationConfig | None = None,
+        summary: str | None = None,
     ) -> PreviewResult:
         if not candidates:
             raise Validation("Give at least one chunking configuration to compare.")
@@ -176,6 +204,8 @@ class ChunkingPreviewer:
         # be a cost with no corresponding fact.
         asked = (await self._embedder.embed([query]))[0] if query else None
 
+        cost = self._summarization_cost(extracted, summarization, summary)
+        prefix = summary if cost is not None and cost.prefixes else None
         results = []
         for candidate in candidates:
             results.append(
@@ -184,6 +214,7 @@ class ChunkingPreviewer:
                     candidate,
                     media_type=media_type or "",
                     asked=asked,
+                    prefix=prefix,
                 )
             )
         return PreviewResult(
@@ -193,6 +224,24 @@ class ChunkingPreviewer:
             format_kind=format_kind,
             candidates=tuple(results),
             query=query,
+            summarization=cost,
+        )
+
+    def _summarization_cost(
+        self,
+        extracted: Extracted,
+        config: SummarizationConfig | None,
+        summary: str | None,
+    ) -> SummarizationCost | None:
+        if config is None or config.mode == "off":
+            return None
+        sent = excerpt(extracted.text, self._tokenizer, max_input_tokens=config.max_input_tokens)
+        return SummarizationCost(
+            mode=config.mode,
+            tokens_in=sent.tokens,
+            tokens_out=config.max_summary_tokens,
+            summary=summary,
+            prefixes=prefixes_context(config.mode),
         )
 
     async def _candidate(
@@ -202,6 +251,7 @@ class ChunkingPreviewer:
         *,
         media_type: str,
         asked: list[float] | None,
+        prefix: str | None = None,
     ) -> CandidateResult:
         config = candidate.config
         spent = 0
@@ -218,10 +268,14 @@ class ChunkingPreviewer:
             media_type=media_type,
             signal=signal,
         )
+        if prefix:
+            # The same composition ingestion uses, so the vectors scored here are the
+            # vectors a request would search — prefix included.
+            chunks = [chunk.with_context(prefix) for chunk in chunks]
 
         scores: list[float] | None = None
         if asked is not None and chunks:
-            vectors = await self._embedder.embed([chunk.embedded_text for chunk in chunks])
+            vectors = await self._embedder.embed([chunk.vector_text for chunk in chunks])
             spent += len(vectors)
             # The same cosine the vector store ranks with, not a second similarity that
             # could disagree with what a real request does — which is the whole reason
@@ -239,6 +293,7 @@ class ChunkingPreviewer:
                 section=chunk.section,
                 token_count=chunk.token_count,
                 embedded_text=chunk.embedded_text if chunk.windowed else None,
+                context=chunk.context,
                 score=scores[chunk.index] if scores else None,
             )
             for chunk in chunks[:MAX_CHUNKS_SHOWN]
@@ -335,6 +390,7 @@ __all__ = [
     "PreviewChunk",
     "PreviewResult",
     "PreviewTooLarge",
+    "SummarizationCost",
     "candidates_from",
     "distribution",
     "tokens_in",

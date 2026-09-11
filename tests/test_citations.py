@@ -219,6 +219,7 @@ def test_citation_json_carries_what_the_prompt_already_said_and_the_ids() -> Non
         "connector_id": "22222222-2222-5222-8222-222222222222",
         "section": "p. 12",
         "chunk_strategy": None,
+        "kind": "source",
         "matched_text": None,
         "url": (
             "https://ui/connectors/22222222-2222-5222-8222-222222222222"

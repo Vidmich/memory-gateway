@@ -52,10 +52,12 @@ CONNECTOR_TYPES = ("managed_file_drop",)
 #: cannot be uploaded into and reads as going away while the bytes are still going.
 CONNECTOR_STATUSES = ("ready", "syncing", "deleting", "error")
 
-#: SPEC §9.5, in order. The first five are the happy path; the last two are terminal.
+#: SPEC §9.5, in order. The first six are the happy path; the last two are terminal.
+#: ``summarizing`` (task 102) is entered only by a connector that summarizes.
 DOCUMENT_STATUSES = (
     "pending",
     "extracting",
+    "summarizing",
     "chunking",
     "embedding",
     "indexed",
@@ -98,6 +100,13 @@ class Connector(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     chunking: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    #: Task 102, validated by :class:`app.schemas.summarization.SummarizationConfig`.
+    #: Beside ``chunking`` rather than inside it: the two are edited on different panels
+    #: and invalidate the index by different rules, and one blob would make every
+    #: summarization patch look like a chunking change to the merge.
+    summarization: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
     #: ``orgs/{org_id}/connectors/{connector_id}/``. Derived, never supplied: a customer
     #: who could choose their own prefix could choose another tenant's.
@@ -122,8 +131,8 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "documents"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'extracting', 'chunking', 'embedding', 'indexed',"
-            " 'failed', 'skipped')",
+            "status IN ('pending', 'extracting', 'summarizing', 'chunking', 'embedding',"
+            " 'indexed', 'failed', 'skipped')",
             name="status_is_known",
         ),
         CheckConstraint("size_bytes >= 0", name="size_is_not_negative"),
@@ -208,6 +217,25 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: document list can say it without reversing a hash.
     tokenizer: Mapped[str | None] = mapped_column(String(64), nullable=True)
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    #: Task 102. The document's summary and how it came to be. ``summary_status`` is
+    #: ``summarized``, ``failed`` or ``capped`` — null on a document nothing has tried to
+    #: summarize — and ``summary_error`` is the sentence for the row when it is not
+    #: ``summarized``. ``summary_model`` is a name for the same reason
+    #: ``request_logs.upstream_model_name`` is, and reads ``manual`` when an operator
+    #: wrote the summary; ``summary_model_id`` and ``summary_prompt_version`` are what
+    #: decide whether a stored summary can be reused on the next ingestion instead of
+    #: paying for it again. The token counts are the provider's, or the estimate when it
+    #: reported none — the ledger row beside them says which.
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    summary_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_model_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    summary_prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    summary_tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    summary_tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    summarized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     connector: Mapped[Connector] = relationship(back_populates="documents")
 

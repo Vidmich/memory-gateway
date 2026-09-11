@@ -25,12 +25,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.db.models import Document
 from app.db.models.connector import CONNECTOR_TYPES
 from app.schemas.connector_config import ChunkingConfig, effective
+from app.schemas.summarization import SummarizationConfig
+from app.schemas.summarization import effective as summarization_for
 from app.services.chunking_preview import (
     MAX_CANDIDATES,
     CandidateResult,
     Distribution,
     PreviewChunk,
     PreviewResult,
+    SummarizationCost,
 )
 from app.services.connectors import (
     ConnectorDraft,
@@ -53,7 +56,7 @@ Description = Annotated[str, Field(max_length=MAX_DESCRIPTION)]
 
 #: Fields that may be sent as ``null`` on a PATCH, meaning "clear it". Everything else
 #: refuses ``null`` outright rather than ignoring it, so a caller who sends one is told.
-_NOT_NULLABLE = ("name", "chunking")
+_NOT_NULLABLE = ("name", "chunking", "summarization")
 
 
 class ConnectorCreateRequest(BaseModel):
@@ -65,6 +68,8 @@ class ConnectorCreateRequest(BaseModel):
     #: Partial. Anything omitted takes the SPEC §9.3 default, which the response then
     #: shows in full, so what is on screen is what will actually happen.
     chunking: dict[str, Any] = Field(default_factory=dict)
+    #: Task 102. Partial like ``chunking``; off unless said otherwise.
+    summarization: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _known_type(self) -> Self:
@@ -78,6 +83,7 @@ class ConnectorCreateRequest(BaseModel):
             description=self.description,
             type=self.type,
             chunking=self.chunking,
+            summarization=self.summarization,
         )
 
 
@@ -87,6 +93,7 @@ class ConnectorUpdateRequest(BaseModel):
     name: Name | None = None
     description: Description | None = None
     chunking: dict[str, Any] | None = None
+    summarization: dict[str, Any] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -102,7 +109,18 @@ class ConnectorUpdateRequest(BaseModel):
             name=self.name,
             description=self.description,
             chunking=self.chunking,
+            summarization=self.summarization,
         )
+
+
+class SummaryModelResponse(BaseModel):
+    """What a connector's summarization ``model_id`` resolves to (task 102)."""
+
+    id: uuid.UUID
+    name: str
+    #: True when the connector named no model of its own and this came from further down
+    #: the chain — the organization's default, its distillation model, or the platform's.
+    inherited: bool
 
 
 class ConnectorResponse(BaseModel):
@@ -125,6 +143,13 @@ class ConnectorResponse(BaseModel):
     #: resolution rule lives in one place, and a screen that derived it independently
     #: would eventually show a configuration the pipeline does not use.
     effective_chunking: dict[str, ChunkingConfig]
+    #: Task 102, the same two shapes as chunking: the stored settings and what each format
+    #: resolves to under them.
+    summarization: SummarizationConfig
+    effective_summarization: dict[str, SummarizationConfig]
+    #: The model the connector's summarization setting resolves to, or null when nothing
+    #: is configured anywhere. Null on the list, where it is not read.
+    summary_model: SummaryModelResponse | None
     #: True only in the response to the update that caused it. A permanent banner would
     #: be ignored within a day.
     reindex_required: bool
@@ -138,6 +163,7 @@ class ConnectorResponse(BaseModel):
     def of(cls, view: ConnectorView) -> ConnectorResponse:
         connector = view.connector
         chunking = ChunkingConfig.load(connector.chunking)
+        summarization = SummarizationConfig.load(connector.summarization)
         return cls(
             id=connector.id,
             name=connector.name,
@@ -148,6 +174,20 @@ class ConnectorResponse(BaseModel):
             storage_prefix=connector.storage_prefix,
             chunking=chunking,
             effective_chunking={kind: effective(chunking, kind) for kind in FORMAT_KINDS},
+            summarization=summarization,
+            effective_summarization={
+                kind: summarization_for(summarization, kind) for kind in FORMAT_KINDS
+            },
+            summary_model=(
+                SummaryModelResponse(
+                    id=view.summary_model.id,
+                    name=view.summary_model.name,
+                    inherited=summarization.model_id is None
+                    or view.summary_model.id != summarization.model_id,
+                )
+                if view.summary_model is not None
+                else None
+            ),
             document_count=view.document_count,
             counts=dict(view.counts),
             total_bytes=view.total_bytes,
@@ -194,6 +234,16 @@ class DocumentResponse(BaseModel):
     indexed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    #: Task 102. The summary and its provenance; ``summary_status`` is ``summarized``,
+    #: ``failed`` or ``capped``, and null on a document nothing has tried to summarize.
+    #: ``summary_model`` reads ``manual`` for one an operator wrote.
+    summary: str | None = None
+    summary_status: str | None = None
+    summary_error: str | None = None
+    summary_model: str | None = None
+    summary_tokens_in: int | None = None
+    summary_tokens_out: int | None = None
+    summarized_at: datetime | None = None
 
     @classmethod
     def of(cls, document: Document, *, stale: bool = False) -> DocumentResponse:
@@ -217,6 +267,13 @@ class DocumentResponse(BaseModel):
             indexed_at=document.indexed_at,
             created_at=document.created_at,
             updated_at=document.updated_at,
+            summary=document.summary,
+            summary_status=document.summary_status,
+            summary_error=document.summary_error,
+            summary_model=document.summary_model,
+            summary_tokens_in=document.summary_tokens_in,
+            summary_tokens_out=document.summary_tokens_out,
+            summarized_at=document.summarized_at,
         )
 
 
@@ -235,6 +292,13 @@ class DocumentChunk(BaseModel):
     #: from anything else on the screen.
     chunk_strategy: str | None = None
     embedded_text: str | None = None
+    #: Task 102. ``source`` or ``summary`` — always one of the two, so the inspector can
+    #: label the summary as what it is. ``context`` is the summary prefix this chunk was
+    #: embedded behind under ``contextual``, and ``embedded_because`` says which of the
+    #: two differences applies: ``window``, ``context`` or ``window+context``.
+    kind: str = "source"
+    context: str | None = None
+    embedded_because: str | None = None
 
     @classmethod
     def of(cls, chunk: Stored) -> DocumentChunk:
@@ -248,6 +312,9 @@ class DocumentChunk(BaseModel):
             text=chunk.text,
             chunk_strategy=_text(payload.get("chunk_strategy")),
             embedded_text=embedded if embedded and embedded != chunk.text else None,
+            kind="summary" if payload.get("kind") == "summary" else "source",
+            context=_text(payload.get("context")),
+            embedded_because=_text(payload.get("embedded_because")),
         )
 
 
@@ -453,6 +520,9 @@ class PreviewChunkResponse(BaseModel):
     token_count: int
     embedded_text: str | None
     score: float | None
+    #: Task 102: the summary prefix this chunk would be embedded behind, under
+    #: ``contextual``. The same string ingestion would use.
+    context: str | None = None
 
     @classmethod
     def of(cls, chunk: PreviewChunk) -> PreviewChunkResponse:
@@ -463,6 +533,27 @@ class PreviewChunkResponse(BaseModel):
             token_count=chunk.token_count,
             embedded_text=chunk.embedded_text,
             score=chunk.score,
+            context=chunk.context,
+        )
+
+
+class SummarizationCostResponse(BaseModel):
+    """The summarization call's share of one ingestion, on the comparison (task 102)."""
+
+    mode: str
+    tokens_in: int
+    tokens_out: int
+    summary: str | None
+    prefixes: bool
+
+    @classmethod
+    def of(cls, cost: SummarizationCost) -> SummarizationCostResponse:
+        return cls(
+            mode=cost.mode,
+            tokens_in=cost.tokens_in,
+            tokens_out=cost.tokens_out,
+            summary=cost.summary,
+            prefixes=cost.prefixes,
         )
 
 
@@ -498,6 +589,8 @@ class ChunkingPreviewResponse(BaseModel):
     format_kind: str
     query: str | None
     candidates: list[ChunkingCandidateResponse]
+    #: Null when the connector does not summarize this document's format.
+    summarization: SummarizationCostResponse | None = None
 
     @classmethod
     def of(cls, result: PreviewResult) -> ChunkingPreviewResponse:
@@ -508,6 +601,11 @@ class ChunkingPreviewResponse(BaseModel):
             format_kind=result.format_kind,
             query=result.query,
             candidates=[ChunkingCandidateResponse.of(one) for one in result.candidates],
+            summarization=(
+                SummarizationCostResponse.of(result.summarization)
+                if result.summarization is not None
+                else None
+            ),
         )
 
 
@@ -541,6 +639,8 @@ __all__ = [
     "SearchHit",
     "SearchRequest",
     "SearchResponse",
+    "SummarizationCostResponse",
+    "SummaryModelResponse",
     "UploadOutcomeResponse",
     "UploadResponse",
     "UploadUrlRequest",

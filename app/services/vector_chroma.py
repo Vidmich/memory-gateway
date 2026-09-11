@@ -325,6 +325,12 @@ class ChromaVectorStore:
     async def delete_connector(self, organization_id: uuid.UUID, connector_id: uuid.UUID) -> None:
         await self._delete_where(organization_id, _where_equals("connector_id", str(connector_id)))
 
+    async def delete_points(self, organization_id: uuid.UUID, ids: Sequence[str]) -> None:
+        collection = await self._open_live(organization_id)
+        if collection is None or not ids:
+            return
+        await collection.delete(ids=list(ids))
+
     async def _delete_where(self, organization_id: uuid.UUID, where: dict[str, Any]) -> None:
         collection = await self._open_live(organization_id)
         if collection is None:

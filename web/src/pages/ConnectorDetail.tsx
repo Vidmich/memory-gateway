@@ -20,11 +20,13 @@ import type {
   DocumentResponse,
   SearchHit,
 } from '@/api/types'
+import { useEditSummary, useRegenerateSummary } from '@/api/summarization'
 import { CopyButton } from '@/components/CopyButton'
 import { Field, Form, Select, SubmitButton, TextInput } from '@/components/Form'
 import { StatusBadge } from '@/components/StatusBadge'
 import { useToast } from '@/components/Toast'
 import { filesFrom } from '@/pages/dropFiles'
+import { summaryStatus } from '@/pages/summarization'
 import {
   CHUNK_STRATEGIES,
   chunkingBody,
@@ -219,6 +221,9 @@ export function DocumentTable({
           <th scope="col" className="py-2 pr-3">
             Cut with
           </th>
+          <th scope="col" className="py-2 pr-3">
+            Summary
+          </th>
           <th scope="col" className="py-2" />
         </tr>
       </thead>
@@ -267,8 +272,14 @@ export function DocumentTable({
                 </span>
               ) : null}
             </td>
+            <td className="py-2 pr-3 text-xs">
+              {/* Task 102. One word, and the sentence behind it on hover: `capped` is not
+                  a failure and a failed summary is not a failed document, and a red badge
+                  beside an `indexed` one would send somebody looking for a broken file. */}
+              <SummaryCell document={document} />
+            </td>
             <td className="py-2 text-right whitespace-nowrap">
-              {document.chunk_count > 0 ? (
+              {document.chunk_count > 0 || document.summary ? (
                 <button
                   type="button"
                   aria-expanded={inspecting === document.id}
@@ -310,7 +321,10 @@ export function DocumentTable({
           </tr>
           {inspecting === document.id ? (
             <tr>
-              <td colSpan={9} className="bg-slate-50 px-3 py-3">
+              <td colSpan={10} className="bg-slate-50 px-3 py-3">
+                {document.summary_status || document.summary ? (
+                  <SummaryView document={document} writes={writes} />
+                ) : null}
                 <ChunkInspector
                   documentId={document.id}
                   expected={document.chunk_count}
@@ -323,6 +337,142 @@ export function DocumentTable({
         ))}
       </tbody>
     </table>
+  )
+}
+
+function SummaryCell({ document }: { document: DocumentResponse }) {
+  const state = summaryStatus(document)
+  if (!state) return <span className="text-slate-400">—</span>
+  return (
+    <span title={state.detail ?? undefined}>
+      <StatusBadge status={state.label} tone={state.tone} />
+    </span>
+  )
+}
+
+/**
+ * The document's summary, at the top of its inspector, with **Edit** and **Regenerate**
+ * (task 102).
+ *
+ * The summary is content an operator can own. An edit becomes `manual`, is never charged to
+ * a cap, and survives later reindexes of the same bytes; a regeneration asks the model again
+ * and is charged like any other call. Both re-embed what depends on the summary — the
+ * summary chunk, and under `contextual` every chunk — through the same jobs ingestion runs.
+ */
+export function SummaryView({
+  document,
+  writes,
+}: {
+  document: DocumentResponse
+  writes: boolean
+}) {
+  const edit = useEditSummary()
+  const regenerate = useRegenerateSummary()
+  const { notify } = useToast()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(document.summary ?? '')
+  const state = summaryStatus(document)
+
+  useEffect(() => {
+    if (!editing) setDraft(document.summary ?? '')
+  }, [document.summary, editing])
+
+  return (
+    <section
+      data-testid="document-summary"
+      className="mb-3 rounded-md border border-slate-200 bg-white p-3"
+    >
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+        <span className="font-medium text-slate-700">
+          Summary
+          {state ? (
+            <span className="ml-2">
+              <StatusBadge status={state.label} tone={state.tone} />
+            </span>
+          ) : null}
+          {document.summary_model && document.summary_status === 'summarized' ? (
+            <span className="ml-2 font-normal">
+              {document.summary_model === 'manual'
+                ? 'written by hand'
+                : `by ${document.summary_model}, ${(
+                    (document.summary_tokens_in ?? 0) + (document.summary_tokens_out ?? 0)
+                  ).toLocaleString()} tokens`}
+            </span>
+          ) : null}
+        </span>
+        {writes ? (
+          <span className="flex gap-3">
+            {!editing ? (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="font-medium text-slate-600 hover:underline"
+              >
+                Edit
+              </button>
+            ) : null}
+            <button
+              type="button"
+              disabled={regenerate.isPending}
+              onClick={() => {
+                void regenerate.mutateAsync(document.id).then(() => {
+                  notify(`Summarizing ${document.source_name} again.`)
+                })
+              }}
+              className="font-medium text-slate-600 hover:underline disabled:opacity-50"
+            >
+              {document.summary_status === 'failed' ? 'Summarize' : 'Regenerate'}
+            </button>
+          </span>
+        ) : null}
+      </div>
+      {editing ? (
+        <div>
+          <textarea
+            aria-label="Summary"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            rows={4}
+            className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+          />
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              disabled={edit.isPending || draft.trim().length === 0}
+              onClick={() => {
+                void edit
+                  .mutateAsync({ documentId: document.id, summary: draft.trim() })
+                  .then(() => {
+                    setEditing(false)
+                    notify('Summary saved; re-embedding what depends on it.')
+                  })
+              }}
+              className="rounded-md bg-slate-900 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+            >
+              Save summary
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700"
+            >
+              Cancel
+            </button>
+          </div>
+          {edit.isError ? (
+            <p role="alert" className="mt-1 text-xs text-red-600">
+              The summary could not be saved.
+            </p>
+          ) : null}
+        </div>
+      ) : document.summary ? (
+        <p className="whitespace-pre-wrap text-sm text-slate-700">{document.summary}</p>
+      ) : (
+        <p className="text-sm text-slate-500">
+          {document.summary_error ?? 'No summary yet.'}
+        </p>
+      )}
+    </section>
   )
 }
 
@@ -380,11 +530,16 @@ export function ChunkInspector({
     return <p className="text-xs text-red-600">The chunks could not be loaded.</p>
   }
 
-  const items = chunks.data?.chunks ?? []
+  const all = chunks.data?.chunks ?? []
+  // The summary point is not a chunk of the file: it is listed, labelled, and left out of
+  // the count the row is compared against.
+  const items = all.filter((chunk) => chunk.kind !== 'summary')
+  const summaryPoint = all.find((chunk) => chunk.kind === 'summary')
   return (
     <div>
       <p className="mb-2 text-xs text-slate-500">
-        {items.length} chunk{items.length === 1 ? '' : 's'} in the index.
+        {items.length} chunk{items.length === 1 ? '' : 's'} in the index
+        {summaryPoint ? ', plus the summary' : ''}.
         {items.length !== expected ? (
           /* The two disagreeing is the finding, not a rendering detail: a row claiming
              twelve chunks with three in the index was written into a collection that has
@@ -395,6 +550,39 @@ export function ChunkInspector({
         ) : null}
       </p>
       <ol className="space-y-2">
+        {summaryPoint ? (
+          <li
+            key={summaryPoint.id}
+            ref={summaryPoint.id === highlight ? highlighted : null}
+            data-highlighted={summaryPoint.id === highlight || undefined}
+            data-testid="summary-point"
+            className={`rounded-md border border-dashed bg-white p-2 ${
+              summaryPoint.id === highlight
+                ? 'border-violet-400 ring-2 ring-violet-200'
+                : 'border-slate-300'
+            }`}
+          >
+            <div className="mb-1 flex items-center justify-between gap-2 text-xs text-slate-500">
+              <span className="font-medium text-slate-700">
+                Summary
+                <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-600">
+                  summary point
+                </span>
+                {summaryPoint.id === highlight ? (
+                  <span className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-800">
+                    cited
+                  </span>
+                ) : null}
+              </span>
+              <span className="font-mono">{summaryPoint.token_count ?? 0} tokens</span>
+            </div>
+            <p className="whitespace-pre-wrap text-xs text-slate-600">{summaryPoint.text}</p>
+            <p className="mt-1 text-[10px] text-slate-400">
+              Retrievable like any chunk, and rendered in the prompt as a summary, never as a
+              source.
+            </p>
+          </li>
+        ) : null}
         {items.map((chunk) => (
           <li
             key={chunk.id}
@@ -415,6 +603,17 @@ export function ChunkInspector({
               </span>
               <span className="font-mono">{chunk.token_count ?? 0} tokens</span>
             </div>
+            {chunk.context ? (
+              /* Task 102's `contextual` mode: the prefix that was embedded, visually
+                 distinct and above the text that is returned — the same split the
+                 windowed highlight makes for a different reason. */
+              <p
+                data-testid="embedded-context"
+                className="mb-1 rounded border border-dashed border-slate-300 bg-slate-50 px-2 py-1 text-[11px] italic text-slate-500"
+              >
+                {chunk.context}
+              </p>
+            ) : null}
             <p className="line-clamp-4 whitespace-pre-wrap text-xs text-slate-600">
               {/* Under `sentence_window` the chunk's text is not what was embedded, and
                   without marking the difference the first debugging session is "why does
@@ -426,10 +625,9 @@ export function ChunkInspector({
                 chunk.text
               )}
             </p>
-            {chunk.embedded_text ? (
+            {chunk.embedded_text || chunk.context ? (
               <p className="mt-1 text-[10px] text-slate-400">
-                The highlighted sentence is what was embedded; the rest is context this chunk
-                carries into the prompt.
+                {embeddedNote(chunk.embedded_because)}
               </p>
             ) : null}
           </li>
@@ -437,6 +635,18 @@ export function ChunkInspector({
       </ol>
     </div>
   )
+}
+
+/** What the inspector says under a chunk whose vector was not made from its text alone. */
+function embeddedNote(because: string | null | undefined): string {
+  switch (because) {
+    case 'context':
+      return 'The italic prefix was embedded with this chunk and is not returned; the text below is what the prompt receives.'
+    case 'window+context':
+      return 'The highlighted sentence, behind the italic prefix, is what was embedded; the rest is context this chunk carries into the prompt.'
+    default:
+      return 'The highlighted sentence is what was embedded; the rest is context this chunk carries into the prompt.'
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -759,8 +969,28 @@ export function ChunkingCompare({
 
 function ComparisonResult({ result }: { result: ChunkingPreviewResponse }) {
   const candidates = result.candidates
+  const summarization = result.summarization
   return (
     <div className="mt-4">
+      {summarization ? (
+        /* Task 102. The cost line includes the summarization call, because a comparison
+           that hid half the embedding cost is the thing this panel refused to be; and
+           under `contextual` the candidates below carry the prefix each chunk would be
+           embedded behind. */
+        <p
+          data-testid="comparison-summarization"
+          className="mb-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600"
+        >
+          Summarization ({summarization.mode}): one model call of about{' '}
+          {summarization.tokens_in.toLocaleString()} tokens in and up to{' '}
+          {summarization.tokens_out.toLocaleString()} out, on top of the embedding calls below.
+          {summarization.prefixes
+            ? summarization.summary
+              ? ' Each chunk is shown behind the summary it would be embedded with.'
+              : ' This document has no summary yet, so the prefix cannot be shown.'
+            : ''}
+        </p>
+      ) : null}
       <table className="w-full table-fixed border-collapse text-xs">
         <thead>
           <tr className="text-left text-slate-500">
@@ -819,6 +1049,14 @@ function ComparisonResult({ result }: { result: ChunkingPreviewResponse }) {
                   {/* The boundaries are drawn by the blocks themselves: one box per chunk,
                       in cut order, is the same information as lines over the text and
                       cannot disagree with what the splitter actually returned. */}
+                  {chunk.context ? (
+                    <p
+                      data-testid="preview-context"
+                      className="mb-1 rounded border border-dashed border-slate-300 bg-slate-50 px-1.5 py-0.5 text-[10px] italic text-slate-500 line-clamp-2"
+                    >
+                      {chunk.context}
+                    </p>
+                  ) : null}
                   <p className="line-clamp-3 whitespace-pre-wrap text-[11px] text-slate-600">
                     {chunk.embedded_text ? (
                       <Highlighted text={chunk.text} matched={chunk.embedded_text} />

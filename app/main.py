@@ -77,6 +77,7 @@ from app.services.rate_limit import FixedWindowLimiter
 from app.services.request_log import LogFlusher, LogQueue, RequestLogService
 from app.services.retrieval import MemoryService, Retriever
 from app.services.routing import Router
+from app.services.summarization_service import SummarizationService
 from app.services.tokenizer import build_tokenizer
 from app.workers.runtime import (
     build_distillation,
@@ -187,6 +188,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             backends=vector_backends,
             metrics=metrics.extraction,
             chunking_metrics=metrics.chunking,
+            summarization_metrics=metrics.summarization,
             embedding=platform_settings.snapshot.embedding,
             # The chunker's unit follows the embedding model, read from the live snapshot
             # per document rather than frozen at startup (task 101).
@@ -303,6 +305,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # So that changing the debounce delay applies to the next request rather than
             # to the one after the flusher's cache expires.
             cache=distillation.trigger,
+        )
+        # Task 102's control-plane half, over the same ledger and the same model chain
+        # the worker's pipeline was built with.
+        app.state.summarization_service = SummarizationService(
+            ingestion.summaries,
+            directory=directory_store,
+            models=ingestion.summary_models,
         )
 
         # SPEC §10.4. The read half only: an event is written into whichever transaction

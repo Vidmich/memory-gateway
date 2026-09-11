@@ -48,6 +48,7 @@ from app.db.models import (
 )
 from app.schemas.connector_config import ChunkingConfig
 from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig
+from app.schemas.summarization import SummarizationConfig
 from app.services.audit import Sensitive, Snapshot, Subject, Target
 
 
@@ -160,6 +161,9 @@ def connector_subject(connector: Connector) -> Subject:
             "status": connector.status,
             "config": _opaque_map(connector.config),
             "chunking": _blob(ChunkingConfig, connector.chunking),
+            # Task 102: a mode change is a spending decision and, under `contextual`, a
+            # reindex — both worth a line in the trail that names `summarization.mode`.
+            "summarization": _blob(SummarizationConfig, connector.summarization),
         },
     )
 
@@ -174,6 +178,10 @@ def document_subject(document: Document) -> Subject:
             "size_bytes": document.size_bytes,
             "status": document.status,
             "chunk_count": document.chunk_count,
+            # Task 102. The summary is content an operator can rewrite, and the diff of
+            # an edit is what says it was rewritten rather than regenerated.
+            "summary": document.summary,
+            "summary_model": document.summary_model,
         },
     )
 

@@ -75,6 +75,7 @@ from app.services.reindex_store import (
     RunView,
     TargetView,
 )
+from app.services.summarization import embedding_input
 from app.services.vector_backends import VectorBackends
 from app.services.vector_index import COPY_BATCH, successor
 from app.services.vector_store import ChunkPoint
@@ -645,7 +646,10 @@ def _belongs_to(point: ChunkPoint, connectors: set[uuid.UUID] | None) -> bool:
 
 
 async def _embed(points: Sequence[ChunkPoint], embedder: Embedder) -> list[ChunkPoint]:
-    texts = [str(point.payload.get("text", "")) for point in points]
+    # What the vector was computed from, not `text`: under `sentence_window` that is the
+    # matched sentence and under `contextual` summarization (task 102) it carries the
+    # document's summary in front. Re-embedding the bare text would silently drop both.
+    texts = [embedding_input(point.payload) for point in points]
     vectors = await embedder.embed(texts)
     return [
         ChunkPoint(id=point.id, vector=list(vector), payload=dict(point.payload))

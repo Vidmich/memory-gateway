@@ -5,8 +5,10 @@ import { useConnectors } from '@/api/connectors'
 import { useGateways } from '@/api/gateways'
 import { useLimitPressure } from '@/api/limits'
 import { resolveRange, useSummary } from '@/api/monitoring'
+import { useSummarizationHealth } from '@/api/summarization'
 import { useAuth } from '@/auth/AuthContext'
 import { pressureSummary } from '@/pages/limits'
+import { waitingSummary } from '@/pages/summarization'
 
 /**
  * SPEC §13.1's dashboard: the org's last 24 hours in six numbers.
@@ -39,6 +41,10 @@ export function DashboardPage() {
   const gateways = useGateways()
   const connectors = useConnectors()
   const pressure = useLimitPressure()
+  // Task 102's degraded state: a connector silently not indexing because its
+  // summarization cap is spent is exactly what this list is for.
+  const summarization = useSummarizationHealth(window)
+  const waiting = waitingSummary(summarization.data)
 
   const enabled = (gateways.data?.items ?? []).filter((gateway) => gateway.enabled).length
   const indexed = (connectors.data?.items ?? []).reduce(
@@ -130,6 +136,27 @@ export function DashboardPage() {
                   className="font-medium text-amber-900 underline"
                 >
                   {pressureSummary(item.name, item.worst)}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {waiting ? (
+        <section className="mt-8 rounded-lg border border-amber-200 bg-amber-50 p-5">
+          <h2 className="text-sm font-semibold text-amber-900">Waiting on a summarization cap</h2>
+          <p className="mt-1 text-sm text-amber-900">
+            {waiting}. They are parked, not failed, and resume after midnight UTC.
+          </p>
+          <ul className="mt-3 space-y-1 text-sm">
+            {(summarization.data?.waiting ?? []).map((item) => (
+              <li key={item.connector_id}>
+                <Link
+                  to={`/connectors/${item.connector_id}`}
+                  className="font-medium text-amber-900 underline"
+                >
+                  {item.name ?? item.connector_id}: {item.documents.toLocaleString()} waiting
                 </Link>
               </li>
             ))}

@@ -13,6 +13,8 @@ answers used to be better".
 | An entry added to or removed from `overrides` | Only that format's chunks are wrong. |
 | The platform embedding model | Chunks are still correct **unless** a connector is on `semantic`, where the boundaries came out of the old model. |
 | The embedding **tokenizer** (Platform → Settings → Embedding, derived or overridden) | Every stored chunk everywhere is now sized in a different unit. No reindex run starts; every document reads `stale` until its connector is reindexed. |
+| Summarization `mode` to or from `contextual`/`both`, or the summarization model while on one of them (task 102) | Every stored **vector** for the affected formats was built with a different prefix. The chunks' text is unchanged; every document reads `stale` until reindexed, and the reindex reuses each document's stored summary rather than paying for it again. |
+| Summarization `mode` to or from `summary_chunk` | Nothing. One point per document is added on its next ingestion, or removed; the source chunks are byte-identical. |
 
 The connector's PATCH response says which: `reindex_required` and `reindex_formats`. The
 document row says what each file was actually cut with — `chunk_strategy`,
@@ -36,6 +38,17 @@ the wrong unit and the fingerprint is now saying so. Reindex connectors at a pac
 embedding provider tolerates rather than all at once, and read `tokenizer` on a row that
 looks odd — `words (cl100k_base unavailable)` means a worker could not load its vocabulary
 and cut by word count, which is a network problem on the worker and not a chunking decision.
+
+**On summarization specifically (task 102).** Two things look like a chunking problem and
+are not. A document that is `indexed` with `summary_status: failed` is a summarization
+failure under `summary_chunk` — the source chunks are fine, and **Summarize** on the row
+retries just that phase. A document that is `pending` with reason `summarization_cap` is not
+stuck: the connector's daily cap is spent and the job is queued for just after midnight UTC.
+The Monitoring page's summarization panel and the dashboard both count them; raise
+`daily_document_cap` on the connector if the wait is not acceptable. A `failed` document
+whose reason is `summarization` is the `contextual` rule — a document that could not be
+summarized is not embedded half-right — and the message names the model; fix the model or
+the cap and **Retry**.
 
 ## Check
 

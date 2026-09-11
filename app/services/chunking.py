@@ -63,6 +63,7 @@ from app.schemas.connector_config import ChunkingConfig, size_floor
 from app.services.code_structure import Declaration, declarations
 from app.services.extraction import Extracted, Section
 from app.services.filetypes import language_of
+from app.services.summarization import contextual_text
 from app.services.tokenizer import Tokenizer, count, token_index, token_span
 from app.services.vector_store import cosine
 
@@ -113,6 +114,12 @@ class Chunk:
     #: is that they differ: a sentence is the unit worth matching, and the paragraph
     #: around it is the unit worth answering from.
     embedded_text: str = ""
+    #: Task 102's ``contextual`` mode: the document's summary, prefixed to
+    #: ``embedded_text`` when the vector is computed and to nothing else. ``None`` for a
+    #: chunk embedded on its own. Kept apart from ``embedded_text`` because the two answer
+    #: different questions on the inspector — *which sentence matched* and *what context
+    #: was it embedded with* — and one field could not say both.
+    context: str | None = None
 
     def __post_init__(self) -> None:
         if not self.embedded_text:
@@ -120,7 +127,41 @@ class Chunk:
 
     @property
     def windowed(self) -> bool:
+        """The strategy embedded less than it returns — ``sentence_window``."""
         return self.embedded_text != self.text
+
+    @property
+    def contextual(self) -> bool:
+        return bool(self.context)
+
+    @property
+    def vector_text(self) -> str:
+        """The exact string handed to the embedder: the context, if any, then the
+        embedded text. The one place that composition is written, so ingestion, the
+        recut and **Compare** cannot disagree about it."""
+        return contextual_text(self.context, self.embedded_text)
+
+    @property
+    def embedded_because(self) -> str | None:
+        """Why ``vector_text`` differs from ``text``: ``window``, ``context``, both joined
+        with ``+``, or ``None`` when it does not. What the inspector switches on, because
+        it highlights a matched sentence for one and shows a prefix for the other."""
+        reasons = [
+            name for name, on in (("window", self.windowed), ("context", self.contextual)) if on
+        ]
+        return "+".join(reasons) or None
+
+    def with_context(self, summary: str | None) -> Chunk:
+        if not summary:
+            return self
+        return Chunk(
+            text=self.text,
+            index=self.index,
+            section=self.section,
+            token_count=self.token_count,
+            embedded_text=self.embedded_text,
+            context=summary,
+        )
 
 
 @dataclass(frozen=True, slots=True)

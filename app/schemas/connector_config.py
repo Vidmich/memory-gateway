@@ -31,6 +31,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.config import ConfigBlob
+from app.schemas.summarization import ContextIdentity
 from app.services.filetypes import FORMAT_KINDS
 
 #: SPEC §9.3, as amended by task 20. The first three cut on a token budget adjusted for
@@ -204,6 +205,7 @@ def fingerprint(
     *,
     embedding_model: str | None = None,
     tokenizer: str | None = None,
+    context: ContextIdentity | None = None,
 ) -> str:
     """A short stable digest of one *effective* configuration.
 
@@ -220,12 +222,20 @@ def fingerprint(
     ``approximate:3.6`` are different chunks even when the number is the same. ``None``
     — a caller from before the tokenizer was recorded — leaves the digest as it was, so
     rows written under the old formula still compare equal to themselves.
+
+    ``context`` (task 102) is folded in only under ``contextual`` summarization, where the
+    embedding depends on a prefix written by a particular model under a particular prompt.
+    It is *not* folded in for ``summary_chunk``: the source chunks are unchanged there, and
+    switching that mode on must not recut a corpus. The caller passes ``None`` for both
+    ``off`` and ``summary_chunk`` — see :func:`app.schemas.summarization.context_identity`.
     """
     payload: dict[str, Any] = {name: getattr(config, name) for name in REINDEX_TRIGGERS}
     if config.strategy in MODEL_DEPENDENT_STRATEGIES and embedding_model:
         payload["embedding_model"] = embedding_model
     if tokenizer:
         payload["tokenizer"] = tokenizer
+    if context is not None:
+        payload["context"] = context.payload()
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 

@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
@@ -10,6 +10,8 @@ import { AuthProvider } from '@/auth/AuthContext'
 import { ToastProvider } from '@/components/Toast'
 import {
   makeDistillationSettings,
+  makeSummarizationHealth,
+  makeSummarizationSettings,
   makeMemoryHealth,
   makeModel,
   makeOrganization,
@@ -22,6 +24,8 @@ type ServerOptions = {
   user?: ReturnType<typeof makeUser>
   settings?: ReturnType<typeof makeDistillationSettings>
   health?: ReturnType<typeof makeMemoryHealth>
+  /** Task 102: the summarization default beside the distillation model. */
+  summarization?: ReturnType<typeof makeSummarizationSettings>
 }
 
 /**
@@ -37,6 +41,7 @@ function fakeServer(options: ServerOptions = {}) {
   const organization = makeOrganization()
   const requests: { path: string; method: string; body: Record<string, unknown> }[] = []
   let settings = options.settings ?? makeDistillationSettings()
+  let summarization = options.summarization ?? makeSummarizationSettings()
 
   const session = {
     access_token: 'token-1',
@@ -66,6 +71,19 @@ function fakeServer(options: ServerOptions = {}) {
       return Promise.resolve(json(settings))
     }
     if (path === '/api/v1/distillation') return Promise.resolve(json(settings))
+    if (path === '/api/v1/summarization' && method === 'PATCH') {
+      const body = bodyOf<{ model_id: string | null }>(init)
+      summarization = {
+        ...summarization,
+        config: { ...summarization.config, model_id: body.model_id },
+        effective_model_source: body.model_id ? 'summarization' : 'platform',
+      }
+      return Promise.resolve(json(summarization))
+    }
+    if (path === '/api/v1/summarization') return Promise.resolve(json(summarization))
+    if (path.startsWith('/api/v1/summarization/health')) {
+      return Promise.resolve(json(makeSummarizationHealth()))
+    }
     if (path.startsWith('/api/v1/models')) {
       return Promise.resolve(
         json({ items: [makeModel({ id: 'm-cheap', name: 'cheap-one' })], next_cursor: null }),
@@ -121,7 +139,7 @@ describe('the write-back settings', () => {
       }),
     )
 
-    expect(await screen.findByText(/Using the platform default/)).toBeInTheDocument()
+    expect(await screen.findByText(/Using the platform default, gpt-4o-mini/)).toBeInTheDocument()
   })
 
   it('saves the knobs, and always sends the model so it can be cleared', async () => {
@@ -192,6 +210,47 @@ describe('the write-back settings', () => {
 // ---------------------------------------------------------------------------
 // memory health
 // ---------------------------------------------------------------------------
+
+describe('the summarization model default (task 102)', () => {
+  it('says which link of the chain answers, and saves a choice with null to clear it', async () => {
+    const user = userEvent.setup()
+    const server = fakeServer()
+    renderAt('/settings', server)
+
+    expect(await screen.findByText(/Using the platform default, acme-gpt/)).toBeInTheDocument()
+    const select = screen.getByLabelText('Summarization model')
+    await user.selectOptions(select, 'm-cheap')
+    await user.click(screen.getByRole('button', { name: 'Save summarization model' }))
+
+    await waitFor(() => {
+      const saved = server.requests.find(
+        (request) => request.path === '/api/v1/summarization' && request.method === 'PATCH',
+      )
+      expect(saved?.body).toEqual({ model_id: 'm-cheap' })
+    })
+    expect(await screen.findByText('Summarizing with acme-gpt.')).toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('Summarization model'), '')
+    await user.click(screen.getByRole('button', { name: 'Save summarization model' }))
+    await waitFor(() => {
+      const patches = server.requests.filter(
+        (request) => request.path === '/api/v1/summarization' && request.method === 'PATCH',
+      )
+      expect(patches.at(-1)?.body).toEqual({ model_id: null })
+    })
+  })
+
+  it('names the distillation model when that is what answers', async () => {
+    renderAt(
+      '/settings',
+      fakeServer({
+        summarization: makeSummarizationSettings({ effective_model_source: 'distillation' }),
+      }),
+    )
+
+    expect(await screen.findByText(/Using the distillation model, acme-gpt/)).toBeInTheDocument()
+  })
+})
 
 describe('the memory-health panel', () => {
   it('says nothing has run rather than drawing a chart of zeroes', async () => {

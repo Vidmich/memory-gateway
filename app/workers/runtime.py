@@ -34,6 +34,7 @@ from app.core.metrics import (
     ExtractionMetrics,
     JobMetrics,
     MaintenanceMetrics,
+    SummarizationMetrics,
 )
 from app.schemas.platform import EmbeddingChoice
 from app.services.catalog_store import PostgresCatalogStore
@@ -59,6 +60,7 @@ from app.services.jobs import (
     INGEST_DOCUMENT,
     MIGRATE_VECTORS,
     REINDEX,
+    SUMMARIZE_DOCUMENT,
     DeadLetterSink,
     JobQueue,
     JobRunner,
@@ -75,6 +77,8 @@ from app.services.proxy import ProxyService
 from app.services.reconciliation import Reconciler
 from app.services.reindex import Reindexer
 from app.services.reindex_store import PostgresReindexStore
+from app.services.summarization_store import PostgresSummarizationStore, SummarizationStore
+from app.services.summarizer import SummarizationModelResolver, Summarizer
 from app.services.tokenizer import Tokenizer
 from app.services.tokenizers import resolve
 from app.services.vector_backends import (
@@ -110,6 +114,10 @@ class Ingestion:
     #: builds all of this to delete documents and reconcile connectors — starts no
     #: children it will never use. Closed by whoever built it; see ``aclose`` below.
     pool: ExtractionPool
+    #: Task 102. The ledger and the model chain, shared with the control plane so the
+    #: connector screen resolves a model the way the worker does.
+    summaries: SummarizationStore
+    summary_models: SummarizationModelResolver
 
     async def aclose(self) -> None:
         await self.pool.aclose()
@@ -183,6 +191,7 @@ def build_ingestion(
     chunking_metrics: ChunkingMetrics | None = None,
     embedding: EmbeddingChoice | None = None,
     tokenizer: TokenizerSource | None = None,
+    summarization_metrics: SummarizationMetrics | None = None,
 ) -> Ingestion:
     limits = ingestion_settings(settings)
     store = PostgresConnectorStore(clients.session_factory)
@@ -202,6 +211,25 @@ def build_ingestion(
     tokenizers = tokenizer or (lambda: embedding_tokenizer(chosen))
     registry = build_registry()
     lock = RedisLock(clients.redis)
+    # Task 102. The same catalog resolver distillation uses, one link longer — see
+    # `SummarizationModelResolver` — and the same client-facing proxy, so a provider quirk
+    # is fixed once. Built here rather than in the distillation bundle because ingestion
+    # is built first and summarization is a phase of it.
+    summaries = PostgresSummarizationStore(clients.session_factory)
+    summary_models = SummarizationModelResolver(
+        CatalogModelResolver(
+            PostgresCatalogStore(clients.session_factory),
+            secret_box=SecretBox.from_settings(settings),
+            platform_default_id=settings.distillation_model_id,
+        ),
+        settings=PostgresEndUserStore(clients.session_factory),
+    )
+    summarizer = Summarizer(
+        summaries,
+        models=summary_models,
+        proxy=ProxyService(clients.http),
+        metrics=summarization_metrics,
+    )
     pool = ExtractionPool(
         workers=settings.extraction_workers,
         # The same number the in-process path uses, so isolating a format does not also
@@ -232,9 +260,12 @@ def build_ingestion(
             pool=pool,
             metrics=metrics,
             chunking_metrics=chunking_metrics,
+            summarizer=summarizer,
         ),
         settings=limits,
         pool=pool,
+        summaries=summaries,
+        summary_models=summary_models,
     )
 
 
@@ -477,9 +508,17 @@ def build_handlers(
             connector_id=uuid.UUID(str(payload["connector_id"])),
         )
 
+    async def summarize_document(payload: Mapping[str, Any]) -> None:
+        await ingestion.pipeline.summarize(
+            organization_id=uuid.UUID(str(payload["organization_id"])),
+            document_id=uuid.UUID(str(payload["document_id"])),
+            regenerate=bool(payload.get("regenerate", False)),
+        )
+
     handlers: dict[str, Any] = {
         INGEST_DOCUMENT: ingest_document,
         DELETE_CONNECTOR: delete_connector,
+        SUMMARIZE_DOCUMENT: summarize_document,
     }
     if platform is not None:
 

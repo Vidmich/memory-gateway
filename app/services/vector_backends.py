@@ -310,6 +310,10 @@ class RoutingVectorStore:
         store = await self._backends.store_for(organization_id)
         await store.delete_connector(organization_id, connector_id)
 
+    async def delete_points(self, organization_id: uuid.UUID, ids: Sequence[str]) -> None:
+        store = await self._backends.store_for(organization_id)
+        await store.delete_points(organization_id, ids)
+
     async def drop(self, organization_id: uuid.UUID) -> None:
         """Offboarding, so it drops from **every** backend rather than the live one.
 

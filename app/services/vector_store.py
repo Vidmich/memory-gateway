@@ -125,6 +125,12 @@ class VectorStore(Protocol):
         self, organization_id: uuid.UUID, connector_id: uuid.UUID
     ) -> None: ...
 
+    async def delete_points(self, organization_id: uuid.UUID, ids: Sequence[str]) -> None:
+        """Named points, by id — the one delete here that is *not* by filter, for the one
+        point whose id is known by construction: a document's summary chunk (task 102),
+        written under a constant index. Ids that do not exist are not an error."""
+        ...
+
     async def drop(self, organization_id: uuid.UUID) -> None:
         """Remove the whole collection. Offboarding, and nothing else."""
         ...
@@ -251,6 +257,13 @@ class MemoryVectorStore:
 
     async def delete_connector(self, organization_id: uuid.UUID, connector_id: uuid.UUID) -> None:
         self._delete_where(organization_id, "connector_id", str(connector_id))
+
+    async def delete_points(self, organization_id: uuid.UUID, ids: Sequence[str]) -> None:
+        points = self.collections.get(self.live(organization_id))
+        if points is None:
+            return
+        for identifier in ids:
+            points.pop(identifier, None)
 
     def _delete_where(self, organization_id: uuid.UUID, key: str, value: str) -> None:
         points = self.collections.get(self.live(organization_id))

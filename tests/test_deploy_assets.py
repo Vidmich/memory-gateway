@@ -64,6 +64,8 @@ NOT_A_METRIC = frozenset(
         "table",
         "format",
         "disposition",
+        # Task 102's summarization token counter is labelled by direction (in, out).
+        "direction",
         "policy",
         "limit",
         "scope",

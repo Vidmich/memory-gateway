@@ -89,6 +89,7 @@ async def startup(context: dict[str, Any]) -> None:
         backends=backends,
         metrics=metrics.extraction,
         chunking_metrics=metrics.chunking,
+        summarization_metrics=metrics.summarization,
         embedding=platform_settings.snapshot.embedding,
         tokenizer=lambda: embedding_tokenizer(platform_settings.snapshot.embedding),
     )

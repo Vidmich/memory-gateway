@@ -9,7 +9,8 @@ token that summarization spends recorded and charted on the monitoring page besi
 **Spec:** §6.1, §9.3, §9.5, §10.1 (metrics), §13.1 (Settings, Monitoring) — and amends §9.3 and
 §10.1.
 **Size:** L
-**Status:** post-v1. Its configuration becomes part of what task 104 fingerprints.
+**Status:** **done.** Its configuration is part of what the chunk fingerprint carries (under
+`contextual`), so task 104 can read it rather than add it.
 
 ---
 
@@ -84,34 +85,34 @@ summarized today, tokens spent by model, failures, and the connector spending th
 
 ### Configuration
 
-- [ ] `SummarizationConfig` on the connector's `ConfigBlob`, beside `ChunkingConfig`:
+- [x] `SummarizationConfig` on the connector's `ConfigBlob`, beside `ChunkingConfig`:
       `mode: Literal["off", "summary_chunk", "contextual", "both"] = "off"`,
       `model_id: UUID | None` (None = the organization's distillation model, then the
       platform default), `max_summary_tokens: int = 150`, `max_input_tokens: int = 12_000`
       (what is sent — the head of the document, and the tail if it fits, which is where an
       abstract and a conclusion live), `daily_document_cap: int | None`.
-- [ ] Per-format overrides, reusing task 20's `overrides` shape and its `format_label()` keys —
+- [x] Per-format overrides, reusing task 20's `overrides` shape and its `format_label()` keys —
       a repository connector wants summaries for the Markdown and not for the lockfiles.
-- [ ] Model resolution reuses `distillation_models.py`'s rule and its reasons: no gateway
+- [x] Model resolution reuses `distillation_models.py`'s rule and its reasons: no gateway
       `system_context`, no `default_params`, an id not a name. If the two grow apart the
       `ResolvedModel` type is the thing to share, not the function.
-- [ ] `mode` and the model's identity are part of the chunk fingerprint from task 20 for
+- [x] `mode` and the model's identity are part of the chunk fingerprint from task 20 for
       `contextual` (the embedding depends on the prefix) and **not** for `summary_chunk` (the
       source chunks are unchanged; only one extra point is added or removed). `changed_formats`
       reports the difference, so switching `summary_chunk` on does not recut a corpus.
 
 ### The summary
 
-- [ ] A new ingestion phase, `ingestion.summarizing`, between extraction and chunking. Input is
+- [x] A new ingestion phase, `ingestion.summarizing`, between extraction and chunking. Input is
       the extracted text's head (and tail) under `max_input_tokens`, measured with the
       embedding tokenizer (task 101 if present; the process tokenizer if not). Output is stored
       on `documents.summary`, with `summary_model`, `summary_tokens_in`, `summary_tokens_out`,
       `summarized_at`.
-- [ ] The prompt is fixed and versioned in code, not configurable: *"Summarize this document
+- [x] The prompt is fixed and versioned in code, not configurable: *"Summarize this document
       in at most N words for someone deciding whether to read it. State what it is, what it
       covers, and any names, dates or figures a search for it would use."* The version is in
       the fingerprint for `contextual`; a prompt change is a re-embed and must say so.
-- [ ] **Failure does not fail the document under `summary_chunk`.** A provider refusal, a cap
+- [x] **Failure does not fail the document under `summary_chunk`.** A provider refusal, a cap
       hit, a model deleted from the catalog: the document indexes without a summary, its row
       says `summary: failed (reason)`, and a **Summarize** action retries just that phase.
       Under `contextual` a failure **does** fail the document, with reason `summarization` and
@@ -119,87 +120,87 @@ summarized today, tokens spent by model, failures, and the connector spending th
       corpora that rank differently, and the pipeline rule that a degradation never turns a
       bad file into a failed document does not extend to a degradation that changes what every
       other chunk means. A retryable provider error raises for the job's backoff, as in task 20.
-- [ ] The daily cap is counted from the runs table, before the call, the way distillation's
+- [x] The daily cap is counted from the runs table, before the call, the way distillation's
       is. A capped document under `summary_chunk` indexes without a summary and is queued for
       tomorrow; under `contextual` it waits — it is *pending*, not failed — and the connector
       says how many are waiting on the cap.
-- [ ] Editing the summary in the UI re-embeds the summary chunk and, under `contextual`,
+- [x] Editing the summary in the UI re-embeds the summary chunk and, under `contextual`,
       re-embeds the document's chunks. The edit is the operator's; `summary_model` becomes
       `manual`, and the daily cap is not charged.
 
 ### In the index
 
-- [ ] `summary_chunk` mode: one extra point per document with `kind: "summary"`, `text` the
+- [x] `summary_chunk` mode: one extra point per document with `kind: "summary"`, `text` the
       summary, `section: "Summary"`, embedded like any chunk. Ordinary chunks carry
       `kind: "source"`; the payload key is always present so a reader never infers a kind from
       its absence.
-- [ ] The prompt renders a summary chunk as `[3] summary of: handbook.pdf` — never as
+- [x] The prompt renders a summary chunk as `[3] summary of: handbook.pdf` — never as
       `source:`. A citation of it (task 100) resolves with `kind: summary` and no page.
       Retrieval's `doc_max_tokens` counts it like any other chunk.
-- [ ] `contextual` mode: each source chunk's `embedded_text` becomes
+- [x] `contextual` mode: each source chunk's `embedded_text` becomes
       `{summary}\n\n{chunk text}`; `text` is unchanged. Task 20's `windowed` property is
       generalised: a chunk whose `embedded_text` differs from `text` says *why*
       (`window` or `context`), because the chunk inspector highlights a matched sentence for
       one and shows a prefix for the other.
-- [ ] Retrieval's dedupe and the `sentence_window` radius are untouched by a prefix — asserted,
+- [x] Retrieval's dedupe and the `sentence_window` radius are untouched by a prefix — asserted,
       because `_radius` reads `window_sentences` and must not start reading a prefix length.
-- [ ] Chunking **Compare** (task 20) shows the summary prefix on each candidate when the
+- [x] Chunking **Compare** (task 20) shows the summary prefix on each candidate when the
       connector is in `contextual` mode, and its cost line includes the summarization call.
       A comparison that hides half the embedding cost is the thing task 20 refused to build.
 
 ### The ledger
 
-- [ ] `summarization_runs`: one row per attempt — `organization_id`, `connector_id`,
+- [x] `summarization_runs`: one row per attempt — `organization_id`, `connector_id`,
       `document_id`, `model_id`, `model_name` (denormalised, as `distillation_runs` explains),
       `outcome` (`succeeded | failed | skipped`), `reason`, `tokens_in`, `tokens_out`,
       `duration_ms`, `created_at`. Pruned by task 17's retention like `distillation_runs`.
-- [ ] The tokens are the **provider's reported usage**, not our estimate, because this is a
+- [x] The tokens are the **provider's reported usage**, not our estimate, because this is a
       bill. When a provider reports none, the estimate is stored and the row says `estimated`.
-- [ ] Metrics: `summarization_runs_total{outcome}`, `summarization_tokens_total{direction,
+- [x] Metrics: `summarization_runs_total{outcome}`, `summarization_tokens_total{direction,
       model}`, `summarization_duration_seconds`. The counters fire alerts; the rows draw charts.
-- [ ] **Monitoring → Summarization panel**, beside memory health: documents summarized per day,
+- [x] **Monitoring → Summarization panel**, beside memory health: documents summarized per day,
       tokens per day by model, failure rate, cap hits, and the top connectors by spend over the
       window. The same time-range picker and filters as the rest of the page. The connector
       detail screen shows its own slice of the same numbers.
-- [ ] The Dashboard's degraded-state list includes "N documents waiting on the summarization
+- [x] The Dashboard's degraded-state list includes "N documents waiting on the summarization
       cap" — a connector that is silently not indexing is exactly what that list is for.
 
 ### UI
 
-- [ ] **Connectors → Summarization** panel: mode, model (with the fallback shown greyed),
+- [x] **Connectors → Summarization** panel: mode, model (with the fallback shown greyed),
       caps, per-format overrides, and a **cost line** before saving — documents × (input
       tokens + summary tokens), and for `contextual` the re-embedding on top — with the same
       "this will recut / re-embed N documents" prompt task 20 shows.
-- [ ] The document table gains a summary status column and the document view shows the
+- [x] The document table gains a summary status column and the document view shows the
       summary with **Edit** and **Regenerate**.
-- [ ] The chunk inspector shows the embedded prefix above the returned text, visually distinct,
+- [x] The chunk inspector shows the embedded prefix above the returned text, visually distinct,
       the way it highlights the matched sentence under `sentence_window`.
-- [ ] **Settings** — the summarization model default beside the distillation model default, if
+- [x] **Settings** — the summarization model default beside the distillation model default, if
       an organization wants them different.
 
 ### Spec
 
-- [ ] Amend §9.3 with the summarization step and the two modes; §6.1 with the summary chunk
+- [x] Amend §9.3 with the summarization step and the two modes; §6.1 with the summary chunk
       kind; §10.1 with the summarization health signals; §7 with the `summary of:` rendering.
 
 ## Acceptance criteria
 
-- [ ] A document ingested in `summary_chunk` mode has exactly one more point than in `off`,
+- [x] A document ingested in `summary_chunk` mode has exactly one more point than in `off`,
       with `kind: summary`, and its source chunks are byte-identical to `off`.
-- [ ] A document ingested in `contextual` mode has the same chunk `text`s as `off` and
+- [x] A document ingested in `contextual` mode has the same chunk `text`s as `off` and
       different `embedded_text`s, each starting with the summary.
-- [ ] Switching `off → summary_chunk` reindexes nothing; `off → contextual` marks every
+- [x] Switching `off → summary_chunk` reindexes nothing; `off → contextual` marks every
       document stale and says so with a cost.
-- [ ] A summarization failure in `summary_chunk` mode produces an indexed document with a
+- [x] A summarization failure in `summary_chunk` mode produces an indexed document with a
       failed summary and a working retry; in `contextual` mode a `failed` document naming the
       model; a retryable provider error produces neither and the job retries.
-- [ ] The daily cap holds across two workers — asserted the way task 13 asserts its cap.
-- [ ] Every run has a row with the provider's token counts, and the monitoring panel's daily
+- [x] The daily cap holds across two workers — asserted the way task 13 asserts its cap.
+- [x] Every run has a row with the provider's token counts, and the monitoring panel's daily
       total equals the sum of those rows for the window.
-- [ ] A summary chunk is rendered in the prompt as a summary, and task 100 resolves a citation
+- [x] A summary chunk is rendered in the prompt as a summary, and task 100 resolves a citation
       of it as one.
-- [ ] Editing a summary re-embeds what depends on it and charges no cap.
-- [ ] The Compare panel's cost for a `contextual` connector includes the summarization call.
+- [x] Editing a summary re-embeds what depends on it and charges no cap.
+- [x] The Compare panel's cost for a `contextual` connector includes the summarization call.
 
 ## Tests
 
@@ -213,6 +214,62 @@ summarized today, tokens spent by model, failures, and the connector spending th
   aggregation over a fixture window.
 - Cap concurrency across two workers.
 - Compare parity: the previewed prefix equals the ingested one.
+
+## Implementation notes
+
+- **Where things landed.** `app/schemas/summarization.py` is the configuration (the blob, the
+  overrides, `effective`, `changed_formats`, `ContextIdentity`); `app/services/summarization.py`
+  the pure half (excerpt, prompt, reply, `contextual_text`, `embedding_input`);
+  `app/services/summarizer.py` the phase runner and the model chain;
+  `app/services/summarization_store.py` the ledger and the panel's queries;
+  `app/services/summarization_service.py` and `app/api/control/summarization.py` the
+  control-plane half. The phase itself is `IngestionPipeline._summarize_phase`, and the
+  summarize-only job is `IngestionPipeline.summarize`. Migration `0021_document_summarization`.
+- **The summary is reused, and the rule for when is stated.** The work items said what a
+  change to the settings does to the index but not what a reindex does to the summary. Rule:
+  a stored summary is reused when the bytes are unchanged (the content hash), and it was
+  written by the resolved model under the current prompt version — or by hand. So a chunking
+  change costs no second round of model calls, an operator's edit survives a reindex of the
+  same file, and a changed model or prompt regenerates. This is also what makes **Regenerate**
+  and **Edit** one mechanism: the service clears the status (regenerate) or writes `manual`
+  (edit) and enqueues the job the pipeline would have run — the whole ingestion under
+  `contextual`, the summary phase alone under `summary_chunk`.
+- **The fingerprint carries the model's *identity* and the prompt version, not the summary.**
+  The fingerprint has to be computable before the phase runs (that is how `stale` is decided),
+  so under `contextual` it folds in the resolved model id and `PROMPT_VERSION`; under
+  `summary_chunk` it folds in nothing, so switching that mode on recuts nothing. The listing
+  resolves the model once per page rather than per row.
+- **The vector's input is a property of the chunk.** `Chunk.context` holds the prefix and
+  `Chunk.vector_text` composes it with `embedded_text`; the payload carries `context` beside
+  task 20's `embedded_text`, with `embedded_because` naming which applies. That is why the
+  inspector can highlight a sentence and show a prefix at once, and why the platform reindex
+  now re-embeds `embedding_input(payload)` rather than `text` — which also fixes a latent
+  bug where a `sentence_window` collection re-embedded under a new model lost its windows.
+- **The summary point is a point with a constant index.** `chunk_index: -1`, `kind: summary`,
+  `page_or_section: Summary`, id `point_id(document, -1)` — so an upsert replaces it and
+  `delete_points` (a new port method, the one delete by id) removes it. Retrieval's dedupe
+  skips it: its index sits one step from chunk zero and it shares no text with anything.
+  `documents.chunk_count` counts source chunks; the inspector lists the summary separately.
+- **"Parked" is a document state, not a job state.** Under `contextual` a cap hit leaves the
+  row `pending` with reason `summarization_cap` and enqueues the ingest job with a delay to
+  just past midnight UTC, keyed by the day it will run on. The dashboard and the connector
+  read that row: no new table, and a worker restart loses nothing. Under `summary_chunk` the
+  document indexes and a `summarize_document` job is parked the same way. The in-memory job
+  queue ignores delays, so the tests take delayed jobs out with `park_delayed` and assert on
+  them rather than running them.
+- **Retryable versus not, for a chat completion.** A 4xx other than 408/409/425/429 is the
+  provider saying no to this request and will say it again: a failed summary, no retry. 429,
+  5xx, a timeout or an unreachable host raise after the ledger row is written, so the job's
+  backoff runs and the attempt still counts toward the cap.
+- **The organization default is a third link, not a replacement.** The chain is the
+  connector's `model_id`, then `organizations.settings["summarization"].model_id`, then the
+  distillation model, then the platform default — composed over `CatalogModelResolver` rather
+  than copied from it, so the decryption, the disabled check and the deleted-model fallback
+  are shared code. `explain()` says which link answered, and the Settings screen shows it.
+- **The cost line is an estimate and says so.** Documents × (min(input cap, the document's own
+  size) + summary tokens), plus the corpus once more under `contextual`, from the connector's
+  document count and stored bytes at four characters a token. The comparison's cost line uses
+  the real excerpt size for the document it ran on.
 
 ## Notes
 

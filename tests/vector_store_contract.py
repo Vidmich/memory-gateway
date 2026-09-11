@@ -293,6 +293,25 @@ async def deleting_a_connector_removes_only_its_chunks(store: VectorStore, org: 
 
 
 @check
+async def deleting_named_points_leaves_the_rest(store: VectorStore, org: uuid.UUID) -> None:
+    """Task 102's summary point is the one point whose id is known by construction, and
+    removing it must not take the document's source chunks with it."""
+    document, connector = uuid.uuid4(), uuid.uuid4()
+    await seed(
+        store,
+        org,
+        [
+            make_point(document_id=document, connector_id=connector, organization_id=org, index=i)
+            for i in (-1, 0, 1)
+        ],
+    )
+
+    await store.delete_points(org, [point_id(document, -1), point_id(uuid.uuid4(), 0)])
+
+    assert await store.count(org, document_id=document) == 2
+
+
+@check
 async def deleting_from_a_collection_that_does_not_exist_is_fine(
     store: VectorStore, org: uuid.UUID
 ) -> None:
@@ -301,6 +320,7 @@ async def deleting_from_a_collection_that_does_not_exist_is_fine(
     first upload."""
     await store.delete_document(org, uuid.uuid4())
     await store.delete_connector(org, uuid.uuid4())
+    await store.delete_points(org, [point_id(uuid.uuid4(), 0)])
 
 
 @check

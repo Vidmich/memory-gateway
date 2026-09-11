@@ -186,6 +186,16 @@ class QdrantVectorStore:
     async def delete_connector(self, organization_id: uuid.UUID, connector_id: uuid.UUID) -> None:
         await self._delete_by(organization_id, "connector_id", str(connector_id))
 
+    async def delete_points(self, organization_id: uuid.UUID, ids: Sequence[str]) -> None:
+        name = collection_for(organization_id)
+        if not ids or not await self._present(name):
+            return
+        await self._client.delete(
+            collection_name=name,
+            points_selector=models.PointIdsList(points=list(ids)),
+            wait=True,
+        )
+
     async def _delete_by(self, organization_id: uuid.UUID, key: str, value: str) -> None:
         name = collection_for(organization_id)
         if not await self._present(name):

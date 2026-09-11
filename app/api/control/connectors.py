@@ -49,6 +49,7 @@ from app.schemas.connector import (
     UploadUrlRequest,
     UploadUrlResponse,
 )
+from app.schemas.summarization import SummaryEditRequest
 from app.services.connectors import ConnectorService
 from app.services.permissions import Capability
 
@@ -295,3 +296,34 @@ async def reindex_document(
 ) -> DocumentResponse:
     """The **Retry** button. Resets the row to ``pending`` and enqueues it again."""
     return DocumentResponse.of(await service.reindex_document(actor, document_id))
+
+
+@router.patch("/documents/{document_id}/summary", dependencies=[_writes])
+async def edit_summary(
+    document_id: uuid.UUID,
+    body: SummaryEditRequest,
+    actor: CurrentActor,
+    service: _Service,
+) -> DocumentResponse:
+    """Replace the document's summary with the operator's own (task 102).
+
+    The edit re-embeds what depends on it — the summary chunk, and under ``contextual``
+    every chunk — and charges no cap: no model was called. ``summary_model`` reads
+    ``manual`` from here on, and the summary survives later reindexes of the same bytes.
+    """
+    return DocumentResponse.of(await service.edit_summary(actor, document_id, body.summary))
+
+
+@router.post("/documents/{document_id}/summarize", dependencies=[_writes])
+async def summarize_document(
+    document_id: uuid.UUID,
+    actor: CurrentActor,
+    service: _Service,
+) -> DocumentResponse:
+    """**Regenerate**, and the **Summarize** retry after a failed summary (task 102).
+
+    Asks the model again and re-embeds what depends on the answer. Just the summary phase
+    under ``summary_chunk``; the whole ingestion under ``contextual``, where every vector
+    carries the prefix.
+    """
+    return DocumentResponse.of(await service.regenerate_summary(actor, document_id))

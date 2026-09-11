@@ -46,6 +46,7 @@ from app.api.control.deps import (
     get_memory_preview,
     get_monitoring_service,
     get_settings_from_app,
+    get_summarization_service,
 )
 from app.api.proxy.deps import (
     get_authenticator,
@@ -586,6 +587,9 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     distillation = auth.distillation
     if distillation is not None:
         application.dependency_overrides[get_distillation_service] = lambda: distillation.service
+    summarization = auth.summarization
+    if summarization is not None:
+        application.dependency_overrides[get_summarization_service] = lambda: summarization
     application.dependency_overrides[get_gateway_service] = lambda: auth.gateways
     application.dependency_overrides[get_limits_service] = lambda: auth.limits
     preview = auth.preview

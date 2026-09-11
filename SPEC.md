@@ -190,6 +190,14 @@ the value.
 **A. Document memory (RAG)** — organizational knowledge from connectors. Shared across all end
 users of a gateway. Retrieved by semantic similarity to the current turn.
 
+Every retrievable point carries a `kind`: `source` for a chunk of a document, or `summary`
+(task 102) for the one point per document a connector in `summary_chunk` mode adds — a short,
+model-written description of the whole document, so that "do we have a policy on this at all?"
+finds something. A summary is *rewritten* text the document does not contain, and it is
+labelled everywhere it appears — the prompt heading (§7), the citation (§7.1), the chunk
+inspector — so it can never be mistaken for a quote. It is always in addition to the source
+chunks, never instead of them.
+
 **B. Conversation memory** — durable facts about a specific end user, distilled asynchronously
 from their logged transcripts. Private to `(organization, end_user_id)`.
 
@@ -293,6 +301,9 @@ relevant. If they do not answer the question, say so rather than inventing an an
 
 [2] source: pricing.md
 <chunk text>
+
+[3] summary of: handbook.pdf
+<the document's summary>
 
 ## What you know about this user
 - Prefers concise answers with code examples.
@@ -507,13 +518,48 @@ the BPE. It is part of the fingerprint for every strategy: a chunk sized in a di
 a different chunk. A `sentence_window` chunk also carries
 `embedded_text` and `window_sentences`, which is what lets the chunk inspector highlight the
 matched sentence and what tells retrieval how far its near-duplicate filter should reach.
+Every point carries `kind` (`source` or `summary`, task 102), and a chunk embedded under
+`contextual` summarization carries `context` — the summary that was prefixed to what it was
+embedded as — with `embedded_because` naming which of the two differences applies (`window`,
+`context`, or `window+context`), because the inspector highlights a matched sentence for one
+and shows a prefix for the other.
+
+**Summarization before chunking (task 102).** A connector may have a model summarize each
+document as it is ingested, in a new phase `summarizing` between extraction and chunking. The
+input is the extracted text's head, and its tail if it fits, under `max_input_tokens` measured
+with the embedding tokenizer; the prompt is fixed and versioned in code, never configurable.
+The summary is stored on the document — editable by an operator, which makes it `manual` — and
+used in one of two ways per connector, or both:
+
+- `summary_chunk` adds **one extra point** per document with `kind: summary`, `section:
+  Summary`, embedded like any chunk and counted against `doc_max_tokens` like any chunk. The
+  source chunks are byte-identical to what `off` produces, so switching it on recuts nothing.
+- `contextual` prefixes the summary to every source chunk's *embedded* text — the summary, a
+  blank line, the chunk — and leaves the returned text unchanged. The embedding now depends on
+  the prefix, so `mode`, the model's identity and the prompt version are part of the chunk
+  fingerprint, switching it on marks every document stale, and the connector says what the
+  re-embedding will cost before it is accepted.
+
+Failure is handled by mode. Under `summary_chunk` a refusal, an empty reply, a cap hit or a
+missing model indexes the document without a summary; the row says `summary: failed (reason)`
+and a **Summarize** action retries just that phase. Under `contextual` a failure **fails the
+document** with reason `summarization` and a message naming the model — half a corpus embedded
+with context and half without is two corpora that rank differently — and a cap hit *parks*
+it: `pending` with reason `summarization_cap`, retried after midnight UTC, and counted on the
+connector and the dashboard as waiting. A retryable provider error raises for the job's
+backoff, as everywhere else in the pipeline. The daily cap is per connector, counted from
+`summarization_runs` before the call. Per-format overrides reuse the chunking override shape:
+a repository connector summarizes the Markdown and not the lockfiles.
 
 **Chunking is reviewable before it is committed.** `POST /connectors/{id}/chunking/preview`
 runs a set of candidate configurations over one document and returns, per candidate, the
 chunks it produces, a token distribution, how many chunks the size limit decided rather than
 the strategy, how many boundaries fell mid-sentence, and how many embedding calls one
 ingestion would cost. It writes nothing. Nobody can pick a chunking strategy from a
-description, and without a comparison every user picks by name.
+description, and without a comparison every user picks by name. When the connector summarizes
+this document's format the comparison shows the stored summary as the prefix each candidate's
+chunks would be embedded behind, and its cost line includes the summarization call — a
+comparison that hid half the embedding cost would be the thing this endpoint refused to be.
 
 ### 9.4 Embeddings
 
@@ -544,9 +590,11 @@ source after a grace period — the same procedure as a reindex, without the re-
 
 ### 9.5 Ingestion status model
 
-Each document moves through `pending → extracting → chunking → embedding → indexed`, or lands in
-`failed` / `skipped` with a message. The UI shows per-connector counts, a live job list, and a
-retry action for failed documents.
+Each document moves through `pending → extracting → summarizing → chunking → embedding →
+indexed`, or lands in `failed` / `skipped` with a message. The UI shows per-connector counts, a
+live job list, and a retry action for failed documents. `summarizing` (task 102) is present
+only for a connector that summarizes; a document parked on the summarization cap under
+`contextual` reads `pending` with reason `summarization_cap` until the cap resets.
 
 `chunking` is a pure CPU step for every strategy but `semantic`, which embeds the document's
 sentences to find its boundaries. So that step can now fail from the outside, and the two
@@ -573,6 +621,15 @@ status:
 - Error taxonomy: upstream errors, retrieval timeouts, rate-limit rejections, auth failures.
 - Ingestion health: documents indexed, failed, and pending per connector.
 - Memory health: facts written per day, distillation failures, average facts per end user.
+- Summarization health (task 102): documents summarized per day, tokens spent per day by
+  model, failure rate, cap hits, the connectors spending the most over the window, and the
+  documents waiting on a cap. Drawn from `summarization_runs`, one row per attempt with the
+  **provider's reported token usage** — or the estimate, flagged, when the provider reported
+  none — because this is the first table that records what a background pass *cost*, and it
+  is the shape usage-and-cost accounting (§16) will build on. Counters
+  `summarization_runs_total{outcome}`, `summarization_tokens_total{direction, model}` and
+  `summarization_duration_seconds` fire alerts; the rows draw the charts. The dashboard's
+  degraded-state list includes "N documents waiting on the summarization cap".
 
 ### 10.2 Request logging (configurable per gateway)
 
@@ -768,9 +825,12 @@ dialect, model id, auth, system context, default params, and timeout, with a **T
 button that sends a trivial completion and reports latency or the exact upstream error.
 
 **Connectors** — list with per-connector status and document counts. Detail view has a
-drag-and-drop upload zone, a document table (name, size, type, status, chunks, indexed-at) with
-retry and delete, a chunking-configuration panel, and a **Resync** action. Failed documents show
-the extraction error inline.
+drag-and-drop upload zone, a document table (name, size, type, status, chunks, indexed-at,
+summary status) with retry and delete, a chunking-configuration panel, a **Summarization**
+panel (mode, model with the inherited fallback shown greyed, caps, and a cost line before
+saving that includes the re-embedding under `contextual`), and a **Resync** action. Failed
+documents show the extraction error inline; the document's summary is shown with **Edit** and
+**Regenerate**, and the chunk inspector shows an embedded prefix above the returned text.
 
 **Gateways** — the most substantial screen. A gateway editor with sections:
 
@@ -796,8 +856,9 @@ search, edit, and delete their facts, or purge them entirely.
 
 **Audit log** — filterable table with expandable before/after diffs.
 
-**Settings** — org profile, members and roles, invitations, distillation-model selection, and
-org-level logging defaults.
+**Settings** — org profile, members and roles, invitations, distillation-model selection, the
+summarization-model default beside it (task 102; a connector with no model of its own uses
+this, then the distillation model, then the platform default), and org-level logging defaults.
 
 **Platform (superadmin)** — organizations list and creation, global model catalog, embedding
 model configuration and reindex, and platform-wide health.
@@ -825,11 +886,16 @@ upstream_models     (id, scope, organization_id NULL, name, description, base_ur
                      tokenizer_jsonb NULL, enabled, created_at)
 
 connectors          (id, organization_id, name, type, config_jsonb, chunking_jsonb,
-                     storage_prefix, status, last_synced_at, created_at)
+                     summarization_jsonb, storage_prefix, status, last_synced_at, created_at)
 documents           (id, connector_id, organization_id, source_uri, source_name, mime_type,
                      size_bytes, content_hash, status, error, chunk_count,
                      embedding_model, chunk_strategy, chunk_fingerprint, tokenizer,
-                     indexed_at, created_at)
+                     summary, summary_status, summary_error, summary_model, summary_model_id,
+                     summary_prompt_version, summary_tokens_in, summary_tokens_out,
+                     summarized_at, indexed_at, created_at)
+summarization_runs  (id, organization_id, connector_id, document_id, outcome, reason,
+                     model_id, model_name, tokens_in, tokens_out, estimated, duration_ms,
+                     created_at)
 
 gateways            (id, organization_id, slug UNIQUE, name, description, enabled,
                      routing_mode, system_context, param_overrides_jsonb, locked_params_jsonb,

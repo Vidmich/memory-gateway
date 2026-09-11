@@ -142,6 +142,15 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
     ScopedEndpoint("DELETE", f"/api/v1/documents/{FOREIGN_DOCUMENT}"),
     ScopedEndpoint("POST", f"/api/v1/documents/{FOREIGN_DOCUMENT}/reindex"),
     ScopedEndpoint(
+        "PATCH",
+        f"/api/v1/documents/{FOREIGN_DOCUMENT}/summary",
+        {"summary": "Owned."},
+        note="a summary is embedded into another tenant's index and shown to their "
+        "operators, so writing one is both a write into their corpus and a disclosure "
+        "channel out of it",
+    ),
+    ScopedEndpoint("POST", f"/api/v1/documents/{FOREIGN_DOCUMENT}/summarize"),
+    ScopedEndpoint(
         "GET",
         f"/api/v1/documents/{FOREIGN_DOCUMENT}/chunks",
         note="the chunk inspector returns chunk *text*, so it discloses as much as the "

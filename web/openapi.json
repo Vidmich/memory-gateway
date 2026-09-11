@@ -793,6 +793,16 @@
           "source_name": {
             "title": "Source Name",
             "type": "string"
+          },
+          "summarization": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummarizationCostResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -866,6 +876,11 @@
             "title": "Name",
             "type": "string"
           },
+          "summarization": {
+            "additionalProperties": true,
+            "title": "Summarization",
+            "type": "object"
+          },
           "type": {
             "default": "managed_file_drop",
             "title": "Type",
@@ -915,6 +930,13 @@
               "$ref": "#/components/schemas/ChunkingConfig"
             },
             "title": "Effective Chunking",
+            "type": "object"
+          },
+          "effective_summarization": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SummarizationConfig"
+            },
+            "title": "Effective Summarization",
             "type": "object"
           },
           "error": {
@@ -975,6 +997,19 @@
             ],
             "title": "Storage Prefix"
           },
+          "summarization": {
+            "$ref": "#/components/schemas/SummarizationConfig"
+          },
+          "summary_model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummaryModelResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "total_bytes": {
             "title": "Total Bytes",
             "type": "integer"
@@ -997,12 +1032,56 @@
           "counts",
           "total_bytes",
           "effective_chunking",
+          "summarization",
+          "effective_summarization",
+          "summary_model",
           "reindex_required",
           "reindex_formats",
           "last_synced_at",
           "created_at"
         ],
         "title": "ConnectorResponse",
+        "type": "object"
+      },
+      "ConnectorSpendResponse": {
+        "properties": {
+          "connector_id": {
+            "format": "uuid",
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "documents": {
+            "title": "Documents",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "tokens_in": {
+            "title": "Tokens In",
+            "type": "integer"
+          },
+          "tokens_out": {
+            "title": "Tokens Out",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "connector_id",
+          "name",
+          "documents",
+          "tokens_in",
+          "tokens_out"
+        ],
+        "title": "ConnectorSpendResponse",
         "type": "object"
       },
       "ConnectorUpdateRequest": {
@@ -1044,6 +1123,18 @@
               }
             ],
             "title": "Name"
+          },
+          "summarization": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summarization"
           }
         },
         "title": "ConnectorUpdateRequest",
@@ -1368,6 +1459,28 @@
             ],
             "title": "Chunk Strategy"
           },
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
+          "embedded_because": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedded Because"
+          },
           "embedded_text": {
             "anyOf": [
               {
@@ -1381,6 +1494,11 @@
           },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "default": "source",
+            "title": "Kind",
             "type": "string"
           },
           "page_or_section": {
@@ -1571,6 +1689,84 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "summarized_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summarized At"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "summary_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Error"
+          },
+          "summary_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Model"
+          },
+          "summary_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Status"
+          },
+          "summary_tokens_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Tokens In"
+          },
+          "summary_tokens_out": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Tokens Out"
           },
           "tokenizer": {
             "anyOf": [
@@ -3921,6 +4117,34 @@
         "title": "ModelResponse",
         "type": "object"
       },
+      "ModelSpendResponse": {
+        "properties": {
+          "model_name": {
+            "title": "Model Name",
+            "type": "string"
+          },
+          "runs": {
+            "title": "Runs",
+            "type": "integer"
+          },
+          "tokens_in": {
+            "title": "Tokens In",
+            "type": "integer"
+          },
+          "tokens_out": {
+            "title": "Tokens Out",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model_name",
+          "runs",
+          "tokens_in",
+          "tokens_out"
+        ],
+        "title": "ModelSpendResponse",
+        "type": "object"
+      },
       "ModelTestRequest": {
         "additionalProperties": false,
         "description": "An unsaved draft to probe.\n\nThe same body as create, so the form can send exactly what it is about to save. It\ninherits ``scope`` too, which the probe ignores \u2014 a connection does not care who owns\nthe row it will become.",
@@ -5101,6 +5325,17 @@
       },
       "PreviewChunkResponse": {
         "properties": {
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
           "embedded_text": {
             "anyOf": [
               {
@@ -6515,6 +6750,434 @@
         "title": "StorageCaps",
         "type": "object"
       },
+      "SummarizationConfig": {
+        "description": "Task 102's knobs, per connector. Off by default: it costs a model call a document.",
+        "properties": {
+          "daily_document_cap": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Document Cap"
+          },
+          "max_input_tokens": {
+            "default": 12000,
+            "maximum": 100000.0,
+            "minimum": 500.0,
+            "title": "Max Input Tokens",
+            "type": "integer"
+          },
+          "max_summary_tokens": {
+            "default": 150,
+            "maximum": 1000.0,
+            "minimum": 30.0,
+            "title": "Max Summary Tokens",
+            "type": "integer"
+          },
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "summary_chunk",
+              "contextual",
+              "both"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "overrides": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SummarizationOverride"
+            },
+            "title": "Overrides",
+            "type": "object"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "title": "SummarizationConfig",
+        "type": "object"
+      },
+      "SummarizationCostResponse": {
+        "description": "The summarization call's share of one ingestion, on the comparison (task 102).",
+        "properties": {
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "prefixes": {
+            "title": "Prefixes",
+            "type": "boolean"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "tokens_in": {
+            "title": "Tokens In",
+            "type": "integer"
+          },
+          "tokens_out": {
+            "title": "Tokens Out",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode",
+          "tokens_in",
+          "tokens_out",
+          "summary",
+          "prefixes"
+        ],
+        "title": "SummarizationCostResponse",
+        "type": "object"
+      },
+      "SummarizationDayResponse": {
+        "properties": {
+          "capped": {
+            "default": 0,
+            "title": "Capped",
+            "type": "integer"
+          },
+          "day": {
+            "format": "date-time",
+            "title": "Day",
+            "type": "string"
+          },
+          "documents": {
+            "default": 0,
+            "title": "Documents",
+            "type": "integer"
+          },
+          "failures": {
+            "default": 0,
+            "title": "Failures",
+            "type": "integer"
+          },
+          "tokens_in": {
+            "default": 0,
+            "title": "Tokens In",
+            "type": "integer"
+          },
+          "tokens_out": {
+            "default": 0,
+            "title": "Tokens Out",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day"
+        ],
+        "title": "SummarizationDayResponse",
+        "type": "object"
+      },
+      "SummarizationDefaults": {
+        "description": "``organizations.settings[\"summarization\"]``: the model, when an organization wants\nit different from the one that distils.",
+        "properties": {
+          "model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "title": "SummarizationDefaults",
+        "type": "object"
+      },
+      "SummarizationHealthResponse": {
+        "description": "The Monitoring panel's block (SPEC \u00a710.1 as amended by task 102).\n\nPer day, per model, per connector, the totals, and the documents parked on a cap. The\nfailure rate is computed here for the reason the memory-health one is: a denominator\nthat is easy to get subtly wrong belongs in one place.",
+        "properties": {
+          "by_model": {
+            "items": {
+              "$ref": "#/components/schemas/ModelSpendResponse"
+            },
+            "title": "By Model",
+            "type": "array"
+          },
+          "capped": {
+            "default": 0,
+            "title": "Capped",
+            "type": "integer"
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/SummarizationDayResponse"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "documents": {
+            "default": 0,
+            "title": "Documents",
+            "type": "integer"
+          },
+          "estimated_runs": {
+            "default": 0,
+            "title": "Estimated Runs",
+            "type": "integer"
+          },
+          "failure_rate": {
+            "default": 0.0,
+            "title": "Failure Rate",
+            "type": "number"
+          },
+          "failures": {
+            "default": 0,
+            "title": "Failures",
+            "type": "integer"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "tokens_in": {
+            "default": 0,
+            "title": "Tokens In",
+            "type": "integer"
+          },
+          "tokens_out": {
+            "default": 0,
+            "title": "Tokens Out",
+            "type": "integer"
+          },
+          "top_connectors": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectorSpendResponse"
+            },
+            "title": "Top Connectors",
+            "type": "array"
+          },
+          "waiting": {
+            "items": {
+              "$ref": "#/components/schemas/WaitingConnectorResponse"
+            },
+            "title": "Waiting",
+            "type": "array"
+          },
+          "waiting_documents": {
+            "default": 0,
+            "title": "Waiting Documents",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "days",
+          "by_model",
+          "top_connectors",
+          "waiting"
+        ],
+        "title": "SummarizationHealthResponse",
+        "type": "object"
+      },
+      "SummarizationOverride": {
+        "description": "A partial :class:`SummarizationConfig`, for one format kind.\n\nSpelled out rather than derived, for the reason\n:class:`~app.schemas.connector_config.ChunkingOverride` gives: these fields are the API.",
+        "properties": {
+          "max_input_tokens": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 500.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Input Tokens"
+          },
+          "max_summary_tokens": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 30.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Summary Tokens"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "summary_chunk",
+                  "contextual",
+                  "both"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          }
+        },
+        "title": "SummarizationOverride",
+        "type": "object"
+      },
+      "SummarizationSettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          }
+        },
+        "title": "SummarizationSettingsRequest",
+        "type": "object"
+      },
+      "SummarizationSettingsResponse": {
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SummarizationDefaults"
+          },
+          "effective_model_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Model Id"
+          },
+          "effective_model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Model Name"
+          },
+          "effective_model_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Model Source"
+          }
+        },
+        "required": [
+          "config"
+        ],
+        "title": "SummarizationSettingsResponse",
+        "type": "object"
+      },
+      "SummaryEditRequest": {
+        "additionalProperties": false,
+        "description": "The operator's own summary. Replaces the model's, and is never charged to a cap.",
+        "properties": {
+          "summary": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "title": "SummaryEditRequest",
+        "type": "object"
+      },
+      "SummaryModelResponse": {
+        "description": "What a connector's summarization ``model_id`` resolves to (task 102).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "inherited": {
+            "title": "Inherited",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "inherited"
+        ],
+        "title": "SummaryModelResponse",
+        "type": "object"
+      },
       "SummaryResponse": {
         "additionalProperties": false,
         "description": "The cards, the latency numbers, and the two distribution charts.",
@@ -7262,6 +7925,37 @@
           "started"
         ],
         "title": "VectorMigrationResponse",
+        "type": "object"
+      },
+      "WaitingConnectorResponse": {
+        "properties": {
+          "connector_id": {
+            "format": "uuid",
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "documents": {
+            "title": "Documents",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "connector_id",
+          "name",
+          "documents"
+        ],
+        "title": "WaitingConnectorResponse",
         "type": "object"
       },
       "app__schemas__connector__ReindexRequest": {
@@ -8690,6 +9384,104 @@
           }
         },
         "summary": "Reindex Document",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/v1/documents/{document_id}/summarize": {
+      "post": {
+        "description": "**Regenerate**, and the **Summarize** retry after a failed summary (task 102).\n\nAsks the model again and re-embeds what depends on the answer. Just the summary phase\nunder ``summary_chunk``; the whole ingestion under ``contextual``, where every vector\ncarries the prefix.",
+        "operationId": "summarize_document_api_v1_documents__document_id__summarize_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summarize Document",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/v1/documents/{document_id}/summary": {
+      "patch": {
+        "description": "Replace the document's summary with the operator's own (task 102).\n\nThe edit re-embeds what depends on it \u2014 the summary chunk, and under ``contextual``\nevery chunk \u2014 and charges no cap: no model was called. ``summary_model`` reads\n``manual`` from here on, and the summary survives later reindexes of the same bytes.",
+        "operationId": "edit_summary_api_v1_documents__document_id__summary_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SummaryEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit Summary",
         "tags": [
           "connectors"
         ]
@@ -12162,6 +12954,153 @@
         "summary": "Read Retention Ceilings",
         "tags": [
           "platform"
+        ]
+      }
+    },
+    "/api/v1/summarization": {
+      "get": {
+        "description": "The organization's default summarization model, and what a connector with no choice\nof its own would actually use \u2014 through the distillation model and the platform default.",
+        "operationId": "get_summarization_settings_api_v1_summarization_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummarizationSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Summarization Settings",
+        "tags": [
+          "summarization"
+        ]
+      },
+      "patch": {
+        "description": "``model_id: null`` is a value: it means \"summarize with the distillation model\".",
+        "operationId": "update_summarization_settings_api_v1_summarization_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SummarizationSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummarizationSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Summarization Settings",
+        "tags": [
+          "summarization"
+        ]
+      }
+    },
+    "/api/v1/summarization/health": {
+      "get": {
+        "description": "Documents summarized per day, tokens by model, failures, cap hits, the connectors\nspending the most, and the documents parked on a cap \u2014 over the monitoring page's own\nwindow. ``connector_id`` narrows it to one connector's slice for its detail screen.",
+        "operationId": "get_summarization_health_api_v1_summarization_health_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "connector_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connector Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummarizationHealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Summarization Health",
+        "tags": [
+          "summarization"
         ]
       }
     },

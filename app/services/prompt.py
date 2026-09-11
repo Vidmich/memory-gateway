@@ -166,6 +166,11 @@ def render_entry(index: int, chunk: Chunk) -> str:
     The number is a citation handle — "as [2] says" is only meaningful if the model can
     see a ``[2]`` — so it is positional within the block and starts at 1.
     """
+    if chunk.is_summary:
+        # Never `source:`. A summary is rewritten text the document does not contain, and
+        # a heading that called it a source would invite a citation to words that were
+        # never written — the one way task 102 could damage the product.
+        return f"[{index}] summary of: {chunk.source_name}\n{chunk.text.strip()}"
     where = f" ({chunk.page_or_section})" if chunk.page_or_section else ""
     return f"[{index}] source: {chunk.source_name}{where}\n{chunk.text.strip()}"
 

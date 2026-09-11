@@ -27,7 +27,7 @@ from app.db.models import RequestLog, Transcript
 from app.schemas.routing import AttemptResponse
 from app.services.distillation_service import ManualPass
 from app.services.distillation_store import MemoryHealth
-from app.services.metrics_store import Bucket, LogDetail, Summary, ThrottledEndUser
+from app.services.metrics_store import Bucket, LogDetail, Summary, TemplateUse, ThrottledEndUser
 from app.services.monitoring import Series
 
 _CONFIG = ConfigDict(extra="forbid")
@@ -211,6 +211,9 @@ class RequestLogResponse(BaseModel):
     #: can mark an uncited request without opening it.
     cited_chunks: int
     citations_unresolved: int
+    #: Task 105. Which set of templates worded this request; shown beside the model in
+    #: the drawer, and the value the Template filter matches.
+    template_fingerprint: str | None = None
 
     @classmethod
     def of(cls, row: RequestLog) -> Self:
@@ -241,7 +244,28 @@ class RequestLogResponse(BaseModel):
             dropped_params=[str(name) for name in (row.dropped_params or [])],
             cited_chunks=len(row.cited_chunk_ids or []),
             citations_unresolved=int(row.citations_unresolved or 0),
+            template_fingerprint=row.template_fingerprint,
         )
+
+
+class TemplateUseResponse(BaseModel):
+    """One template fingerprint in the window (task 105): first seen, and how often."""
+
+    model_config = _CONFIG
+
+    fingerprint: str
+    first_seen: datetime
+    requests: int
+
+    @classmethod
+    def of(cls, use: TemplateUse) -> Self:
+        return cls(fingerprint=use.fingerprint, first_seen=use.first_seen, requests=use.requests)
+
+
+class TemplateUseList(BaseModel):
+    model_config = _CONFIG
+
+    items: list[TemplateUseResponse]
 
 
 class TranscriptResponse(BaseModel):

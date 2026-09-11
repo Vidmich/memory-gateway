@@ -13,6 +13,7 @@ import { ConnectorsPage } from '@/pages/ConnectorsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { EndUserDetailPage } from '@/pages/EndUserDetailPage'
 import { EndUsersPage } from '@/pages/EndUsersPage'
+import { GatewayAdvancedPage } from '@/pages/GatewayAdvancedPage'
 import { GatewayFormPage } from '@/pages/GatewayFormPage'
 import { GatewaysPage } from '@/pages/GatewaysPage'
 import { LoginPage } from '@/pages/LoginPage'
@@ -67,6 +68,7 @@ export function AppRoutes() {
             immutable slug. */}
         <Route path="/gateways/new" element={<GatewayFormPage />} />
         <Route path="/gateways/:gatewayId" element={<GatewayFormPage />} />
+        <Route path="/gateways/:gatewayId/advanced" element={<GatewayAdvancedPage />} />
         <Route path="/connectors" element={<ConnectorsPage />} />
         <Route path="/connectors/:connectorId" element={<ConnectorDetailPage />} />
         <Route path="/monitoring" element={<MonitoringPage />} />

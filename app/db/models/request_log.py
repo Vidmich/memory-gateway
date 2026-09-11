@@ -171,6 +171,11 @@ class RequestLog(Base):
     #: upstream never reported usage (a stream the client did not ask usage for).
     tokenizer: Mapped[str | None] = mapped_column(String(64), nullable=True)
     estimated_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Task 105. Which set of templates rendered this request's blocks and wrapped its
+    #: answer — sixteen hex characters over the gateway's nine strings. Two rows with
+    #: different values were worded differently; a wording change is therefore a filter
+    #: rather than a memory. Null when nothing was assembled.
+    template_fingerprint: Mapped[str | None] = mapped_column(String(16), nullable=True)
     #: One entry per attempted target — ``{target_id, model_name, status, error_code,
     #: latency_ms, retryable}`` — written only when more than one target was involved.
     #: Empty is the common case and means the row's own ``upstream_model_id`` and

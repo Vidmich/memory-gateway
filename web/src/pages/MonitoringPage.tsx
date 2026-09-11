@@ -8,6 +8,7 @@ import {
   useLogs,
   useSeries,
   useSummary,
+  useTemplateFingerprints,
   type LogFilters,
   type RangeName,
 } from '@/api/monitoring'
@@ -29,6 +30,7 @@ import { MemoryHealthPanel } from '@/pages/MemoryHealthPanel'
 import { SummarizationHealthPanel } from '@/pages/SummarizationHealthPanel'
 import { ThrottledPanel } from '@/pages/ThrottledPanel'
 import { RequestDrawer } from '@/pages/RequestDrawer'
+import { templateUseLabel } from '@/pages/templates'
 
 /**
  * SPEC §13.1's Monitoring screen: the §10.1 charts, a filterable request table, and the
@@ -78,6 +80,9 @@ export function MonitoringPage() {
   const tokens = useSeries(window, filters, 'tokens')
   const retrieval = useSeries(window, filters, 'retrieval')
   const logs = useLogs(window, filters, { cursor, tail: tail && atTop })
+  // Task 105: the wordings seen in the window, for the Template filter — over the
+  // gateway filter only, so choosing a gateway narrows the list to its own fingerprints.
+  const templates = useTemplateFingerprints(window, filters.gateway_id)
 
   const setFilter = (name: keyof LogFilters, value: string | boolean | null) => {
     setFilters((current) => ({ ...current, [name]: value || null }))
@@ -171,6 +176,27 @@ export function MonitoringPage() {
             className="w-56 rounded-md border border-slate-300 px-2 py-1 text-sm"
           />
         </label>
+
+        {/* Task 105. Shown only once more than one wording has been seen in the window:
+            one fingerprint is not a choice. An A/B of wording is then two filters. */}
+        {(templates.data?.items.length ?? 0) > 1 ? (
+          <label className="text-sm">
+            <span className="mr-2 text-slate-600">Template</span>
+            <select
+              value={filters.template_fingerprint ?? ''}
+              onChange={(event) => setFilter('template_fingerprint', event.target.value)}
+              className="rounded-md border border-slate-300 px-2 py-1 font-mono text-sm"
+              data-testid="template-filter"
+            >
+              <option value="">Any wording</option>
+              {(templates.data?.items ?? []).map((use) => (
+                <option key={use.fingerprint} value={use.fingerprint}>
+                  {templateUseLabel(use)}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         {/* Task 100. The query an operator runs when a corpus is suspected of being
             irrelevant: requests that were given documents and whose answer used none. */}
@@ -407,13 +433,7 @@ const COLUMNS: readonly Column<RequestLogResponse>[] = [
   },
 ]
 
-function Cards({
-  summary,
-  loading,
-}: {
-  summary: SummaryResponse | undefined
-  loading: boolean
-}) {
+function Cards({ summary, loading }: { summary: SummaryResponse | undefined; loading: boolean }) {
   const cards: [string, string, string][] = [
     ['Requests', summary ? summary.requests.toLocaleString() : '—', 'in this window'],
     [
@@ -425,9 +445,7 @@ function Cards({
     ['p95 latency', formatMs(summary?.total.p95), 'the slow tail'],
     [
       'Tokens',
-      summary
-        ? (summary.prompt_tokens + summary.completion_tokens).toLocaleString()
-        : '—',
+      summary ? (summary.prompt_tokens + summary.completion_tokens).toLocaleString() : '—',
       'prompt plus completion',
     ],
     ['p95 first token', formatMs(summary?.ttft.p95), 'streamed requests only'],
@@ -437,9 +455,7 @@ function Cards({
     //  searched, so a gateway with no connectors reads "—" rather than a misleading 0%.
     [
       'Retrieved nothing',
-      summary?.retrieval_attempts
-        ? `${(summary.empty_retrieval_rate * 100).toFixed(0)}%`
-        : '—',
+      summary?.retrieval_attempts ? `${(summary.empty_retrieval_rate * 100).toFixed(0)}%` : '—',
       summary?.retrieval_attempts
         ? `${summary.retrieval_empty.toLocaleString()} of ${summary.retrieval_attempts.toLocaleString()} searches`
         : 'no requests used memory',
@@ -462,9 +478,7 @@ function Cards({
       {cards.map(([title, value, detail]) => (
         <div key={title} className="rounded-lg border border-slate-200 bg-white p-4">
           <h2 className="text-sm font-medium text-slate-600">{title}</h2>
-          <div className="mt-1 text-2xl font-semibold text-slate-900">
-            {loading ? '…' : value}
-          </div>
+          <div className="mt-1 text-2xl font-semibold text-slate-900">{loading ? '…' : value}</div>
           <p className="mt-0.5 text-xs text-slate-400">{detail}</p>
         </div>
       ))}
@@ -477,8 +491,10 @@ function Cards({
  *  Reused rather than re-queried: it decides which of the throttled panel's two empty
  *  states applies, and one number does not deserve a round trip. */
 function rateLimitedCount(summary: SummaryResponse | undefined): number {
-  return (summary?.error_groups ?? []).find((group) => group.error_code === 'rate_limited')
-    ?.requests ?? 0
+  return (
+    (summary?.error_groups ?? []).find((group) => group.error_code === 'rate_limited')?.requests ??
+    0
+  )
 }
 
 function formatMs(value: number | null | undefined): string {

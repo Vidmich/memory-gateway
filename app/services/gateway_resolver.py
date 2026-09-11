@@ -43,8 +43,9 @@ from app.api.proxy.errors import GatewayDisabled, GatewayNotFound, GatewayUnavai
 from app.core.crypto import DecryptionError, SecretBox
 from app.db.models import Gateway, GatewayTarget
 from app.db.scoping import unscoped
-from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig
+from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig, TemplateConfig
 from app.services.request_log import LogPolicy
+from app.services.templates import DEFAULT_TEMPLATES, Templates
 from app.services.tokenizers import effective, stored
 
 logger = logging.getLogger(__name__)
@@ -66,8 +67,9 @@ VERSION_TTL_SECONDS = 7 * 24 * 3600
 #: raised it to 4 by adding the memory configuration and each target's context window;
 #: task 14 raised it to 5 by adding the limits blob, whether the chain reaches a global
 #: catalog model, and the distillation half of the logging policy; task 101 raised it to
-#: 6 by adding each target's resolved tokenizer.
-PAYLOAD_VERSION = 6
+#: 6 by adding each target's resolved tokenizer; task 105 raised it to 7 by adding the
+#: gateway's templates.
+PAYLOAD_VERSION = 7
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,15 @@ class ResolvedGateway:
     #: platform ceiling applies: repointing a gateway at a global model has to start
     #: enforcing it on the next request, not on the next save of the Limits section.
     global_models: bool = False
+    #: Task 105. The text this gateway writes around documents, memory and answers,
+    #: resolved from ``template_config`` when the payload is built and carried as the
+    #: value the assembler and the citation stage take — no schema on the request path.
+    #: The default is the SPEC's wording, which is what a blob of ``{}`` means.
+    templates: Templates = DEFAULT_TEMPLATES
+
+    @property
+    def template_fingerprint(self) -> str:
+        return self.templates.fingerprint
 
     @property
     def virtual_model(self) -> str:
@@ -381,6 +392,11 @@ def _encode(gateway: Gateway) -> dict[str, Any]:
         # key written by a newer build survive a rollback.
         "memory": MemoryConfig.load(gateway.memory_config).model_dump(mode="json"),
         "limits": LimitsConfig.load(gateway.limits).model_dump(mode="json"),
+        # The nine strings with defaults filled in, so `_decode` is a copy and never a
+        # validation — a template the control plane accepted is the only kind stored.
+        "templates": TemplateConfig.load(gateway.template_config).model_dump(
+            mode="json", exclude={"version"}
+        ),
         # Computed from the *usable* chain: a disabled global model cannot be routed to,
         # so it cannot spend the operator's key and must not pull the ceiling down onto a
         # gateway that is only serving its own models.
@@ -456,6 +472,7 @@ def _decode(
         memory=MemoryConfig.load(payload.get("memory")),
         limits=LimitsConfig.load(payload.get("limits")),
         global_models=bool(payload.get("global_models", False)),
+        templates=Templates.load(payload.get("templates")),
     )
 
 

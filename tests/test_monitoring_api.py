@@ -244,6 +244,38 @@ async def test_the_list_filters_on_status_class(directory: DirectoryHarness) -> 
     assert [item["status_code"] for item in items] == [404]
 
 
+async def test_the_list_filters_on_the_template_fingerprint_and_lists_them(
+    directory: DirectoryHarness,
+) -> None:
+    """Task 105. Two wordings in the window: each is a filter, and the list under
+    ``/logs/templates`` says when each was first seen and how often."""
+    seed(directory, template_fingerprint="aaaaaaaaaaaaaaaa", created_at=NOW - timedelta(minutes=30))
+    seed(directory, template_fingerprint="aaaaaaaaaaaaaaaa")
+    seed(directory, template_fingerprint="bbbbbbbbbbbbbbbb", created_at=NOW - timedelta(minutes=5))
+    seed(directory, template_fingerprint=None)
+
+    filtered = await directory.as_user(
+        directory.world.acme_admin,
+        "GET",
+        f"/api/v1/logs?{query(template_fingerprint='bbbbbbbbbbbbbbbb')}",
+    )
+    assert [item["template_fingerprint"] for item in filtered.json()["items"]] == [
+        "bbbbbbbbbbbbbbbb"
+    ]
+
+    listed = await directory.as_user(
+        directory.world.acme_admin, "GET", f"/api/v1/logs/templates?{query()}"
+    )
+    assert listed.status_code == 200
+    assert [(item["fingerprint"], item["requests"]) for item in listed.json()["items"]] == [
+        ("aaaaaaaaaaaaaaaa", 2),
+        ("bbbbbbbbbbbbbbbb", 1),
+    ]
+    assert listed.json()["items"][0]["first_seen"].startswith(
+        (NOW - timedelta(minutes=30)).isoformat()[:19]
+    )
+
+
 async def test_the_list_searches_the_error_text(directory: DirectoryHarness) -> None:
     seed(directory, status_code=504, error_code="upstream_timeout", error_message="did not respond")
 

@@ -26,7 +26,7 @@ import pytest
 from app.core.tenancy import TenantScope
 from app.db.models import Organization
 from app.services.metrics_store import LogFilters, MetricsRepository
-from tests.monitoring_support import NOW, THROTTLED_AT
+from tests.monitoring_support import NOW, TEMPLATE_AFTER, TEMPLATE_BEFORE, THROTTLED_AT
 
 #: 5, 10, … 100. Twenty samples, so ``percentile_disc`` lands on index
 #: ``ceil(fraction * 20) - 1`` — 9, 18 and 19 — which are 50, 95 and 100.
@@ -619,6 +619,35 @@ async def the_calibration_is_scoped_to_one_organization(fixture: Fixture) -> Non
     assert rows == []
 
 
+# ---------------------------------------------------------------------------
+# templates (task 105)
+# ---------------------------------------------------------------------------
+
+
+async def template_fingerprints_are_listed_oldest_first_with_counts(fixture: Fixture) -> None:
+    """Fifteen rows under the first wording and five under the second, on one gateway;
+    the other organization's row under the first wording is not counted."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        rows = await transaction.template_fingerprints(fixture.window())
+
+    assert [(row.fingerprint, row.requests) for row in rows] == [
+        (TEMPLATE_BEFORE, 15),
+        (TEMPLATE_AFTER, 5),
+    ]
+    assert all(row.first_seen.tzinfo is not None for row in rows)
+
+
+async def filtering_by_template_fingerprint_keeps_one_wording(fixture: Fixture) -> None:
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        summary = await transaction.summary(fixture.window(template_fingerprint=TEMPLATE_AFTER))
+        rows = await transaction.logs(
+            fixture.window(template_fingerprint=TEMPLATE_AFTER), after=None, limit=50
+        )
+
+    assert summary.requests == 5
+    assert {row.template_fingerprint for row in rows} == {TEMPLATE_AFTER}
+
+
 Check = Callable[[Fixture], Awaitable[None]]
 
 #: Every check, in one list, so neither implementation can be given a shorter exam.
@@ -725,6 +754,8 @@ CHECKS: tuple[Check, ...] = (
     filtering_by_uncited_is_over_the_injected_denominator,
     retrieval_questions_pair_the_stored_question_with_what_was_cited,
     the_calibration_sums_both_counts_per_model_and_tokenizer,
+    template_fingerprints_are_listed_oldest_first_with_counts,
+    filtering_by_template_fingerprint_keeps_one_wording,
     the_calibration_is_scoped_to_one_organization,
     throttled_callers_are_ranked_by_how_often_they_were_refused,
     throttling_is_scoped_to_one_organization,

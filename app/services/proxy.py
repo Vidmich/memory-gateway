@@ -35,12 +35,20 @@ from app.api.proxy.errors import (
 )
 from app.core.tracing import phase, record_error
 from app.schemas.openai import ChatRequest, ChatResponse, StreamFrame
-from app.services.citations import MODE_OFF, Delivered, Resolution, StreamCitations, deliver
+from app.services.citations import (
+    MODE_OFF,
+    Delivered,
+    Resolution,
+    StreamCitations,
+    Wrapping,
+    deliver,
+)
 from app.services.gateway_resolver import ResolvedGateway
 from app.services.params import Resolved, resolve_params
 from app.services.prompt import Assembled, assemble, prompt_tokens
 from app.services.retrieval import Chunk, Recall
 from app.services.sse import DONE, format_event
+from app.services.templates import DEFAULT_TEMPLATES, Templates
 from app.services.tokenizer import Tokenizer, WordTokenizer
 from app.services.tokenizers import resolve
 
@@ -66,10 +74,26 @@ class Prepared:
     params: Resolved
     target: UpstreamTarget
     assembly: Assembled | None = None
+    #: For ``{gateway}`` in a prefix or suffix. The name, not the slug: it is prose.
+    gateway_name: str = ""
     #: How the gateway wants citations delivered (task 100). Carried here rather than
     #: read off the gateway again at delivery time, for the same reason the assembly is:
     #: the response is handled after the request was prepared, and the two must agree.
     citations: str = MODE_OFF
+    #: The gateway's templates (task 105), carried for the same reason as the mode: the
+    #: footer and the answer wrapping are rendered after the request was prepared, and
+    #: the two must agree on the wording.
+    templates: Templates = DEFAULT_TEMPLATES
+
+    @property
+    def template_fingerprint(self) -> str:
+        return self.templates.fingerprint
+
+    @property
+    def wrapping(self) -> Wrapping:
+        """What goes around the answer: the gateway's prefix and suffix, with the names
+        they may print. Inactive — adding no frame — when both are empty."""
+        return Wrapping(templates=self.templates, gateway=self.gateway_name, model=self.target.name)
 
     @property
     def injected(self) -> tuple[Chunk, ...]:
@@ -207,6 +231,7 @@ class ProxyService:
             memory_max_tokens=memory.memory_max_tokens,
             context_window=target.context_window,
             tokenizer=self.tokenizer_for(target),
+            templates=gateway.templates,
         )
         params = resolve_params(
             model_defaults=target.default_params,
@@ -226,6 +251,8 @@ class ProxyService:
             target=target,
             assembly=assembly,
             citations=memory.citations,
+            templates=gateway.templates,
+            gateway_name=gateway.name,
         )
 
     def tokenizer_for(self, target: UpstreamTarget) -> Tokenizer:
@@ -299,7 +326,12 @@ class ProxyService:
         different amounts and ``[3]`` means whatever the prompt that answered said it did.
         """
         return deliver(
-            response, prepared.injected, mode=prepared.citations, base_url=self._ui_base_url
+            response,
+            prepared.injected,
+            mode=prepared.citations,
+            base_url=self._ui_base_url,
+            templates=prepared.templates,
+            wrapping=prepared.wrapping,
         )
 
     # -- streaming -----------------------------------------------------------
@@ -350,14 +382,19 @@ class ProxyService:
             target=target,
             request=prepared.request,
             observer=observer,
-            # Built only when something was injected: with nothing to resolve against
-            # there is nothing to record, and a stream with no citation stage in it is
-            # the exact code path task 18 measured.
+            # Built only when something was injected or the gateway wraps the answer
+            # (task 105): with nothing to resolve against and nothing to add there is
+            # nothing to do, and a stream with no citation stage in it is the exact
+            # code path task 18 measured.
             citations=(
                 StreamCitations(
-                    prepared.injected, mode=prepared.citations, base_url=self._ui_base_url
+                    prepared.injected,
+                    mode=prepared.citations,
+                    base_url=self._ui_base_url,
+                    templates=prepared.templates,
+                    wrapping=prepared.wrapping,
                 )
-                if prepared.injected
+                if prepared.injected or prepared.templates.wraps
                 else None
             ),
             on_citations=on_citations,

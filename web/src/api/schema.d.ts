@@ -1291,6 +1291,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/logs/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Template Fingerprints
+         * @description The template fingerprints seen in the window, oldest first, with counts (task 105).
+         *
+         *     What the Monitoring filter row lists under **Template** once more than one appears:
+         *     an A/B of wording is then two filters and a comparison.
+         */
+        get: operations["list_template_fingerprints_api_v1_logs_templates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/logs/{log_id}": {
         parameters: {
             query?: never;
@@ -2046,6 +2069,29 @@ export interface paths {
          *     window. ``connector_id`` narrows it to one connector's slice for its detail screen.
          */
         get: operations["get_summarization_health_api_v1_summarization_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/templates/defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Template Defaults
+         * @description The platform's template defaults and each template's placeholders (task 105).
+         *
+         *     Static, and served anyway: the page's chips and its "default" line are the server's
+         *     vocabulary and strings, not a copy that can drift.
+         */
+        get: operations["template_defaults_api_v1_templates_defaults_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3595,6 +3641,10 @@ export interface components {
             system_context?: string | null;
             /** Targets */
             targets?: components["schemas"]["GatewayTargetRequest"][] | null;
+            /** Template Config */
+            template_config?: {
+                [key: string]: unknown;
+            };
         };
         /** GatewayLimitsResponse */
         GatewayLimitsResponse: {
@@ -3670,6 +3720,14 @@ export interface components {
             system_context: string | null;
             /** Targets */
             targets: components["schemas"]["TargetSummary"][];
+            template_config: components["schemas"]["TemplateConfig"];
+            /** Template Fingerprint */
+            template_fingerprint: string;
+            /**
+             * Template Warnings
+             * @default []
+             */
+            template_warnings: string[];
             /**
              * Updated At
              * Format: date-time
@@ -3768,6 +3826,10 @@ export interface components {
             system_context?: string | null;
             /** Targets */
             targets?: components["schemas"]["GatewayTargetRequest"][] | null;
+            /** Template Config */
+            template_config?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** GenerateRequest */
         GenerateRequest: {
@@ -4527,6 +4589,10 @@ export interface components {
             } | null;
             /** Query */
             query: string;
+            /** Template Config */
+            template_config?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** MemoryPurgeResponse */
         MemoryPurgeResponse: {
@@ -5175,6 +5241,16 @@ export interface components {
          * @description The assembled system message, layer by layer, with the retrieval behind it.
          */
         PromptPreviewResponse: {
+            /**
+             * Answer Prefix
+             * @default
+             */
+            answer_prefix: string;
+            /**
+             * Answer Suffix
+             * @default
+             */
+            answer_suffix: string;
             citations: components["schemas"]["CitationsPreviewResponse"];
             /** Context Window */
             context_window: number | null;
@@ -5187,6 +5263,11 @@ export interface components {
             retrieval: components["schemas"]["RetrievalPreviewResponse"];
             /** System Message */
             system_message: string;
+            /**
+             * Template Fingerprint
+             * @default
+             */
+            template_fingerprint: string;
             /** Tokenizer */
             tokenizer: string;
             /** Total Tokens */
@@ -5536,6 +5617,8 @@ export interface components {
             status_code: number;
             /** Streamed */
             streamed: boolean;
+            /** Template Fingerprint */
+            template_fingerprint?: string | null;
             /** Upstream Model Id */
             upstream_model_id: string | null;
         };
@@ -6130,6 +6213,111 @@ export interface components {
              * @default 100
              */
             weight: number;
+        };
+        /**
+         * TemplateConfig
+         * @description Task 105 — the text this gateway writes, as nine templates.
+         *
+         *     Every default is today's exact string, so a gateway that never opens the Advanced
+         *     page renders byte-identically to before: the golden files are the test. Four fields
+         *     are plain text; five take placeholders from a closed vocabulary, checked here so the
+         *     form and the API refuse the same template with the same words. The renderer and the
+         *     vocabulary are :mod:`app.services.templates`; this class is their schema.
+         *
+         *     ``reference_instruction`` may be empty — a brainstorming assistant may not want to be
+         *     told to hedge — but the page warns, because that sentence is what makes a grounded
+         *     assistant rather than a confident one.
+         */
+        TemplateConfig: {
+            /**
+             * Answer Prefix
+             * @default
+             */
+            answer_prefix: string;
+            /**
+             * Answer Suffix
+             * @default
+             */
+            answer_suffix: string;
+            /**
+             * Excerpt
+             * @default [{handle}] source: {source_name}{section}
+             *     {text}
+             */
+            excerpt: string;
+            /**
+             * Fact
+             * @default - {text}
+             */
+            fact: string;
+            /**
+             * Memory Heading
+             * @default ## What you know about this user
+             */
+            memory_heading: string;
+            /**
+             * Reference Heading
+             * @default ## Reference material
+             */
+            reference_heading: string;
+            /**
+             * Reference Instruction
+             * @default The following excerpts are retrieved from the organization's knowledge base. Cite them when relevant. If they do not answer the question, say so rather than inventing an answer.
+             */
+            reference_instruction: string;
+            /**
+             * Source Line
+             * @default [{handle}] {label}
+             */
+            source_line: string;
+            /**
+             * Sources Heading
+             * @default Sources:
+             */
+            sources_heading: string;
+            /**
+             * Version
+             * @default 1
+             */
+            version: number;
+        };
+        /**
+         * TemplateDefaultsResponse
+         * @description What the Advanced page and the organization's defaults editor need that is not on
+         *     any gateway (task 105): the platform defaults, and each template's placeholders.
+         *
+         *     Served rather than duplicated in the browser, so the chips a person can click are
+         *     exactly the names the server will accept, and the default shown greyed under a
+         *     changed field is the string the server renders.
+         */
+        TemplateDefaultsResponse: {
+            defaults: components["schemas"]["TemplateConfig"];
+            /** Order */
+            order: string[];
+            /** Placeholders */
+            placeholders: {
+                [key: string]: string[];
+            };
+        };
+        /** TemplateUseList */
+        TemplateUseList: {
+            /** Items */
+            items: components["schemas"]["TemplateUseResponse"][];
+        };
+        /**
+         * TemplateUseResponse
+         * @description One template fingerprint in the window (task 105): first seen, and how often.
+         */
+        TemplateUseResponse: {
+            /** Fingerprint */
+            fingerprint: string;
+            /**
+             * First Seen
+             * Format: date-time
+             */
+            first_seen: string;
+            /** Requests */
+            requests: number;
         };
         /**
          * ThrottledEndUserResponse
@@ -8703,6 +8891,7 @@ export interface operations {
                 min_latency_ms?: number | null;
                 search?: string | null;
                 uncited?: boolean | null;
+                template_fingerprint?: string | null;
                 cursor?: string | null;
                 limit?: number | null;
             };
@@ -8719,6 +8908,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_RequestLogResponse_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_template_fingerprints_api_v1_logs_templates_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+                gateway_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateUseList"];
                 };
             };
             /** @description Validation Error */
@@ -10060,6 +10282,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    template_defaults_api_v1_templates_defaults_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemplateDefaultsResponse"];
                 };
             };
         };

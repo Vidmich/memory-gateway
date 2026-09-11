@@ -131,6 +131,16 @@ for citation in getattr(message, "citations", []):
 Whatever the mode, the gateway records which injected chunks each answer cited, and the
 request's detail view in Monitoring shows it.
 
+## Text the gateway adds around the answer
+
+A gateway's administrator can wrap every answer in the gateway's own text — an **answer
+prefix** and an **answer suffix** — under the gateway's Advanced page, alongside the wording
+of the `Sources:` block. Both are off by default. When set, the prefix is the **first content
+delta** of a stream (one extra frame, before the model's first word) and the suffix the
+**last**, after the footer and before `data: [DONE]`; a non-streamed answer has them inside
+`content`, in the same order. Neither is counted in `usage`, which is the provider's own.
+A client that accumulates deltas sees exactly what a non-streaming client sees.
+
 ## Summaries in the reference material
 
 A connector can have a model summarize each document as it is ingested. When it does, one of

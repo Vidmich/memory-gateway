@@ -15,7 +15,7 @@ import pytest
 
 from app.core.errors import Conflict, NotFound, Validation
 from app.core.ids import uuid7
-from app.schemas.gateway_config import LoggingConfig, MemoryConfig
+from app.schemas.gateway_config import LoggingConfig, MemoryConfig, TemplateConfig
 from app.services.catalog import ModelPatch
 from app.services.gateways import (
     MAX_KEYS_PER_GATEWAY,
@@ -365,6 +365,51 @@ async def test_a_new_gateway_stores_complete_defaults(world: World) -> None:
     assert view.gateway.memory_config["doc_top_k"] == MemoryConfig().doc_top_k
     assert view.gateway.logging_config["retention_days"] == LoggingConfig().retention_days
     assert view.gateway.limits["requests_per_minute"] is None
+
+
+async def test_a_new_gateway_starts_from_the_organizations_template_defaults(
+    world: World,
+) -> None:
+    """Task 105. Applied at creation only: a later change to the defaults does not
+    rewrite a gateway that already exists, and the draft's own value wins."""
+    actor = world.actor(world.acme_admin)
+    world.acme.settings = {"template_defaults": {"reference_heading": "## Referenzmaterial"}}
+
+    first = await world.gateways.create_gateway(actor, draft())
+    assert first.gateway.template_config["reference_heading"] == "## Referenzmaterial"
+    assert first.gateway.template_config["excerpt"] == TemplateConfig().excerpt
+
+    own = await world.gateways.create_gateway(
+        actor, draft(slug="acme-own", template_config={"reference_heading": "## Mine"})
+    )
+    assert own.gateway.template_config["reference_heading"] == "## Mine"
+
+    world.acme.settings = {"template_defaults": {"reference_heading": "## Changed"}}
+    later = await world.gateways.create_gateway(actor, draft(slug="acme-later"))
+    assert later.gateway.template_config["reference_heading"] == "## Changed"
+    unchanged = await world.gateways.get_gateway(actor, first.gateway.id)
+    assert unchanged.gateway.template_config["reference_heading"] == "## Referenzmaterial"
+
+
+async def test_a_template_patch_merges_and_is_validated(world: World) -> None:
+    actor = world.actor(world.acme_admin)
+    await world.gateways.update_gateway(
+        actor, world.acme_gateway.id, GatewayPatch(template_config={"sources_heading": "Quellen:"})
+    )
+    view = await world.gateways.update_gateway(
+        actor, world.acme_gateway.id, GatewayPatch(template_config={"answer_suffix": " ✓"})
+    )
+    assert view.gateway.template_config["sources_heading"] == "Quellen:"
+    assert view.gateway.template_config["answer_suffix"] == " ✓"
+
+    with pytest.raises(Validation) as raised:
+        await world.gateways.update_gateway(
+            actor,
+            world.acme_gateway.id,
+            GatewayPatch(template_config={"excerpt": "{source_name}: {text}"}),
+        )
+    assert raised.value.param == "template_config.excerpt"
+    assert "[{handle}]" in str(raised.value)
 
 
 async def test_a_config_patch_merges_rather_than_replaces(world: World) -> None:

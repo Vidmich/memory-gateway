@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import quote
 
 from app.schemas.openai import ChatChunk, ChatResponse, StreamFrame
+from app.services.templates import DEFAULT_TEMPLATES, Templates, render, section_of
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, same as prompt.py
     from app.services.retrieval import Chunk
@@ -77,7 +78,9 @@ MAX_RANGE = 20
 #: the process.
 MAX_TEXT_CHARS = 256_000
 
-FOOTER_HEADING = "Sources:"
+#: The default of the gateway's ``sources_heading`` template (task 105); kept under its
+#: old name for the tests that quote it.
+FOOTER_HEADING = DEFAULT_TEMPLATES.sources_heading
 
 #: What may follow a removed handle for the space before it to go too: punctuation,
 #: whitespace, a closing bracket. Before a word — or another handle — the space stays.
@@ -200,18 +203,28 @@ class Citation:
             "url": inspector_url(base_url, chunk),
         }
 
-    def footer_line(self, *, base_url: str | None = None) -> str:
+    def footer_line(
+        self, *, base_url: str | None = None, templates: Templates = DEFAULT_TEMPLATES
+    ) -> str:
         """``[2] handbook.pdf (p. 12)`` — the handle the model wrote, never renumbered,
-        and the section in the shape the prompt's own heading printed it."""
+        and the section in the shape the prompt's own heading printed it. The shape is
+        the gateway's ``source_line`` template (task 105), which must keep the handle."""
         chunk = self.chunk
-        where = f" ({chunk.page_or_section})" if chunk.page_or_section else ""
-        if chunk.is_summary:
-            where = " (summary)"
+        where = " (summary)" if chunk.is_summary else section_of(chunk.page_or_section)
         label = f"{chunk.source_name}{where}"
         url = inspector_url(base_url, chunk)
         # A Markdown link for the clients that render one; a terminal shows the URL, which
         # is still the right answer to "where did this come from".
-        return f"[{self.handle}] [{label}]({url})" if url else f"[{self.handle}] {label}"
+        return render(
+            templates.source_line,
+            {
+                "handle": self.handle,
+                "label": f"[{label}]({url})" if url else label,
+                "source_name": chunk.source_name,
+                "section": where,
+                "url": url or "",
+            },
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,17 +346,69 @@ def inspector_url(base_url: str | None, chunk: Chunk) -> str | None:
     )
 
 
-def footer(citations: Iterable[Citation], *, base_url: str | None = None) -> str:
+def footer(
+    citations: Iterable[Citation],
+    *,
+    base_url: str | None = None,
+    templates: Templates = DEFAULT_TEMPLATES,
+) -> str:
     """The ``footer`` mode's addition to the content, or the empty string.
 
     Handles are the model's own, in the order the answer first used them. Not renumbered:
     a tidy ``1..k`` list would make ``[3]`` in the text and ``[2]`` in the footer the same
     chunk, and nobody reading it could tell.
     """
-    lines = [citation.footer_line(base_url=base_url) for citation in citations]
+    lines = [citation.footer_line(base_url=base_url, templates=templates) for citation in citations]
     if not lines:
         return ""
-    return "\n\n" + "\n".join([FOOTER_HEADING, *lines])
+    heading = templates.sources_heading
+    return "\n\n" + "\n".join([heading, *lines] if heading else lines)
+
+
+# ---------------------------------------------------------------------------
+# the gateway's own text around the answer (task 105)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Wrapping:
+    """``answer_prefix`` and ``answer_suffix``, with the values they may name.
+
+    ``gateway`` and ``model`` are known before the answer; ``injected_count`` too. The
+    cited count is only known once the answer has been read, which is why a *streamed*
+    prefix — sent before the first token, so it costs nothing beyond one frame — renders
+    it as ``0``, and the page says so. Non-streaming renders both after the fact.
+    """
+
+    templates: Templates = DEFAULT_TEMPLATES
+    gateway: str = ""
+    model: str = ""
+
+    @property
+    def active(self) -> bool:
+        return self.templates.wraps
+
+    def prefix(self, *, injected: int, cited: int = 0) -> str:
+        return self._render(self.templates.answer_prefix, injected=injected, cited=cited)
+
+    def suffix(self, *, injected: int, cited: int) -> str:
+        return self._render(self.templates.answer_suffix, injected=injected, cited=cited)
+
+    def _render(self, template: str, *, injected: int, cited: int) -> str:
+        if not template:
+            return ""
+        return render(
+            template,
+            {
+                "cited_count": cited,
+                "injected_count": injected,
+                "gateway": self.gateway,
+                "model": self.model,
+            },
+        )
+
+
+NO_WRAPPING = Wrapping()
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +428,8 @@ def deliver(
     *,
     mode: str,
     base_url: str | None = None,
+    templates: Templates = DEFAULT_TEMPLATES,
+    wrapping: Wrapping = NO_WRAPPING,
 ) -> Delivered:
     """Resolve every choice's citations and, depending on ``mode``, tell the client.
 
@@ -370,8 +437,12 @@ def deliver(
     today's output is an acceptance criterion, and the cheapest way to guarantee it is
     not to build a new object. The resolution is still computed and returned, because
     the log records it whatever the mode.
+
+    ``wrapping`` (task 105) is the gateway's text around the answer: prefix, then the
+    content as the mode left it — footer included — then the suffix. Applied whether or
+    not anything was injected, because it is the gateway's text and not the documents'.
     """
-    if not injected or not response.choices:
+    if not response.choices or (not injected and not wrapping.active):
         return Delivered(response=response, resolution=Resolution())
 
     combined: Resolution | None = None
@@ -380,16 +451,21 @@ def deliver(
         content = message.content if message is not None else None
         if message is None or not isinstance(content, str):
             continue
-        resolution = resolve(content, injected)
+        resolution = resolve(content, injected) if injected else Resolution()
         combined = resolution if combined is None else combined.merge(resolution)
-        if mode == MODE_METADATA:
+        if injected and mode == MODE_METADATA:
             # Extra fields on a model with ``extra="allow"``: what every OpenAI SDK
             # ignores and every hand-written client can read.
             message.citations = [c.as_json(base_url=base_url) for c in resolution.cited]  # type: ignore[attr-defined]
             message.citations_unresolved = list(resolution.unresolved)  # type: ignore[attr-defined]
-        elif mode == MODE_FOOTER:
+        elif injected and mode == MODE_FOOTER:
             message.content = resolution.strip(content) + footer(
-                resolution.cited, base_url=base_url
+                resolution.cited, base_url=base_url, templates=templates
+            )
+        if wrapping.active:
+            counts = {"injected": len(injected), "cited": len(resolution.cited)}
+            message.content = (
+                wrapping.prefix(**counts) + str(message.content) + wrapping.suffix(**counts)
             )
     return Delivered(response=response, resolution=combined or Resolution())
 
@@ -453,10 +529,16 @@ class StreamCitations:
         *,
         mode: str,
         base_url: str | None = None,
+        templates: Templates = DEFAULT_TEMPLATES,
+        wrapping: Wrapping = NO_WRAPPING,
     ) -> None:
         self._injected = tuple(injected)
         self._mode = mode
         self._base_url = base_url
+        self._templates = templates
+        #: Task 105. The prefix goes out ahead of a choice's first content delta, the
+        #: suffix after its footer; with both empty this class adds no frame for them.
+        self._wrapping = wrapping
         self._choices: dict[int, _ChoiceText] = {}
         #: The last parsed chunk, so the frames this class adds carry the same id, model
         #: and ``created`` as the provider's own and a client grouping by id keeps them.
@@ -466,18 +548,26 @@ class StreamCitations:
 
     def feed(self, frame: StreamFrame) -> list[StreamFrame]:
         chunk = frame.chunk
-        if chunk is None or not self._injected:
+        if chunk is None or not (self._injected or self._wrapping.active):
             return [frame]
         self._last = chunk
 
         rewritten = False
+        ahead: list[StreamFrame] = []
         for choice in chunk.choices:
             content = choice.delta.content
             if not content:
                 continue
-            state = self._choices.setdefault(choice.index, _ChoiceText())
+            if choice.index not in self._choices:
+                self._choices[choice.index] = _ChoiceText()
+                prefix = self._wrapping.prefix(injected=len(self._injected))
+                if prefix:
+                    # The gateway's own text, as the choice's first content delta —
+                    # before the provider's first word, never merged into it.
+                    ahead.append(self._delta(choice.index, {"content": prefix}))
+            state = self._choices[choice.index]
             state.remember(content)
-            if self._mode != MODE_FOOTER:
+            if self._mode != MODE_FOOTER or not self._injected:
                 continue
             forwarded = self._forward(state, content)
             if forwarded != content:
@@ -485,29 +575,44 @@ class StreamCitations:
                 rewritten = True
 
         if not rewritten:
-            return [frame]
+            return [*ahead, frame]
         if not _carries_anything(chunk):
             # Everything this frame said is being held back. Sending an empty delta
             # would be harmless and pointless; the text arrives with the next frame.
-            return []
-        return [_reserialise(chunk)]
+            return ahead
+        return [*ahead, _reserialise(chunk)]
 
     def finish(self) -> list[StreamFrame]:
-        """What follows the provider's last frame and precedes ``[DONE]``."""
-        if not self._injected or self._last is None:
+        """What follows the provider's last frame and precedes ``[DONE]``.
+
+        In order: each choice's held-back tail and footer, then its suffix (task 105),
+        then — under ``metadata`` — the chunk carrying the citations array. Content
+        first and metadata last, which is the order a non-streaming message has them.
+        """
+        if self._last is None:
             return []
         frames: list[StreamFrame] = []
-        if self._mode == MODE_FOOTER:
+        if self._mode == MODE_FOOTER and self._injected:
             for index, state in sorted(self._choices.items()):
                 # Whatever is still pending is literal text: no more frames are coming
                 # to complete it into a handle.
                 tail = self._flush(state)
                 addition = tail + footer(
-                    resolve(state.text, self._injected).cited, base_url=self._base_url
+                    resolve(state.text, self._injected).cited,
+                    base_url=self._base_url,
+                    templates=self._templates,
                 )
                 if addition:
                     frames.append(self._delta(index, {"content": addition}))
-        elif self._mode == MODE_METADATA:
+        if self._wrapping.active:
+            for index, state in sorted(self._choices.items()):
+                cited = len(resolve(state.text, self._injected).cited) if self._injected else 0
+                suffix = self._wrapping.suffix(injected=len(self._injected), cited=cited)
+                if suffix:
+                    frames.append(self._delta(index, {"content": suffix}))
+        if not self._injected:
+            return frames
+        if self._mode == MODE_METADATA:
             for index, state in sorted(self._choices.items()):
                 resolution = resolve(state.text, self._injected)
                 frames.append(
@@ -525,6 +630,8 @@ class StreamCitations:
 
     def resolution(self) -> Resolution:
         """The record, over every choice's text so far."""
+        if not self._injected:
+            return Resolution()
         combined: Resolution | None = None
         for _, state in sorted(self._choices.items()):
             resolution = resolve(state.text, self._injected)
@@ -654,6 +761,7 @@ __all__ = [
     "Resolution",
     "Span",
     "StreamCitations",
+    "Wrapping",
     "deliver",
     "footer",
     "inspector_url",

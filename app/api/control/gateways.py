@@ -42,6 +42,7 @@ from app.schemas.gateway import (
     MemoryPreviewRequest,
     PromptPreviewResponse,
     RetrievalPreviewResponse,
+    TemplateDefaultsResponse,
 )
 from app.services.gateways import GatewayService
 from app.services.memory_preview import MemoryPreview
@@ -150,6 +151,16 @@ async def test_gateway(
 # configuration, which makes them the same surface as the editor they live in.
 
 
+@router.get("/templates/defaults", dependencies=[_reads])
+async def template_defaults() -> TemplateDefaultsResponse:
+    """The platform's template defaults and each template's placeholders (task 105).
+
+    Static, and served anyway: the page's chips and its "default" line are the server's
+    vocabulary and strings, not a copy that can drift.
+    """
+    return TemplateDefaultsResponse.build()
+
+
 @router.post("/gateways/{gateway_id}/try-retrieval", dependencies=[_writes])
 async def try_retrieval(
     gateway_id: uuid.UUID,
@@ -164,7 +175,11 @@ async def try_retrieval(
     """
     return RetrievalPreviewResponse.of(
         await preview.try_retrieval(
-            actor, gateway_id, query=body.query, memory_config=body.memory_config
+            actor,
+            gateway_id,
+            query=body.query,
+            memory_config=body.memory_config,
+            template_config=body.template_config,
         )
     )
 
@@ -184,7 +199,11 @@ async def prompt_preview(
     """
     return PromptPreviewResponse.of(
         await preview.preview_prompt(
-            actor, gateway_id, message=body.query, memory_config=body.memory_config
+            actor,
+            gateway_id,
+            message=body.query,
+            memory_config=body.memory_config,
+            template_config=body.template_config,
         )
     )
 

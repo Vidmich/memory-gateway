@@ -3601,6 +3601,11 @@
               }
             ],
             "title": "Targets"
+          },
+          "template_config": {
+            "additionalProperties": true,
+            "title": "Template Config",
+            "type": "object"
           }
         },
         "required": [
@@ -3773,6 +3778,21 @@
             "title": "Targets",
             "type": "array"
           },
+          "template_config": {
+            "$ref": "#/components/schemas/TemplateConfig"
+          },
+          "template_fingerprint": {
+            "title": "Template Fingerprint",
+            "type": "string"
+          },
+          "template_warnings": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Template Warnings",
+            "type": "array"
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
@@ -3795,6 +3815,8 @@
           "memory_config",
           "logging_config",
           "limits",
+          "template_config",
+          "template_fingerprint",
           "key_count",
           "created_at",
           "updated_at"
@@ -4080,6 +4102,18 @@
               }
             ],
             "title": "Targets"
+          },
+          "template_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Config"
           }
         },
         "title": "GatewayUpdateRequest",
@@ -5443,6 +5477,18 @@
             "minLength": 1,
             "title": "Query",
             "type": "string"
+          },
+          "template_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Config"
           }
         },
         "required": [
@@ -7313,6 +7359,16 @@
         "additionalProperties": false,
         "description": "The assembled system message, layer by layer, with the retrieval behind it.",
         "properties": {
+          "answer_prefix": {
+            "default": "",
+            "title": "Answer Prefix",
+            "type": "string"
+          },
+          "answer_suffix": {
+            "default": "",
+            "title": "Answer Suffix",
+            "type": "string"
+          },
           "citations": {
             "$ref": "#/components/schemas/CitationsPreviewResponse"
           },
@@ -7354,6 +7410,11 @@
           },
           "system_message": {
             "title": "System Message",
+            "type": "string"
+          },
+          "template_fingerprint": {
+            "default": "",
+            "title": "Template Fingerprint",
             "type": "string"
           },
           "tokenizer": {
@@ -8266,6 +8327,17 @@
           "streamed": {
             "title": "Streamed",
             "type": "boolean"
+          },
+          "template_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Fingerprint"
           },
           "upstream_model_id": {
             "anyOf": [
@@ -9627,6 +9699,148 @@
           "organization_id"
         ],
         "title": "TargetSummary",
+        "type": "object"
+      },
+      "TemplateConfig": {
+        "description": "Task 105 \u2014 the text this gateway writes, as nine templates.\n\nEvery default is today's exact string, so a gateway that never opens the Advanced\npage renders byte-identically to before: the golden files are the test. Four fields\nare plain text; five take placeholders from a closed vocabulary, checked here so the\nform and the API refuse the same template with the same words. The renderer and the\nvocabulary are :mod:`app.services.templates`; this class is their schema.\n\n``reference_instruction`` may be empty \u2014 a brainstorming assistant may not want to be\ntold to hedge \u2014 but the page warns, because that sentence is what makes a grounded\nassistant rather than a confident one.",
+        "properties": {
+          "answer_prefix": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Answer Prefix",
+            "type": "string"
+          },
+          "answer_suffix": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Answer Suffix",
+            "type": "string"
+          },
+          "excerpt": {
+            "default": "[{handle}] source: {source_name}{section}\n{text}",
+            "maxLength": 500,
+            "title": "Excerpt",
+            "type": "string"
+          },
+          "fact": {
+            "default": "- {text}",
+            "maxLength": 500,
+            "title": "Fact",
+            "type": "string"
+          },
+          "memory_heading": {
+            "default": "## What you know about this user",
+            "maxLength": 500,
+            "title": "Memory Heading",
+            "type": "string"
+          },
+          "reference_heading": {
+            "default": "## Reference material",
+            "maxLength": 500,
+            "title": "Reference Heading",
+            "type": "string"
+          },
+          "reference_instruction": {
+            "default": "The following excerpts are retrieved from the organization's knowledge base. Cite them when relevant. If they do not answer the question, say so rather than inventing an answer.",
+            "maxLength": 2000,
+            "title": "Reference Instruction",
+            "type": "string"
+          },
+          "source_line": {
+            "default": "[{handle}] {label}",
+            "maxLength": 500,
+            "title": "Source Line",
+            "type": "string"
+          },
+          "sources_heading": {
+            "default": "Sources:",
+            "maxLength": 500,
+            "title": "Sources Heading",
+            "type": "string"
+          },
+          "version": {
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "title": "TemplateConfig",
+        "type": "object"
+      },
+      "TemplateDefaultsResponse": {
+        "additionalProperties": false,
+        "description": "What the Advanced page and the organization's defaults editor need that is not on\nany gateway (task 105): the platform defaults, and each template's placeholders.\n\nServed rather than duplicated in the browser, so the chips a person can click are\nexactly the names the server will accept, and the default shown greyed under a\nchanged field is the string the server renders.",
+        "properties": {
+          "defaults": {
+            "$ref": "#/components/schemas/TemplateConfig"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Order",
+            "type": "array"
+          },
+          "placeholders": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Placeholders",
+            "type": "object"
+          }
+        },
+        "required": [
+          "defaults",
+          "placeholders",
+          "order"
+        ],
+        "title": "TemplateDefaultsResponse",
+        "type": "object"
+      },
+      "TemplateUseList": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateUseResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TemplateUseList",
+        "type": "object"
+      },
+      "TemplateUseResponse": {
+        "additionalProperties": false,
+        "description": "One template fingerprint in the window (task 105): first seen, and how often.",
+        "properties": {
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "first_seen": {
+            "format": "date-time",
+            "title": "First Seen",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "first_seen",
+          "requests"
+        ],
+        "title": "TemplateUseResponse",
         "type": "object"
       },
       "ThrottledEndUserResponse": {
@@ -14211,6 +14425,23 @@
           },
           {
             "in": "query",
+            "name": "template_fingerprint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Template Fingerprint"
+            }
+          },
+          {
+            "in": "query",
             "name": "cursor",
             "required": false,
             "schema": {
@@ -14268,6 +14499,91 @@
           }
         },
         "summary": "List Logs",
+        "tags": [
+          "monitoring"
+        ]
+      }
+    },
+    "/api/v1/logs/templates": {
+      "get": {
+        "description": "The template fingerprints seen in the window, oldest first, with counts (task 105).\n\nWhat the Monitoring filter row lists under **Template** once more than one appears:\nan A/B of wording is then two filters and a comparison.",
+        "operationId": "list_template_fingerprints_api_v1_logs_templates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "gateway_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Gateway Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateUseList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Template Fingerprints",
         "tags": [
           "monitoring"
         ]
@@ -16459,6 +16775,28 @@
         "summary": "Get Summarization Health",
         "tags": [
           "summarization"
+        ]
+      }
+    },
+    "/api/v1/templates/defaults": {
+      "get": {
+        "description": "The platform's template defaults and each template's placeholders (task 105).\n\nStatic, and served anyway: the page's chips and its \"default\" line are the server's\nvocabulary and strings, not a copy that can drift.",
+        "operationId": "template_defaults_api_v1_templates_defaults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateDefaultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Template Defaults",
+        "tags": [
+          "gateways"
         ]
       }
     },

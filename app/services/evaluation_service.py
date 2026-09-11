@@ -1024,6 +1024,13 @@ def _index_changes(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[
             f"The budget was counted with {before.get('tokenizer')} then and "
             f"{after.get('tokenizer')} now."
         )
+    if before.get("template_fingerprint") != after.get("template_fingerprint"):
+        # Task 105. A wording change moves what the budget measures and what the model
+        # is told; it is named so the two runs are not read as the same configuration.
+        changes.append(
+            f"The gateway's templates changed ({before.get('template_fingerprint') or 'unrecorded'}"
+            f" → {after.get('template_fingerprint') or 'unrecorded'})."
+        )
     then = before.get("connectors") or {}
     now = after.get("connectors") or {}
     for connector_id in sorted(set(then) | set(now)):

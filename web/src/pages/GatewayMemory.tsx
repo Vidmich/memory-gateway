@@ -612,7 +612,7 @@ function ChunkRow({ chunk }: { chunk: RetrievedChunkResponse }) {
  * `system` message by the time it goes upstream — the layering is the thing that is
  * invisible on the wire and worth drawing.
  */
-function PromptResult({ preview }: { preview: PromptPreviewResponse }) {
+export function PromptResult({ preview }: { preview: PromptPreviewResponse }) {
   const usage = contextUsage(preview.total_tokens, preview.context_window)
   const filled = preview.layers.filter((layer) => layer.text)
 

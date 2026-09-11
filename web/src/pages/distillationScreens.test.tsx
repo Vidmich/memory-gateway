@@ -17,6 +17,7 @@ import {
   makeOrganization,
   makeSummary,
   makeUser,
+  makeTemplateDefaults,
 } from '@/test/factories'
 import { bodyOf, jsonResponse as json, pathOf } from '@/test/http'
 
@@ -90,6 +91,8 @@ function fakeServer(options: ServerOptions = {}) {
       )
     }
     if (path.startsWith('/api/v1/organizations/')) return Promise.resolve(json(organization))
+    // Task 105: the template defaults section on the same settings page.
+    if (path === '/api/v1/templates/defaults') return Promise.resolve(json(makeTemplateDefaults()))
     return Promise.resolve(json({ items: [], next_cursor: null }))
   })
 
@@ -272,7 +275,14 @@ describe('the memory-health panel', () => {
           written: 1,
           dedupe_rate: 0.98,
           days: [
-            { day: '2026-09-05T00:00:00Z', runs: 30, failures: 0, written: 1, deduped: 59, superseded: 0 },
+            {
+              day: '2026-09-05T00:00:00Z',
+              runs: 30,
+              failures: 0,
+              written: 1,
+              deduped: 59,
+              superseded: 0,
+            },
           ],
         }),
       }),
@@ -298,7 +308,14 @@ describe('the memory-health panel', () => {
           supersession_rate: 0.1,
           average_facts_per_end_user: 2.5,
           days: [
-            { day: '2026-09-05T00:00:00Z', runs: 10, failures: 0, written: 20, deduped: 6, superseded: 3 },
+            {
+              day: '2026-09-05T00:00:00Z',
+              runs: 10,
+              failures: 0,
+              written: 20,
+              deduped: 6,
+              superseded: 3,
+            },
           ],
         }),
       }),

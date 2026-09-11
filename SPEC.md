@@ -346,7 +346,8 @@ omitted along with its delimiter.
 [5] client's own system message  — verbatim, from the incoming request
 ```
 
-Rendered shape:
+Rendered shape — the **default** of a per-gateway template set (task 105; see the end of
+this section):
 
 ```
 {model.system_context}
@@ -383,6 +384,31 @@ Rules:
 - The fully assembled system message is stored on the transcript when body logging is enabled —
   this is the primary debugging surface for "why did it answer that?".
 
+**Templates (task 105).** The text the gateway itself writes is nine templates on the gateway
+(`template_config`), each defaulting to the exact string above so an unedited gateway renders
+byte-identically. Four are plain text: `reference_heading`, `reference_instruction`,
+`memory_heading` and, on the response side, `sources_heading`. Five take placeholders from a
+closed vocabulary, substituted once by name and never evaluated (no attribute access, no
+expressions; a literal brace is `{{`/`}}`; a substituted value is never rescanned):
+
+| Template | Default | Placeholders |
+|---|---|---|
+| `excerpt` | `[{handle}] source: {source_name}{section}\n{text}` | `{handle}`, `{source_name}`, `{section}` (` (p. 12)` or empty), `{section_raw}`, `{text}`, `{score}` |
+| `fact` | `- {text}` | `{text}` |
+| `source_line` (§7.1) | `[{handle}] {label}` | `{handle}`, `{label}` (name plus section, linked when a URL exists), `{source_name}`, `{section}`, `{url}` |
+| `answer_prefix` / `answer_suffix` (§7.1) | empty | `{cited_count}`, `{injected_count}`, `{gateway}`, `{model}` |
+
+Two invariants are enforced at save time: the excerpt template **must contain `[{handle}]`**
+(the model cites by it and §7.1 resolves by it), and the fact template is **one line** (each
+fact is flattened to one so a fact cannot open a new section of the prompt). An unknown
+placeholder is a 422 naming it and listing the ones allowed. A document summary (task 102) keeps
+its fixed `summary of:` shape under any excerpt template: it is a description, not a quote.
+The budget measures the rendered block, template included. The organization may set
+`template_defaults` under its settings; a new gateway starts from them, at creation only.
+Every request log row records the **template fingerprint** — a short hash of the nine
+effective strings — so a change of wording is a filter on Monitoring and a named change
+between two evaluation runs (task 103).
+
 ### 7.1 Citations on the way back
 
 The numbered handles are honoured in the answer, not only in the prompt. When the model writes
@@ -401,13 +427,21 @@ What the client sees is the gateway's `citations` setting (memory configuration,
 |---|---|
 | `off` | The response is byte-identical to the upstream's. Nothing is added. |
 | `metadata` | A `citations` array and a `citations_unresolved` list are added to the assistant message (`choices[n].message`); streaming, they arrive in the `delta` of one final extra chunk after the upstream's last frame and before `[DONE]`. The text is not changed. |
-| `footer` | `\n\nSources:` and one line per cited chunk — `[2] handbook.pdf (p. 12)`, linked to the chunk inspector when the deployment has a UI address — are appended to the content, as a final content delta when streaming. Handles that resolved to nothing are removed from the text. |
+| `footer` | `\n\nSources:` and one line per cited chunk — `[2] handbook.pdf (p. 12)`, linked to the chunk inspector when the deployment has a UI address — are appended to the content, as a final content delta when streaming. Handles that resolved to nothing are removed from the text. The heading and the line are the gateway's `sources_heading` and `source_line` templates (§7). |
 
 Handles are never renumbered: the `[3]` in the footer is the `[3]` the model wrote. The
 upstream's `usage` is forwarded as received; the footer is not counted against it. Under
 `footer`, streaming holds back only an unfinished trailing handle (`[`, `[2,`) until the next
 frame decides what it is; every other frame is relayed as the provider sent it, so
 time-to-first-token is unchanged.
+
+**Answer prefix and suffix (task 105).** A gateway may wrap the answer in its own text:
+`answer_prefix` is the first content delta of a stream (one frame, sent before the provider's
+first word) and `answer_suffix` the last, after the footer and before `[DONE]`; non-streaming,
+the message content is prefix, answer (footer included), suffix. Both apply whatever the
+citation mode and whether or not anything was injected, are outside the provider's `usage`,
+and — empty by default — add no frame at all, so the `off` path stays byte-identical. In a
+stream the prefix is sent before the answer exists, so `{cited_count}` there renders `0`.
 
 ---
 
@@ -902,8 +936,10 @@ GET    /gateways              POST /gateways
 GET    /gateways/{id}         PATCH /gateways/{id}         DELETE /gateways/{id}
 GET    /gateways/{id}/keys    POST /gateways/{id}/keys     DELETE /keys/{id}
 POST   /gateways/{id}/test                                 # send a probe completion
+POST   /gateways/{id}/try-retrieval   POST /gateways/{id}/prompt-preview   # accept unsaved memory_config and template_config
 
 GET    /logs                  GET /logs/{id}               # metadata list, full detail
+GET    /logs/templates                                     # template fingerprints in a window (task 105)
 GET    /metrics/timeseries    GET /metrics/summary
 GET    /end-users             GET /end-users/{id}/memory
 PATCH  /memory-facts/{id}     DELETE /memory-facts/{id}
@@ -976,7 +1012,14 @@ how many documents saving will mark stale, before saving.
    attached connector with stale or reprocessing documents — *answers may be drawn from two
    chunkings until it is reprocessed* — linking to the connector.
 4. *Prompt* — the gateway system context, param overrides and locks, and a rendered preview of
-   the assembled prompt for a sample question.
+   the assembled prompt for a sample question. A link at the bottom opens **Advanced**
+   (task 105), its own route (`/gateways/{id}/advanced`): the nine §7 templates, each with a
+   label saying where the text goes, its placeholder chips (click to insert), the default
+   shown greyed when the value differs, a **Reset** per field, and the server's validation
+   message under a field that fails. A preview box at the top takes one question and shows
+   the assembled prompt and the citation examples rendered with the unsaved templates —
+   nobody has to save to see. Two inline, non-blocking warnings: an empty instruction, and
+   an excerpt that no longer prints `{source_name}`. Own save, own unsaved-changes guard.
 5. *Logging* — the §10.2 toggles, retention, redaction patterns, and distillation switch.
 6. *Limits* — rate limits and quotas.
 7. *Keys* — create/revoke, last-used timestamps; the secret is revealed exactly once.
@@ -989,7 +1032,9 @@ how many documents saving will mark stale, before saving.
    retrieval itself gains **Add to evaluation set**.
 
 **Monitoring** — time-range picker, filters, the §10.1 charts, and a request table that can be
-live-tailed. Row click opens the §10.3 detail drawer.
+live-tailed. Row click opens the §10.3 detail drawer, which shows the template fingerprint
+beside the model name; the filter row gains **Template** when more than one fingerprint
+appears in the window, listed with first-seen dates (task 105).
 
 **Memory browser** — end users list with request counts and last-seen; drill into one to view,
 search, edit, and delete their facts, or purge them entirely.
@@ -998,7 +1043,9 @@ search, edit, and delete their facts, or purge them entirely.
 
 **Settings** — org profile, members and roles, invitations, distillation-model selection, the
 summarization-model default beside it (task 102; a connector with no model of its own uses
-this, then the distillation model, then the platform default), and org-level logging defaults.
+this, then the distillation model, then the platform default), org-level logging defaults,
+and the organization's template defaults (task 105) — the same editor as Advanced minus the
+preview and the response prefix/suffix; *new gateways start from these*.
 
 **Platform (superadmin)** — organizations list and creation, global model catalog, embedding
 model configuration and reindex, and platform-wide health.
@@ -1056,7 +1103,8 @@ evaluation_runs     (id, organization_id, set_id, gateway_id, status, created_by
 
 gateways            (id, organization_id, slug UNIQUE, name, description, enabled,
                      routing_mode, system_context, param_overrides_jsonb, locked_params_jsonb,
-                     memory_config_jsonb, logging_config_jsonb, limits_jsonb, created_at)
+                     memory_config_jsonb, logging_config_jsonb, limits_jsonb,
+                     template_config_jsonb, created_at)
 gateway_targets     (id, gateway_id, upstream_model_id, priority, weight)
 gateway_connectors  (gateway_id, connector_id)
 api_keys            (id, gateway_id, name, key_hash, prefix, last_used_at, revoked_at, created_at)
@@ -1072,7 +1120,7 @@ request_logs        (id, organization_id, gateway_id, api_key_id, end_user_id, s
                      prompt_tokens, completion_tokens, memory_tokens,
                      retrieved_chunk_ids, retrieved_fact_ids, failover_attempts_jsonb,
                      cited_chunk_ids, citations_unresolved,
-                     tokenizer, estimated_prompt_tokens,
+                     tokenizer, estimated_prompt_tokens, template_fingerprint,
                      created_at)                              -- partitioned by day
 transcripts         (request_log_id PK, request_body, assembled_prompt, response_body,
                      distilled_at, created_at)                -- partitioned by day

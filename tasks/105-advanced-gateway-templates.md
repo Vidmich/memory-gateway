@@ -8,8 +8,8 @@ preview against a real question, and reset, without anyone touching the prompt a
 **Spec:** §7 (prompt assembly), §7.1 (citations), §13.1 (gateway editor) — and amends §7 to say
 the rendered shape it prints is a *default*, and §13.1 with the new page.
 **Size:** M
-**Status:** post-v1. Independent of 101–104; 103's evaluation runs should record the template
-fingerprint this task introduces, so if 103 lands first it gains one field later.
+**Status:** **done.** Built after 103, so an evaluation run records the template fingerprint
+from the start and a diff between two runs names a wording change.
 
 ---
 
@@ -93,7 +93,7 @@ from them.
 
 ### The blob
 
-- [ ] `app/schemas/gateway_config.py`: `TemplateConfig(ConfigBlob)` with nine string fields,
+- [x] `app/schemas/gateway_config.py`: `TemplateConfig(ConfigBlob)` with nine string fields,
       each with today's text as its default so a gateway that never opens the page renders
       byte-identically to before:
       `reference_heading` (`## Reference material`), `reference_instruction` (the §7
@@ -102,10 +102,10 @@ from them.
       response side: `sources_heading` (`Sources:`), `source_line`
       (`[{handle}] {label}`), `answer_prefix` (empty), `answer_suffix` (empty). Four of
       these are plain text; the other five take placeholders.
-- [ ] `gateways.template_config` JSONB column, `'{}'` default, in a migration; permissive on
+- [x] `gateways.template_config` JSONB column, `'{}'` default, in a migration; permissive on
       load and strict on write through the same `ConfigBlob`/`merge_config` machinery as the
       other three blobs, so a PATCH sends the fields that changed and cannot wipe the rest.
-- [ ] Placeholder vocabulary, closed and per template: `excerpt` gets `{handle}`,
+- [x] Placeholder vocabulary, closed and per template: `excerpt` gets `{handle}`,
       `{source_name}`, `{section}` (renders ` (p. 12)` or the empty string — the parenthesised
       form the default prints, so a template author does not have to express "if there is a
       section"), `{section_raw}` (bare), `{text}`, `{score}`; `fact` gets `{text}`;
@@ -113,12 +113,12 @@ from them.
       `{source_name}`, `{section}`, `{url}`; `answer_prefix`/`answer_suffix` get
       `{cited_count}`, `{injected_count}`, `{gateway}`, `{model}`. An unknown placeholder is a
       422 that names it and lists the ones allowed.
-- [ ] The renderer, `app/services/templates.py`: `render(template, values) -> str` by regex
+- [x] The renderer, `app/services/templates.py`: `render(template, values) -> str` by regex
       substitution of `{name}` **once**, never `str.format` (attribute access, index access,
       and a `{` inside a chunk's text being re-parsed are all things `str.format` would do
       and none of them may happen). A literal brace is `{{`/`}}`. Substituted values are never
       re-scanned, so a document that contains `{text}` renders the four characters.
-- [ ] Validation rules with reasons, in the schema so the form and the API agree:
+- [x] Validation rules with reasons, in the schema so the form and the API agree:
       `excerpt` **must contain `[{handle}]`** (task 100's resolver and the model's ability to
       cite both depend on it); `source_line` must contain `{handle}` (do not renumber — §7.1);
       `fact` must contain `{text}` and be one line (`render_facts` flattens each fact for the
@@ -127,36 +127,36 @@ from them.
       *warning* on the page, not a refusal ("the model is no longer told to say when the
       documents do not answer — that sentence is the difference between a grounded assistant
       and a confident one").
-- [ ] Length ceilings: 500 characters per template, 2 000 for the instruction. Prompts are
+- [x] Length ceilings: 500 characters per template, 2 000 for the instruction. Prompts are
       billed per token, and a template is multiplied by `doc_top_k` on every request.
 
 ### Where it is used
 
-- [ ] `assemble()` and `render_documents` / `render_entry` / `render_facts` take a
+- [x] `assemble()` and `render_documents` / `render_entry` / `render_facts` take a
       `Templates` value (a frozen dataclass built from the blob) with the current constants
       as the default argument. Every existing call site and every golden file is unchanged by
       construction; the golden suite is the proof and stays byte-for-byte.
-- [ ] `ResolvedGateway.templates`, decoded from the blob when the payload is built, like
+- [x] `ResolvedGateway.templates`, decoded from the blob when the payload is built, like
       `memory`; `PAYLOAD_VERSION` bumps. `ProxyService._assemble` passes it. The budget still
       measures the *rendered* block, template included — a long heading spends
       `doc_max_tokens`, as it should.
-- [ ] Citation delivery (task 100) takes the same value: `footer()` renders
+- [x] Citation delivery (task 100) takes the same value: `footer()` renders
       `sources_heading` and `source_line`; the `[{handle}]` the resolver looks for in the
       answer is unaffected because it is the model's text, but the resolver's *excerpt*
       numbering is whatever the excerpt template printed, which is why the template must keep
       the bracketed handle.
-- [ ] `answer_prefix` / `answer_suffix`: applied by the same response stage as the footer,
+- [x] `answer_prefix` / `answer_suffix`: applied by the same response stage as the footer,
       streaming and not. The prefix is the first content delta (it is static, so it costs
       nothing to time-to-first-token beyond one frame); the suffix follows the footer and
       precedes `[DONE]`. Both are outside the provider's `usage`, like the footer. Both are
       empty by default and, when empty, add no frame at all — the `off` path stays
       byte-identical.
-- [ ] `memory_preview.py` — Try retrieval and the prompt preview — accepts a
+- [x] `memory_preview.py` — Try retrieval and the prompt preview — accepts a
       `template_config` patch beside `memory_config`, merged by the same function the save
       uses, so the Advanced page previews unsaved templates the way the Memory section
       previews unsaved knobs. The distillation prompt (task 13) is **not** templated here; it
       is not a gateway's text.
-- [ ] The **template fingerprint**: a short hash of the effective nine strings, on
+- [x] The **template fingerprint**: a short hash of the effective nine strings, on
       `ResolvedGateway`, written to `request_logs.template_fingerprint` (a `String(16)`
       column beside `dropped_params`). The drawer shows it; the log list can filter by it.
       It is how "did the German instruction change anything" becomes a query rather than a
@@ -164,62 +164,62 @@ from them.
 
 ### Organization defaults
 
-- [ ] `organizations.settings["template_defaults"]`, a partial `TemplateConfig`, read when a
+- [x] `organizations.settings["template_defaults"]`, a partial `TemplateConfig`, read when a
       gateway is created — the same pattern as `logging_defaults`, in the same place. Applied
       at creation only: a change to the organization's defaults does not rewrite existing
       gateways, and the page says so ("new gateways start from these").
-- [ ] Organization settings page gains the same editor, minus the preview (there is no
+- [x] Organization settings page gains the same editor, minus the preview (there is no
       gateway to preview against) and minus the response prefix/suffix (those are per
       endpoint by nature).
 
 ### UI
 
-- [ ] **Gateways → Advanced**, its own route (`/gateways/{id}/advanced`) reached from a link
+- [x] **Gateways → Advanced**, its own route (`/gateways/{id}/advanced`) reached from a link
       at the bottom of the Prompt section — *"Advanced: the text the gateway writes around
       documents, memory and answers →"* — rather than a seventh section on an already long
       editor. Own save button, own unsaved-changes guard (`useUnsavedChanges`), the same
       audit event as the gateway PATCH it is.
-- [ ] Each template: a label that says where the text goes, a textarea, the placeholder
+- [x] Each template: a label that says where the text goes, a textarea, the placeholder
       chips for *that* template (click to insert at the cursor), the default shown greyed
       when the value differs, and a **Reset** link per field. A field that fails validation
       shows the server's message under it, the same message the API gives.
-- [ ] A **preview** box at the top of the page — one question, the assembled prompt below,
+- [x] A **preview** box at the top of the page — one question, the assembled prompt below,
       the citations examples from task 100 rendered with the current templates — driven by
       the same prompt-preview call with the unsaved templates as a patch. This is what makes
       the page safe to use: nobody has to save to see.
-- [ ] Two warnings, shown inline and not blocking: the instruction is empty (see above); the
+- [x] Two warnings, shown inline and not blocking: the instruction is empty (see above); the
       excerpt no longer prints `{source_name}` ("the model can cite, but cannot name the
       document; the footer and the metadata still can").
-- [ ] The request drawer shows the fingerprint beside the model name; the Monitoring filter
+- [x] The request drawer shows the fingerprint beside the model name; the Monitoring filter
       row gains **Template** when more than one fingerprint appears in the window, listing
       them with first-seen dates, so an A/B of wording is two filters and a comparison.
 
 ### Spec
 
-- [ ] Amend §7: the rendered shape is the default of a per-gateway template set; list the
+- [x] Amend §7: the rendered shape is the default of a per-gateway template set; list the
       templates and their placeholders; state the two invariants (the excerpt keeps
       `[{handle}]`, facts stay one line). Amend §7.1 for the response prefix/suffix and the
       footer templates. Add the Advanced page to §13.1 and `template_config` to §17.
 
 ## Acceptance criteria
 
-- [ ] A gateway that has never opened the Advanced page produces prompts byte-identical to
+- [x] A gateway that has never opened the Advanced page produces prompts byte-identical to
       the golden files, footers byte-identical to task 100's tests, and no extra frames.
-- [ ] Changing `reference_heading` changes the transcript of the next request, the prompt
+- [x] Changing `reference_heading` changes the transcript of the next request, the prompt
       preview, and the token count in both, in the same place.
-- [ ] An excerpt template without `[{handle}]` is a 422 naming the rule; with it, citations
+- [x] An excerpt template without `[{handle}]` is a 422 naming the rule; with it, citations
       resolve exactly as before under every template that keeps it.
-- [ ] A chunk whose text contains `{text}` or `{{` renders those characters literally;
+- [x] A chunk whose text contains `{text}` or `{{` renders those characters literally;
       `{handle.__class__}` in a template is a 422 (unknown placeholder), not an evaluation.
-- [ ] `answer_prefix` arrives as the first content frame and `answer_suffix` after the footer
+- [x] `answer_prefix` arrives as the first content frame and `answer_suffix` after the footer
       and before `[DONE]`; the provider's `usage` is unchanged; with both empty, the stream is
       frame-for-frame what task 100 produced.
-- [ ] Two gateways with different templates produce two different `template_fingerprint`
+- [x] Two gateways with different templates produce two different `template_fingerprint`
       values on their rows; editing a template changes the fingerprint on the next request
       and not on rows already written.
-- [ ] A new gateway in an organization with `template_defaults` starts from them; an existing
+- [x] A new gateway in an organization with `template_defaults` starts from them; an existing
       gateway does not change when the defaults do.
-- [ ] Try retrieval and the prompt preview with an unsaved template patch render the patched
+- [x] Try retrieval and the prompt preview with an unsaved template patch render the patched
       block and save nothing.
 
 ## Tests
@@ -236,6 +236,46 @@ from them.
 - Organization defaults at creation and only at creation.
 - UI: chips insert, reset restores, validation message renders, preview sends the patch,
   unsaved guard fires.
+
+## Implementation notes
+
+- **Where things landed.** `app/services/templates.py` is the renderer, the vocabulary, the
+  invariants and the `Templates` value the assembler and the citation stage take;
+  `TemplateConfig` in `app/schemas/gateway_config.py` is its schema, validated by field so a
+  422 lands on the textarea; `app/services/prompt.py` and `app/services/citations.py` take
+  `templates=` with the SPEC's wording as the default argument, which is how every existing
+  call site and the golden suite are unchanged by construction. Migration
+  `0024_gateway_templates` adds `gateways.template_config` and
+  `request_logs.template_fingerprint`. The web half is `TemplateEditor.tsx` (shared by the
+  Advanced page and the organization's defaults), `GatewayAdvancedPage.tsx`,
+  `TemplateDefaultsSettings.tsx` and `pages/templates.ts`.
+- **Substitution is a regular expression, never `str.format`.** One pass over the template;
+  `{{`/`}}` are literal braces; what is inserted is never rescanned. Validation reads *every*
+  brace group, so `{handle.__class__}` is refused as an unknown placeholder by name, and a
+  lone brace is refused with the escape in the message.
+- **A summary keeps its shape.** The excerpt template is a sentence about a quote; a document
+  summary (task 102) is not one, and `summary of:` was chosen precisely so a model would not
+  cite a summary as if it were the document's words. So it stays fixed under any excerpt
+  template — which means a German gateway still prints those two English words over a
+  summary point. Noted as the one place the wording is not the customer's.
+- **The prefix is sent before the answer exists.** In a stream it is the first content delta,
+  which is what keeps it off the time-to-first-token — and why `{cited_count}` in a streamed
+  prefix renders `0`. Non-streaming renders both after the fact with the real count. The
+  page's chip tooltip says so. Both apply whether or not anything was injected: they are the
+  gateway's text, not the documents'. With both empty the citation stage is not even built
+  for a request with nothing injected, so the `off` path is the code path task 18 measured.
+- **The defaults come from the server.** `GET /templates/defaults` serves the nine strings
+  and each template's placeholders, so the chips are the names the server accepts and the
+  greyed default under a changed field is the string it renders; nothing about the wording
+  is copied into the bundle.
+- **The organization stores a difference.** `settings.template_defaults` holds only the
+  fields that differ from the platform defaults, validated on the settings form with the
+  same message the gateway would give, merged under a new gateway's draft at creation and
+  never again.
+- **The fingerprint rides on the resolver payload** (`PAYLOAD_VERSION` 7), the `Prepared`
+  attempt, the request log row, the prompt-preview response and task 103's run snapshot.
+  Monitoring lists the fingerprints in a window with first-seen dates under
+  `GET /logs/templates`; the filter row shows **Template** only once two appear.
 
 ## Notes
 

@@ -38,8 +38,10 @@ from app.db.models import Gateway, Invitation, Organization, User
 from app.db.models.invitation import INVITABLE_ROLES
 from app.schemas.gateway_config import (
     LoggingConfig,
+    TemplateConfig,
     merge_config,
     organization_logging_defaults,
+    organization_template_defaults,
 )
 from app.services.audit import Attribution
 from app.services.audit_snapshots import subject
@@ -202,6 +204,7 @@ class DirectoryService:
                 organization.status = status
             if settings is not None:
                 _check_logging_defaults(settings)
+                _check_template_defaults(settings)
                 organization.settings = settings
 
             transaction.audit(
@@ -622,6 +625,14 @@ def _check_logging_defaults(settings: Mapping[str, Any]) -> None:
     defaults = organization_logging_defaults(settings)
     if defaults:
         merge_config(LoggingConfig, {}, defaults, field="settings.logging_defaults")
+
+
+def _check_template_defaults(settings: Mapping[str, Any]) -> None:
+    """The same rule for task 105's key: a template default the gateway would refuse is
+    refused here, on the form that writes it, with the same message."""
+    defaults = organization_template_defaults(settings)
+    if defaults:
+        merge_config(TemplateConfig, {}, defaults, field="settings.template_defaults")
 
 
 __all__ = [

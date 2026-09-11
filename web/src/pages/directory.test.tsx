@@ -14,6 +14,7 @@ import {
   makeOrganization,
   makeSuperadmin,
   makeUser,
+  makeTemplateDefaults,
 } from '@/test/factories'
 import { jsonResponse as json, bodyOf, pathOf } from '@/test/http'
 
@@ -40,7 +41,12 @@ function fakeServer(options: ServerOptions = {}) {
   const user = options.user ?? makeUser()
   const members = options.members ?? [makeMember({ id: 'm1', email: 'member@example.com' })]
   const invitations = options.invitations ?? []
-  const requests: { path: string; method: string; headers: Record<string, string> }[] = []
+  const requests: {
+    path: string
+    method: string
+    headers: Record<string, string>
+    body: Record<string, unknown>
+  }[] = []
 
   const session = {
     access_token: 'token-1',
@@ -57,11 +63,14 @@ function fakeServer(options: ServerOptions = {}) {
       path,
       method,
       headers: (init?.headers ?? {}) as Record<string, string>,
+      body: bodyOf<Record<string, unknown>>(init),
     })
 
     if (path === '/api/v1/auth/refresh') return Promise.resolve(json(session))
     if (path === '/api/v1/auth/me') return Promise.resolve(json(user))
     if (path === '/api/v1/auth/logout') return Promise.resolve(new Response(null, { status: 204 }))
+    // Task 105: the settings page's template editor asks for the platform defaults.
+    if (path === '/api/v1/templates/defaults') return Promise.resolve(json(makeTemplateDefaults()))
 
     if (path.startsWith('/api/v1/organizations') && path.endsWith('/members')) {
       return Promise.resolve(json({ items: members, next_cursor: null }))
@@ -238,9 +247,9 @@ describe('platform organizations', () => {
     await person.click((await screen.findAllByRole('button', { name: 'Open as' }))[0]!)
 
     await waitFor(() =>
-      expect(
-        requests.some((request) => request.headers['x-assume-organization'] === 'o1'),
-      ).toBe(true),
+      expect(requests.some((request) => request.headers['x-assume-organization'] === 'o1')).toBe(
+        true,
+      ),
     )
   })
 
@@ -299,5 +308,30 @@ describe('organization settings', () => {
     expect(await screen.findByLabelText('Name')).toBeDisabled()
     expect(screen.getByLabelText('Slug')).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
+  })
+
+  it('edits the template defaults for new gateways, storing only the difference (task 105)', async () => {
+    const person = userEvent.setup()
+    const { client, requests } = fakeServer()
+    renderAt(client, '/settings')
+
+    const section = await screen.findByTestId('template-defaults')
+    expect(within(section).getByText(/New gateways start from these/)).toBeInTheDocument()
+    // Per endpoint by nature, so not offered here.
+    expect(within(section).queryByLabelText('Answer prefix')).not.toBeInTheDocument()
+    expect(within(section).queryByLabelText('Answer suffix')).not.toBeInTheDocument()
+
+    const heading = within(section).getByLabelText('Reference heading')
+    await person.clear(heading)
+    await person.type(heading, '## Referenzmaterial')
+    await person.click(within(section).getByRole('button', { name: 'Save defaults' }))
+
+    await waitFor(() => {
+      const saved = requests.filter((request) => request.method === 'PATCH').at(-1)
+      expect(saved?.path).toBe('/api/v1/organizations/o1')
+      expect(saved?.body).toEqual({
+        settings: { template_defaults: { reference_heading: '## Referenzmaterial' } },
+      })
+    })
   })
 })

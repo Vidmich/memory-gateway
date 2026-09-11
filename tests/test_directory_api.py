@@ -212,6 +212,31 @@ async def test_an_org_admin_can_edit_their_own_profile(directory: DirectoryHarne
     assert response.json()["settings"] == {"logging_default": "full"}
 
 
+async def test_template_defaults_are_validated_on_the_settings_form(
+    directory: DirectoryHarness,
+) -> None:
+    """Task 105. A default the gateway would refuse is refused here, with the same
+    message and the field path under ``settings``."""
+    world = directory.world
+    accepted = await directory.as_user(
+        world.acme_admin,
+        "PATCH",
+        f"/api/v1/organizations/{world.acme.id}",
+        json_body={"settings": {"template_defaults": {"reference_heading": "## Referenz"}}},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["settings"]["template_defaults"] == {"reference_heading": "## Referenz"}
+
+    refused = await directory.as_user(
+        world.acme_admin,
+        "PATCH",
+        f"/api/v1/organizations/{world.acme.id}",
+        json_body={"settings": {"template_defaults": {"excerpt": "{text}"}}},
+    )
+    assert refused.status_code == 422
+    assert refused.json()["error"]["param"] == "settings.template_defaults.excerpt"
+
+
 async def test_settings_have_a_ceiling(directory: DirectoryHarness) -> None:
     """`settings` is otherwise an unbounded write primitive for any org admin."""
     world = directory.world

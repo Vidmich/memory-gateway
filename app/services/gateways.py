@@ -55,8 +55,10 @@ from app.schemas.gateway_config import (
     LimitsConfig,
     LoggingConfig,
     MemoryConfig,
+    TemplateConfig,
     merge_config,
     organization_logging_defaults,
+    organization_template_defaults,
 )
 from app.schemas.platform import RetentionCeilings
 from app.services.audit_snapshots import subject
@@ -141,6 +143,7 @@ class GatewayDraft:
     memory_config: Mapping[str, Any] = field(default_factory=dict)
     logging_config: Mapping[str, Any] = field(default_factory=dict)
     limits: Mapping[str, Any] = field(default_factory=dict)
+    template_config: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +168,9 @@ class GatewayPatch:
     memory_config: Maybe[Mapping[str, Any]] = UNSET
     logging_config: Maybe[Mapping[str, Any]] = UNSET
     limits: Maybe[Mapping[str, Any]] = UNSET
+    #: Task 105. Merged like the other blobs: a page that sends one template cannot
+    #: wipe the eight it did not show.
+    template_config: Maybe[Mapping[str, Any]] = UNSET
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,6 +341,15 @@ class GatewayService:
                     chain,
                     Ceilings.of(self._settings),
                 ),
+                # Task 105: the organization's template defaults, applied at creation
+                # only and under the draft, exactly as the logging defaults are. A later
+                # change to the defaults does not rewrite existing gateways.
+                template_config=merge_config(
+                    TemplateConfig,
+                    organization_template_defaults(await transaction.organization_settings()),
+                    draft.template_config,
+                    field="template_config",
+                ),
             )
             await transaction.add_gateway(gateway)
             await transaction.set_targets(gateway, chain)
@@ -393,6 +408,13 @@ class GatewayService:
             if not isinstance(patch.limits, _Unset):
                 merged_limits = merge_config(
                     LimitsConfig, gateway.limits, patch.limits, field="limits"
+                )
+            if not isinstance(patch.template_config, _Unset):
+                gateway.template_config = merge_config(
+                    TemplateConfig,
+                    gateway.template_config,
+                    patch.template_config,
+                    field="template_config",
                 )
 
             # Validated against the *effective* pair, whichever half was sent. Changing

@@ -26,6 +26,7 @@ import type {
   RequestLogPage,
   SeriesResponse,
   SummaryResponse,
+  TemplateUseList,
 } from '@/api/types'
 
 export const RANGES = ['1h', '24h', '7d', '30d'] as const
@@ -59,6 +60,8 @@ export type LogFilters = {
   streamed?: boolean | null
   /** Task 100: only requests that were given documents and cited none of them. */
   uncited?: boolean | null
+  /** Task 105: only requests worded by this set of templates. */
+  template_fingerprint?: string | null
 }
 
 export type Window = { from: string; to: string }
@@ -92,6 +95,8 @@ export const keys = {
   logs: (window: Window, filters: LogFilters, cursor: string | null) =>
     ['monitoring', 'logs', window, filters, cursor] as const,
   log: (id: string) => ['monitoring', 'log', id] as const,
+  templates: (window: Window, gatewayId: string | null) =>
+    ['monitoring', 'templates', window, gatewayId] as const,
 }
 
 export function useSummary(
@@ -101,7 +106,8 @@ export function useSummary(
   const client = useApiClient()
   return useQuery({
     queryKey: keys.summary(window, filters),
-    queryFn: () => client.get<SummaryResponse>(`/api/v1/metrics/summary?${params(window, filters)}`),
+    queryFn: () =>
+      client.get<SummaryResponse>(`/api/v1/metrics/summary?${params(window, filters)}`),
   })
 }
 
@@ -163,6 +169,26 @@ export function useRequestCounts(window: Window): Record<string, number> {
     }
   }
   return counts
+}
+
+/**
+ * The template fingerprints seen in the window, oldest first, with counts (task 105).
+ *
+ * What decides whether the filter row shows a **Template** control at all: one fingerprint
+ * is not a choice, so the control appears only once a second one has been seen.
+ */
+export function useTemplateFingerprints(
+  window: Window,
+  gatewayId: string | null | undefined,
+): UseQueryResult<TemplateUseList> {
+  const client = useApiClient()
+  return useQuery({
+    queryKey: keys.templates(window, gatewayId ?? null),
+    queryFn: () =>
+      client.get<TemplateUseList>(
+        `/api/v1/logs/templates?${params(window, { gateway_id: gatewayId ?? null })}`,
+      ),
+  })
 }
 
 export function useRequestDetail(id: string | undefined): UseQueryResult<RequestDetailResponse> {

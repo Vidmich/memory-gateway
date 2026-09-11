@@ -272,6 +272,11 @@ class MetricsSeed:
     quiet_end_user_id: uuid.UUID
 
 
+#: Task 105: the two template fingerprints on Acme's main gateway.
+TEMPLATE_BEFORE = "1111111111111111"
+TEMPLATE_AFTER = "2222222222222222"
+
+
 def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
     acme_gateway_id, other_gateway_id, globex_gateway_id = uuid7(), uuid7(), uuid7()
     acme_model_id, mini_model_id = uuid7(), uuid7()
@@ -294,6 +299,9 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
                 # so must not enter the calibration.
                 tokenizer="o200k_base",
                 estimated_prompt_tokens=12 if index % 2 == 0 else None,
+                # Task 105: two wordings on this gateway — fifteen requests under the
+                # defaults, five after a template change.
+                template_fingerprint=TEMPLATE_BEFORE if index < 15 else TEMPLATE_AFTER,
             )
         )
 
@@ -353,7 +361,13 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
             )
         )
 
-    globex_log = make_log_row(globex, gateway_id=globex_gateway_id, model_name="globex-gpt")
+    globex_log = make_log_row(
+        globex,
+        gateway_id=globex_gateway_id,
+        model_name="globex-gpt",
+        # The same fingerprint as Acme's defaults, so the listing has to be scoped.
+        template_fingerprint=TEMPLATE_BEFORE,
+    )
     logs.append(globex_log)
 
     # SPEC §11's throttling, in its own window. Three rejections for one caller, one for

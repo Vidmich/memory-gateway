@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.db.models import ApiKey
 from app.db.models.gateway import MAX_SLUG_LENGTH, MIN_SLUG_LENGTH, ROUTING_MODES
 from app.schemas.common import Page
-from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig
+from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig, TemplateConfig
 from app.schemas.routing import AttemptResponse
 from app.services.gateway_probe import MAX_PROBE_MESSAGE, GatewayProbeResult
 from app.services.gateways import (
@@ -53,6 +53,8 @@ from app.services.memory_preview import (
     PromptPreview,
     RetrievalPreview,
 )
+from app.services.templates import NAMES as TEMPLATE_NAMES
+from app.services.templates import VOCABULARY, Templates
 
 MAX_NAME = 200
 MAX_DESCRIPTION = 2000
@@ -176,6 +178,11 @@ class GatewayResponse(BaseModel):
     memory_config: MemoryConfig
     logging_config: LoggingConfig
     limits: LimitsConfig
+    #: Task 105. The nine templates, defaults filled in, and the inline warnings the
+    #: page shows under them — computed here so the form and the API agree.
+    template_config: TemplateConfig
+    template_warnings: list[str] = []
+    template_fingerprint: str
     key_count: int
     #: Task 104. Connectors this gateway reads whose documents are stale or being
     #: reprocessed, so the editor can say "answers may be drawn from two chunkings until
@@ -214,6 +221,9 @@ class GatewayResponse(BaseModel):
             memory_config=MemoryConfig.load(gateway.memory_config),
             logging_config=LoggingConfig.load(gateway.logging_config),
             limits=LimitsConfig.load(gateway.limits),
+            template_config=(templates := TemplateConfig.load(gateway.template_config)),
+            template_warnings=templates.warnings,
+            template_fingerprint=Templates.of(templates).fingerprint,
             key_count=view.key_count,
             stale_connectors=[
                 StaleConnectorResponse(
@@ -245,6 +255,7 @@ class GatewayCreateRequest(BaseModel):
     memory_config: dict[str, Any] = Field(default_factory=dict)
     logging_config: dict[str, Any] = Field(default_factory=dict)
     limits: dict[str, Any] = Field(default_factory=dict)
+    template_config: dict[str, Any] = Field(default_factory=dict)
 
     _check_routing_mode = field_validator("routing_mode")(_validate_routing_mode)
 
@@ -267,6 +278,7 @@ class GatewayCreateRequest(BaseModel):
             memory_config=self.memory_config,
             logging_config=self.logging_config,
             limits=self.limits,
+            template_config=self.template_config,
         )
 
 
@@ -284,6 +296,7 @@ NOT_NULLABLE = (
     "memory_config",
     "logging_config",
     "limits",
+    "template_config",
 )
 
 
@@ -308,6 +321,7 @@ class GatewayUpdateRequest(BaseModel):
     memory_config: dict[str, Any] | None = None
     logging_config: dict[str, Any] | None = None
     limits: dict[str, Any] | None = None
+    template_config: dict[str, Any] | None = None
 
     _check_routing_mode = field_validator("routing_mode")(_validate_routing_mode)
 
@@ -355,12 +369,40 @@ class GatewayUpdateRequest(BaseModel):
             memory_config=maybe("memory_config"),
             logging_config=maybe("logging_config"),
             limits=maybe("limits"),
+            template_config=maybe("template_config"),
         )
 
 
 # ---------------------------------------------------------------------------
 # memory previews
 # ---------------------------------------------------------------------------
+
+
+class TemplateDefaultsResponse(BaseModel):
+    """What the Advanced page and the organization's defaults editor need that is not on
+    any gateway (task 105): the platform defaults, and each template's placeholders.
+
+    Served rather than duplicated in the browser, so the chips a person can click are
+    exactly the names the server will accept, and the default shown greyed under a
+    changed field is the string the server renders.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    defaults: TemplateConfig
+    #: Per template that takes placeholders, the names allowed, in the order the chips
+    #: are shown. A plain template is absent.
+    placeholders: dict[str, list[str]]
+    #: Every template, in the order the page lists them.
+    order: list[str]
+
+    @classmethod
+    def build(cls) -> Self:
+        return cls(
+            defaults=TemplateConfig(),
+            placeholders={name: list(names) for name, names in VOCABULARY.items()},
+            order=list(TEMPLATE_NAMES),
+        )
 
 
 class MemoryPreviewRequest(BaseModel):
@@ -375,6 +417,9 @@ class MemoryPreviewRequest(BaseModel):
 
     query: Annotated[str, Field(min_length=1, max_length=MAX_PREVIEW_QUERY)]
     memory_config: dict[str, Any] | None = None
+    #: Task 105: unsaved templates, merged the way the save merges them, so the
+    #: Advanced page previews wording the way the Memory section previews knobs.
+    template_config: dict[str, Any] | None = None
 
 
 class RetrievedChunkResponse(BaseModel):
@@ -494,6 +539,12 @@ class PromptPreviewResponse(BaseModel):
     citations: CitationsPreviewResponse
     #: The tokenizer every count on this screen was measured with (task 101).
     tokenizer: str
+    #: Which templates rendered this preview (task 105) — the value a request would
+    #: write to its log row, so the page can say "this is what the log will show".
+    template_fingerprint: str = ""
+    #: What the templates in effect would wrap around an answer (task 105).
+    answer_prefix: str = ""
+    answer_suffix: str = ""
 
     @classmethod
     def of(cls, preview: PromptPreview) -> Self:
@@ -512,6 +563,9 @@ class PromptPreviewResponse(BaseModel):
             retrieval=RetrievalPreviewResponse.of(preview.retrieval),
             citations=CitationsPreviewResponse.of(preview.citations),
             tokenizer=preview.tokenizer,
+            template_fingerprint=preview.templates.fingerprint,
+            answer_prefix=preview.templates.answer_prefix,
+            answer_suffix=preview.templates.answer_suffix,
         )
 
 

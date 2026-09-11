@@ -1,12 +1,14 @@
-"""The three configuration blobs a gateway carries, as versioned schemas.
+"""The four configuration blobs a gateway carries, as versioned schemas.
 
 ``memory_config``, ``logging_config`` and ``limits`` are JSONB columns whose contents are
 owned by tasks 10, 07 and 14. They are created here, in full, with the defaults from the
 SPEC — so those tasks add behaviour and a field, not a migration on a live table.
+``template_config`` (task 105) is the fourth: the text the gateway writes around documents,
+memory and answers, defaulting to the exact strings SPEC §7 prints.
 
 The mechanics that make that safe — permissive on load, strict on write, defaults as
 documentation — live in :mod:`app.schemas.config` and are shared with every other
-settings blob in the product. This module is only the gateway's three shapes.
+settings blob in the product. This module is only the gateway's four shapes.
 """
 
 from __future__ import annotations
@@ -15,10 +17,11 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from app.core.patterns import UnsafePattern, check_pattern
 from app.schemas.config import CONFIG_VERSION, ConfigBlob, merge_config
+from app.services import templates as templating
 
 #: SPEC §11's four caps, in the order they are checked and shown. Requests before
 #: tokens before concurrency: counting is free, estimating tokens is not, and a slot is
@@ -37,6 +40,9 @@ MAX_REDACTION_PATTERN_LENGTH = 200
 #: (SPEC §10.2). A key inside the existing blob rather than a column, for the same reason
 #: the blob exists: tasks 13 and 17 put their own defaults beside it.
 ORG_LOGGING_DEFAULTS = "logging_defaults"
+#: Task 105: the templates a new gateway starts from, beside the logging defaults and for
+#: the same reason — one language across every endpoint is the common case.
+ORG_TEMPLATE_DEFAULTS = "template_defaults"
 
 
 class MemoryConfig(ConfigBlob):
@@ -206,6 +212,86 @@ class LimitsConfig(ConfigBlob):
         )
 
 
+class TemplateConfig(ConfigBlob):
+    """Task 105 — the text this gateway writes, as nine templates.
+
+    Every default is today's exact string, so a gateway that never opens the Advanced
+    page renders byte-identically to before: the golden files are the test. Four fields
+    are plain text; five take placeholders from a closed vocabulary, checked here so the
+    form and the API refuse the same template with the same words. The renderer and the
+    vocabulary are :mod:`app.services.templates`; this class is their schema.
+
+    ``reference_instruction`` may be empty — a brainstorming assistant may not want to be
+    told to hedge — but the page warns, because that sentence is what makes a grounded
+    assistant rather than a confident one.
+    """
+
+    reference_heading: str = Field(
+        default=templating.DEFAULT_REFERENCE_HEADING, max_length=templating.MAX_TEMPLATE_LENGTH
+    )
+    reference_instruction: str = Field(
+        default=templating.DEFAULT_REFERENCE_INSTRUCTION,
+        max_length=templating.MAX_INSTRUCTION_LENGTH,
+    )
+    excerpt: str = Field(
+        default=templating.DEFAULT_EXCERPT, max_length=templating.MAX_TEMPLATE_LENGTH
+    )
+    memory_heading: str = Field(
+        default=templating.DEFAULT_MEMORY_HEADING, max_length=templating.MAX_TEMPLATE_LENGTH
+    )
+    fact: str = Field(default=templating.DEFAULT_FACT, max_length=templating.MAX_TEMPLATE_LENGTH)
+    sources_heading: str = Field(
+        default=templating.DEFAULT_SOURCES_HEADING, max_length=templating.MAX_TEMPLATE_LENGTH
+    )
+    source_line: str = Field(
+        default=templating.DEFAULT_SOURCE_LINE, max_length=templating.MAX_TEMPLATE_LENGTH
+    )
+    answer_prefix: str = Field(
+        default=templating.DEFAULT_ANSWER_PREFIX, max_length=templating.MAX_TEMPLATE_LENGTH
+    )
+    answer_suffix: str = Field(
+        default=templating.DEFAULT_ANSWER_SUFFIX, max_length=templating.MAX_TEMPLATE_LENGTH
+    )
+
+    @field_validator(*templating.NAMES)
+    @classmethod
+    def _check(cls, value: str, info: ValidationInfo) -> str:
+        # A field validator rather than a model one so the error carries the field's
+        # name, and `merge_config` lands the 422 on the textarea being edited.
+        templating.check(str(info.field_name), value)
+        return value
+
+    @property
+    def warnings(self) -> list[str]:
+        """Inline, non-blocking: what the page says under a template that is allowed
+        but probably not what was meant. Computed here so the API and the form agree."""
+        found: list[str] = []
+        if not self.reference_instruction.strip():
+            found.append(
+                "The instruction is empty: the model is no longer told to say when the "
+                "documents do not answer — that sentence is the difference between a "
+                "grounded assistant and a confident one."
+            )
+        if "{source_name}" not in self.excerpt:
+            found.append(
+                "The excerpt no longer prints {source_name}: the model can cite, but "
+                "cannot name the document; the footer and the metadata still can."
+            )
+        return found
+
+
+def organization_template_defaults(settings: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The templates a new gateway in this organization starts from (task 105).
+
+    Partial and merged under the draft, exactly as :func:`organization_logging_defaults`
+    is, and as tolerant of a hand-edited blob for the same reason.
+    """
+    if not isinstance(settings, Mapping):
+        return {}
+    defaults = settings.get(ORG_TEMPLATE_DEFAULTS)
+    return dict(defaults) if isinstance(defaults, Mapping) else {}
+
+
 def organization_logging_defaults(settings: Mapping[str, Any] | None) -> dict[str, Any]:
     """The logging defaults a new gateway in this organization starts from.
 
@@ -228,11 +314,14 @@ __all__ = [
     "CONFIG_VERSION",
     "LIMIT_NAMES",
     "ORG_LOGGING_DEFAULTS",
+    "ORG_TEMPLATE_DEFAULTS",
     "ConfigBlob",
     "LimitsConfig",
     "LoggingConfig",
     "MemoryConfig",
     "Quota",
+    "TemplateConfig",
     "merge_config",
     "organization_logging_defaults",
+    "organization_template_defaults",
 ]

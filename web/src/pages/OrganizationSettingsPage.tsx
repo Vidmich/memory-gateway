@@ -9,6 +9,7 @@ import { StatusBadge } from '@/components/StatusBadge'
 import { useToast } from '@/components/Toast'
 import { DistillationSettings } from '@/pages/DistillationSettings'
 import { SummarizationSettings } from '@/pages/SummarizationSettings'
+import { TemplateDefaultsSettings } from '@/pages/TemplateDefaultsSettings'
 import { useRetentionCeilings } from '@/api/platform'
 
 /**
@@ -43,8 +44,8 @@ export function OrganizationSettingsPage() {
       <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
         <h3 className="text-sm font-semibold text-slate-900">No organization selected</h3>
         <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
-          Your account belongs to the platform. Open an organization from Platform →
-          Organizations to see its settings.
+          Your account belongs to the platform. Open an organization from Platform → Organizations
+          to see its settings.
         </p>
       </div>
     )
@@ -119,15 +120,17 @@ export function OrganizationSettingsPage() {
 
       <DistillationSettings />
       <SummarizationSettings />
+      <TemplateDefaultsSettings organization={organization} editable={editable} />
 
       <RetentionCeilings />
 
       <section className="mt-8 rounded-lg border border-slate-200 bg-white p-6">
         <h2 className="text-sm font-semibold text-slate-900">Stored defaults</h2>
         <p className="mt-2 max-w-xl text-sm text-slate-600">
-          Everything this organization has set, as it is stored. The write-back section
-          above edits the <code className="font-mono">distillation</code> key; logging
-          defaults live on each gateway.
+          Everything this organization has set, as it is stored. The write-back section above edits
+          the <code className="font-mono">distillation</code> key and the template section the{' '}
+          <code className="font-mono">template_defaults</code> key; logging defaults live on each
+          gateway.
         </p>
         <pre className="mt-3 overflow-x-auto rounded-md bg-slate-50 p-3 font-mono text-xs text-slate-600">
           {JSON.stringify(organization.settings, null, 2)}
@@ -155,20 +158,26 @@ function RetentionCeilings() {
     <section className="mt-8 rounded-lg border border-slate-200 bg-white p-6">
       <h2 className="text-sm font-semibold text-slate-900">Retention ceilings</h2>
       <p className="mt-2 max-w-xl text-sm text-slate-600">
-        This platform caps how long data may be kept. A gateway configured for longer is
-        lowered to the ceiling, and the nightly retention pass enforces the same number.
+        This platform caps how long data may be kept. A gateway configured for longer is lowered to
+        the ceiling, and the nightly retention pass enforces the same number.
       </p>
       <ul className="mt-3 space-y-1 text-sm text-slate-700">
         {bodies === null ? null : (
           <li>
             Request and response bodies: at most{' '}
-            <strong>{bodies} day{bodies === 1 ? '' : 's'}</strong>.
+            <strong>
+              {bodies} day{bodies === 1 ? '' : 's'}
+            </strong>
+            .
           </li>
         )}
         {metadata === null ? null : (
           <li>
             Metadata rows: at most{' '}
-            <strong>{metadata} day{metadata === 1 ? '' : 's'}</strong>.
+            <strong>
+              {metadata} day{metadata === 1 ? '' : 's'}
+            </strong>
+            .
           </li>
         )}
       </ul>

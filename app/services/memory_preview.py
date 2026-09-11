@@ -37,12 +37,13 @@ from app.core.errors import NotFound, Validation
 from app.core.tenancy import Actor
 from app.db.models import Gateway, UpstreamModel
 from app.schemas.config import merge_config
-from app.schemas.gateway_config import MemoryConfig
+from app.schemas.gateway_config import MemoryConfig, TemplateConfig
 from app.schemas.openai import ChatMessage
 from app.services.citations import footer, resolve
 from app.services.gateway_store import GatewayStore, GatewayTransaction
 from app.services.prompt import Layer, assemble, fit_documents, render_entry
 from app.services.retrieval import Chunk, MemoryService, Recall, Retrieval
+from app.services.templates import DEFAULT_TEMPLATES, Templates
 from app.services.tokenizer import Tokenizer, WordTokenizer, count
 from app.services.tokenizers import effective, stored
 
@@ -129,6 +130,9 @@ class PromptPreview:
     retrieval: RetrievalPreview
     citations: CitationsPreview
     tokenizer: str = ""
+    #: The templates the preview rendered with (task 105): the saved ones, or the
+    #: unsaved patch the Advanced page sent.
+    templates: Templates = DEFAULT_TEMPLATES
 
 
 class MemoryPreview:
@@ -156,11 +160,13 @@ class MemoryPreview:
         *,
         query: str,
         memory_config: Mapping[str, Any] | None = None,
+        template_config: Mapping[str, Any] | None = None,
     ) -> RetrievalPreview:
         text = _check_query(query)
         gateway, config, model = await self._load(actor, gateway_id, memory_config)
+        templates = resolve_templates(gateway, template_config)
         recall = await self._recall(gateway, config, text)
-        return self._preview(recall.documents, config, self._tokenizer_for(model))
+        return self._preview(recall.documents, config, self._tokenizer_for(model), templates)
 
     async def preview_prompt(
         self,
@@ -169,9 +175,11 @@ class MemoryPreview:
         *,
         message: str,
         memory_config: Mapping[str, Any] | None = None,
+        template_config: Mapping[str, Any] | None = None,
     ) -> PromptPreview:
         text = _check_query(message)
         gateway, config, model = await self._load(actor, gateway_id, memory_config)
+        templates = resolve_templates(gateway, template_config)
         recall = await self._recall(gateway, config, text)
         tokenizer = self._tokenizer_for(model)
 
@@ -185,6 +193,7 @@ class MemoryPreview:
             memory_max_tokens=config.memory_max_tokens,
             context_window=model.context_window if model is not None else None,
             tokenizer=tokenizer,
+            templates=templates,
         )
         return PromptPreview(
             layers=assembled.layers,
@@ -193,9 +202,10 @@ class MemoryPreview:
             context_window=model.context_window if model is not None else None,
             model_name=model.name if model is not None else None,
             overflowed=assembled.overflowed,
-            retrieval=self._preview(recall.documents, config, tokenizer),
-            citations=self._citations(config, assembled.injected),
+            retrieval=self._preview(recall.documents, config, tokenizer, templates),
+            citations=self._citations(config, assembled.injected, templates),
             tokenizer=tokenizer.name,
+            templates=templates,
         )
 
     # -- internals --------------------------------------------------------
@@ -224,10 +234,17 @@ class MemoryPreview:
         return tokenizer_for(model, self._tokenizer)
 
     def _preview(
-        self, retrieval: Retrieval, config: MemoryConfig, tokenizer: Tokenizer
+        self,
+        retrieval: Retrieval,
+        config: MemoryConfig,
+        tokenizer: Tokenizer,
+        templates: Templates = DEFAULT_TEMPLATES,
     ) -> RetrievalPreview:
         budgeted = fit_documents(
-            retrieval.chunks, budget=config.doc_max_tokens, tokenizer=tokenizer
+            retrieval.chunks,
+            budget=config.doc_max_tokens,
+            tokenizer=tokenizer,
+            templates=templates,
         )
         survivors = {chunk.id for chunk in budgeted.kept}
         return RetrievalPreview(
@@ -239,7 +256,7 @@ class MemoryPreview:
                 PreviewChunk(
                     chunk=chunk,
                     injected=chunk.id in survivors,
-                    tokens=count(tokenizer, render_entry(index, chunk)),
+                    tokens=count(tokenizer, render_entry(index, chunk, templates=templates)),
                     handle=index,
                 )
                 for index, chunk in enumerate(retrieval.chunks, start=1)
@@ -249,7 +266,12 @@ class MemoryPreview:
             tokenizer=tokenizer.name,
         )
 
-    def _citations(self, config: MemoryConfig, injected: Sequence[Chunk]) -> CitationsPreview:
+    def _citations(
+        self,
+        config: MemoryConfig,
+        injected: Sequence[Chunk],
+        templates: Templates = DEFAULT_TEMPLATES,
+    ) -> CitationsPreview:
         """One example per mode, for an answer that cites the first two injected chunks.
 
         Over ``assembled.injected`` and not the retrieval's chunks: only what survived the
@@ -267,8 +289,16 @@ class MemoryPreview:
             mode=config.citations,
             sample_answer=sample,
             metadata=tuple(c.as_json(base_url=self._ui_base_url) for c in resolution.cited),
-            footer=footer(resolution.cited, base_url=self._ui_base_url),
+            footer=footer(resolution.cited, base_url=self._ui_base_url, templates=templates),
         )
+
+
+def resolve_templates(gateway: Gateway, patch: Mapping[str, Any] | None) -> Templates:
+    """The templates a preview renders with: the saved set with an unsaved patch merged
+    (task 105), through the same merge the save uses — so a template this screen accepts
+    is one the form can save, and one it refuses is refused with the same message."""
+    merged = merge_config(TemplateConfig, gateway.template_config, patch, field="template_config")
+    return Templates.of(TemplateConfig.load(merged))
 
 
 async def resolve_memory_config(
@@ -335,5 +365,6 @@ __all__ = [
     "RetrievalPreview",
     "primary_model",
     "resolve_memory_config",
+    "resolve_templates",
     "tokenizer_for",
 ]

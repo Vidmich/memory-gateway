@@ -30,6 +30,7 @@ import type {
   MemoryPreviewRequest,
   PromptPreviewResponse,
   RetrievalPreviewResponse,
+  TemplateDefaultsResponse,
 } from '@/api/types'
 
 export const keys = {
@@ -37,6 +38,8 @@ export const keys = {
   list: (cursor?: string | null) => ['gateways', { cursor: cursor ?? null }] as const,
   one: (id: string) => ['gateways', id] as const,
   apiKeys: (gatewayId: string) => ['gateways', gatewayId, 'keys'] as const,
+  /** Task 105: the platform's template defaults and placeholders — static, one fetch. */
+  templateDefaults: ['templates', 'defaults'] as const,
 }
 
 function listPath(cursor?: string | null): string {
@@ -59,6 +62,23 @@ export function useGateway(id: string | undefined): UseQueryResult<GatewayRespon
     queryKey: keys.one(id ?? ''),
     queryFn: () => client.get<GatewayResponse>(`/api/v1/gateways/${id}`),
     enabled: Boolean(id),
+  })
+}
+
+/**
+ * The platform's template defaults and each template's placeholders (task 105).
+ *
+ * Fetched rather than copied into the bundle: the chips a person can click are then
+ * exactly the names the server accepts, and the greyed "default" under a changed field is
+ * the string the server renders. It never changes while the app runs, so it is cached for
+ * the session.
+ */
+export function useTemplateDefaults(): UseQueryResult<TemplateDefaultsResponse> {
+  const client = useApiClient()
+  return useQuery({
+    queryKey: keys.templateDefaults,
+    queryFn: () => client.get<TemplateDefaultsResponse>('/api/v1/templates/defaults'),
+    staleTime: Infinity,
   })
 }
 
@@ -159,10 +179,7 @@ export function useTryRetrieval(gatewayId: string | undefined) {
   const client = useApiClient()
   return useMutation({
     mutationFn: (body: MemoryPreviewRequest) =>
-      client.post<RetrievalPreviewResponse>(
-        `/api/v1/gateways/${gatewayId}/try-retrieval`,
-        body,
-      ),
+      client.post<RetrievalPreviewResponse>(`/api/v1/gateways/${gatewayId}/try-retrieval`, body),
   })
 }
 
@@ -171,9 +188,6 @@ export function usePromptPreview(gatewayId: string | undefined) {
   const client = useApiClient()
   return useMutation({
     mutationFn: (body: MemoryPreviewRequest) =>
-      client.post<PromptPreviewResponse>(
-        `/api/v1/gateways/${gatewayId}/prompt-preview`,
-        body,
-      ),
+      client.post<PromptPreviewResponse>(`/api/v1/gateways/${gatewayId}/prompt-preview`, body),
   })
 }

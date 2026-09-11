@@ -15,6 +15,7 @@ import pytest
 
 from app.services.gateway_store import MemoryGatewayStore
 from app.services.memory_preview import MemoryPreview
+from app.services.templates import DEFAULT_TEMPLATES
 from tests.auth_support import AuthFixture, build_auth
 from tests.conftest import AuthHarness
 from tests.gateway_support import make_gateway_row
@@ -283,6 +284,59 @@ async def test_the_prompt_preview_shows_every_layer_with_its_token_count(
     assert layers["documents"]["tokens"] > 0
     assert "Zynthorp" in payload["system_message"]
     assert payload["total_tokens"] == sum(layer["tokens"] for layer in payload["layers"])
+
+
+async def test_the_prompt_preview_renders_an_unsaved_template_patch_and_saves_nothing(
+    signed_in: AuthHarness,
+) -> None:
+    """Task 105. The Advanced page previews wording the way the Memory section previews
+    knobs: the patch is merged by the save's own function and written nowhere."""
+    await seed(signed_in, SECRET_FACT)
+    gateway_id = await make_gateway(signed_in, citations="footer")
+    patch = {
+        "reference_heading": "## Referenzmaterial",
+        "excerpt": "[{handle}] {source_name}{section}\n{text}",
+        "sources_heading": "Quellen:",
+        "answer_suffix": "\n\n_Aus internen Dokumenten._",
+    }
+
+    payload = (
+        await post(
+            signed_in,
+            f"/api/v1/gateways/{gateway_id}/prompt-preview",
+            {"query": QUESTION, "template_config": patch},
+        )
+    ).json()
+
+    layers = {layer["name"]: layer for layer in payload["layers"]}
+    assert layers["documents"]["text"].startswith("## Referenzmaterial\nThe following excerpts")
+    assert "source:" not in layers["documents"]["text"]
+    assert payload["citations"]["footer"].startswith("\n\nQuellen:\n[1] ")
+    assert payload["answer_suffix"] == "\n\n_Aus internen Dokumenten._"
+    assert payload["template_fingerprint"] != DEFAULT_TEMPLATES.fingerprint
+    # The excerpt tokens on the retrieval half are measured under the same template.
+    assert payload["retrieval"]["chunks"][0]["tokens"] > 0
+
+    stored = await signed_in.client.get(
+        f"/api/v1/gateways/{gateway_id}", headers=signed_in.bearer(await signed_in.sign_in())
+    )
+    assert stored.json()["template_config"]["reference_heading"] == "## Reference material"
+    assert stored.json()["template_fingerprint"] == DEFAULT_TEMPLATES.fingerprint
+
+
+async def test_a_template_patch_the_form_would_refuse_is_refused_by_the_preview(
+    signed_in: AuthHarness,
+) -> None:
+    gateway_id = await make_gateway(signed_in)
+
+    response = await post(
+        signed_in,
+        f"/api/v1/gateways/{gateway_id}/try-retrieval",
+        {"query": QUESTION, "template_config": {"excerpt": "{text}"}},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["param"] == "template_config.excerpt"
 
 
 async def test_an_empty_layer_is_returned_with_empty_text_rather_than_omitted(

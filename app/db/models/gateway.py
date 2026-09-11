@@ -4,8 +4,8 @@ A gateway is the customer-facing endpoint: ``/g/{slug}/v1/*``. The slug is in th
 which is why it is globally unique and why task 06 makes it immutable — renaming it would
 break every deployed client from a settings form, silently and instantly.
 
-The three ``*_config`` columns are JSONB rather than columns per setting. Their contents
-are owned by tasks 10, 07 and 14 respectively, and each will add fields; a blob keeps
+The ``*_config`` columns are JSONB rather than columns per setting. Their contents
+are owned by tasks 10, 07, 14 and 105 respectively, and each will add fields; a blob keeps
 that from being a migration per knob on a live table. They are not free-form, though —
 :mod:`app.schemas.gateway_config` validates every one on the way in and fills defaults on
 the way out, so a row written before a field existed still loads.
@@ -90,6 +90,11 @@ class Gateway(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         JSONB, nullable=False, default=dict, server_default="{}"
     )
     limits: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    #: Task 105. The text the gateway writes around documents, memory and answers, as
+    #: nine templates; ``{}`` renders exactly what SPEC §7 prints.
+    template_config: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
 

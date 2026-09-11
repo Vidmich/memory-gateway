@@ -31,6 +31,7 @@ from app.services.gateway_resolver import (
     GatewayCache,
     ResolvedGateway,
 )
+from app.services.templates import DEFAULT_TEMPLATES
 from tests.catalog_support import ACME_SECRET
 
 # ---------------------------------------------------------------------------
@@ -366,6 +367,29 @@ async def test_the_routing_weights_survive_the_round_trip(cache: GatewayCache) -
     # The second read comes out of Redis, through JSON, where the key was a string.
     assert second.weights == {model_id: 70}
     assert source.loads == 1
+
+
+async def test_the_templates_survive_the_round_trip(cache: GatewayCache) -> None:
+    """Task 105. The nine strings ride on the payload as a plain object; a payload
+    without them — or with a key the build does not know — decodes to the defaults."""
+    source = FakeSource(
+        payload_for(templates={"reference_heading": "## Referenzmaterial", "extra": "ignored"})
+    )
+    resolver = CachedGatewayResolver(source, cache)  # type: ignore[arg-type]
+
+    first = await resolver.resolve("acme-chat")
+    second = await resolver.resolve("acme-chat")
+
+    assert first.templates.reference_heading == "## Referenzmaterial"
+    assert second.templates == first.templates
+    assert second.templates.excerpt == DEFAULT_TEMPLATES.excerpt
+    assert second.template_fingerprint != DEFAULT_TEMPLATES.fingerprint
+    assert source.loads == 1
+
+    # Another slug, so the read is not served from the payload cached above.
+    other = FakeSource(payload_for(slug="acme-plain"))
+    plain = await CachedGatewayResolver(other, cache).resolve("acme-plain")  # type: ignore[arg-type]
+    assert plain.templates == DEFAULT_TEMPLATES
 
 
 async def test_a_payload_from_another_build_is_treated_as_a_miss(

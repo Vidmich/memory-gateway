@@ -30,6 +30,8 @@ from app.schemas.monitoring import (
     RequestLogResponse,
     SeriesResponse,
     SummaryResponse,
+    TemplateUseList,
+    TemplateUseResponse,
     ThrottledEndUserResponse,
     ThrottledEndUsersResponse,
 )
@@ -55,6 +57,8 @@ _MinLatency = Annotated[int | None, Query(ge=0)]
 _Search = Annotated[str | None, Query(max_length=200)]
 #: Task 100. ``true`` keeps the requests that injected documents and cited none.
 _Uncited = Annotated[bool | None, Query()]
+#: Task 105. Only requests worded by this set of templates.
+_Template = Annotated[str | None, Query(max_length=16)]
 _Cursor = Annotated[str | None, Query(max_length=64)]
 _Limit = Annotated[int | None, Query(ge=1, le=200)]
 
@@ -159,6 +163,7 @@ async def list_logs(
     min_latency_ms: _MinLatency = None,
     search: _Search = None,
     uncited: _Uncited = None,
+    template_fingerprint: _Template = None,
     cursor: _Cursor = None,
     limit: _Limit = None,
 ) -> Page[RequestLogResponse]:
@@ -180,11 +185,34 @@ async def list_logs(
         min_latency_ms=min_latency_ms,
         search=search,
         uncited=uncited,
+        template_fingerprint=template_fingerprint,
     )
     page = await service.list_logs(actor, filters, cursor=cursor, limit=limit)
     return Page(
         items=[RequestLogResponse.of(row) for row in page.items],
         next_cursor=page.next_cursor,
+    )
+
+
+@router.get("/logs/templates", dependencies=[_reads])
+async def list_template_fingerprints(
+    actor: CurrentActor,
+    service: _Service,
+    start: _From = None,
+    to: _To = None,
+    gateway_id: _Gateway = None,
+) -> TemplateUseList:
+    """The template fingerprints seen in the window, oldest first, with counts (task 105).
+
+    What the Monitoring filter row lists under **Template** once more than one appears:
+    an A/B of wording is then two filters and a comparison.
+    """
+    filters = build_filters(start=start, end=to, gateway_id=gateway_id)
+    return TemplateUseList(
+        items=[
+            TemplateUseResponse.of(use)
+            for use in await service.template_fingerprints(actor, filters)
+        ]
     )
 
 

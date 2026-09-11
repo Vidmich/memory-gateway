@@ -12,18 +12,19 @@ import { Waterfall } from '@/components/Charts'
 import { CopyButton } from '@/components/CopyButton'
 import { StatusBadge } from '@/components/StatusBadge'
 import {
-    asCurl,
-    contentOf,
-    countInjected,
-    droppedReason,
-    citationSummary,
-    recalledFacts,
-    retrievedChunks,
-    roleOf,
-    toneFor,
-    type RecalledFact,
-    type RetrievedChunk,
+  asCurl,
+  contentOf,
+  countInjected,
+  droppedReason,
+  citationSummary,
+  recalledFacts,
+  retrievedChunks,
+  roleOf,
+  toneFor,
+  type RecalledFact,
+  type RetrievedChunk,
 } from '@/pages/requestDetail'
+import { shortFingerprint } from '@/pages/templates'
 
 /**
  * SPEC §10.3: the answer to "why did the model say that?".
@@ -123,14 +124,22 @@ function Detail({
             <h2 className="text-sm font-semibold text-slate-900">
               {log.model_name ?? 'Unknown model'}
             </h2>
+            {/* Task 105: which wording assembled this request. Beside the model because
+                the two together are "what was this request rendered as". */}
+            {log.template_fingerprint ? (
+              <code
+                className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-600"
+                title="Template fingerprint: which set of templates worded this request"
+                data-testid="drawer-template-fingerprint"
+              >
+                {shortFingerprint(log.template_fingerprint)}
+              </code>
+            ) : null}
           </div>
           <p className="mt-1 font-mono text-xs text-slate-500">{log.id}</p>
         </div>
         <div className="flex items-center gap-2">
-          <CopyButton
-            value={asCurl(log, detail, gateway?.endpoint_url)}
-            label="Copy as curl"
-          />
+          <CopyButton value={asCurl(log, detail, gateway?.endpoint_url)} label="Copy as curl" />
           <button
             type="button"
             onClick={onClose}
@@ -224,15 +233,15 @@ function Detail({
           {log.dropped_params.length > 0 ? (
             <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
               The model that served this request speaks a dialect with no equivalent for{' '}
-              <span className="font-mono text-xs">{log.dropped_params.join(', ')}</span>, so
-              they were not sent. The request succeeded without them.
+              <span className="font-mono text-xs">{log.dropped_params.join(', ')}</span>, so they
+              were not sent. The request succeeded without them.
             </p>
           ) : null}
           {log.failed_after_stream_start ? (
             <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-              The upstream failed after the first chunk had reached the client. The status
-              line was already sent, so this could not be failed over and the stream ended
-              with an error event.
+              The upstream failed after the first chunk had reached the client. The status line was
+              already sent, so this could not be failed over and the stream ended with an error
+              event.
             </p>
           ) : null}
         </Panel>
@@ -241,7 +250,11 @@ function Detail({
           title="Memory"
           subtitle="What retrieval found for this request, and what became of it."
         >
-          <Retrieved log={log} entries={detail.retrieved_chunk_ids} cited={detail.cited_chunk_ids} />
+          <Retrieved
+            log={log}
+            entries={detail.retrieved_chunk_ids}
+            cited={detail.cited_chunk_ids}
+          />
           <Recalled log={log} entries={detail.retrieved_fact_ids} />
         </Panel>
       </div>
@@ -281,9 +294,8 @@ function Retrieved({
   if (chunks.length === 0) {
     return (
       <p className="text-sm text-slate-700">
-        Retrieval ran in {log.latency_retrieval_ms} ms and found nothing above this
-        gateway&apos;s score floor. The model answered from its own knowledge and the
-        system context.
+        Retrieval ran in {log.latency_retrieval_ms} ms and found nothing above this gateway&apos;s
+        score floor. The model answered from its own knowledge and the system context.
       </p>
     )
   }
@@ -318,13 +330,7 @@ function Retrieved({
  * would also make the scores incomparable — a chunk's is cosine similarity, a fact's is
  * similarity multiplied by confidence and recency.
  */
-function Recalled({
-  log,
-  entries,
-}: {
-  log: RequestLogResponse
-  entries: readonly unknown[]
-}) {
+function Recalled({ log, entries }: { log: RequestLogResponse; entries: readonly unknown[] }) {
   const facts = recalledFacts(entries)
 
   if (log.end_user_id === null) {
@@ -339,8 +345,7 @@ function Recalled({
   if (facts.length === 0) {
     return (
       <p className="mt-4 border-t border-slate-200 pt-4 text-sm text-slate-700">
-        Nothing is stored about this end user yet, so the prompt carried no facts about
-        them.{' '}
+        Nothing is stored about this end user yet, so the prompt carried no facts about them.{' '}
         <Link to={`/memory/${log.end_user_id}`} className="font-medium underline">
           Open their memory
         </Link>
@@ -352,8 +357,8 @@ function Recalled({
   return (
     <div className="mt-4 border-t border-slate-200 pt-4">
       <p className="text-sm text-slate-700">
-        {injected} of {facts.length} fact{facts.length === 1 ? '' : 's'} about this end
-        user injected ·{' '}
+        {injected} of {facts.length} fact{facts.length === 1 ? '' : 's'} about this end user
+        injected ·{' '}
         <Link to={`/memory/${log.end_user_id}`} className="font-medium underline">
           open their memory
         </Link>
@@ -396,7 +401,6 @@ function FactRow({ fact }: { fact: RecalledFact }) {
     </li>
   )
 }
-
 
 function ChunkRow({ chunk }: { chunk: RetrievedChunk }) {
   const reason = droppedReason(chunk.dropped)
@@ -478,18 +482,14 @@ function Attempts({
               ok ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'
             }`}
           >
-            <span className="w-4 shrink-0 text-center font-medium text-slate-400">
-              {index + 1}
-            </span>
+            <span className="w-4 shrink-0 text-center font-medium text-slate-400">{index + 1}</span>
             <span className="min-w-0 flex-1 truncate font-medium text-slate-800">
               {attempt.model_name}
             </span>
             <span className={`tabular-nums ${ok ? 'text-emerald-700' : 'text-red-700'}`}>
               {attempt.status}
             </span>
-            {attempt.error_code ? (
-              <code className="text-red-700">{attempt.error_code}</code>
-            ) : null}
+            {attempt.error_code ? <code className="text-red-700">{attempt.error_code}</code> : null}
             <span className="w-16 shrink-0 text-right tabular-nums text-slate-500">
               {attempt.latency_ms} ms
             </span>
@@ -499,25 +499,27 @@ function Attempts({
       {attempts.every((attempt) => attempt.status >= 400) ? (
         <li className="text-xs text-slate-500">
           Every target failed, so the caller received the last error. A{' '}
-          <span className="font-medium">retryable</span> failure on the last attempt means
-          the chain was too short, not that the error was final.
+          <span className="font-medium">retryable</span> failure on the last attempt means the chain
+          was too short, not that the error was final.
         </li>
       ) : null}
     </ol>
   )
 }
 
-function Facts({
-  log,
-  gatewaySlug,
-}: {
-  log: RequestLogResponse
-  gatewaySlug: string | undefined
-}) {
+function Facts({ log, gatewaySlug }: { log: RequestLogResponse; gatewaySlug: string | undefined }) {
   const entries: [string, ReactNode][] = [
     ['When', new Date(log.created_at).toLocaleString()],
     ['Gateway', gatewaySlug ?? '(deleted)'],
     ['Model', log.model_name ?? '(deleted)'],
+    [
+      'Templates',
+      log.template_fingerprint ? (
+        <code className="font-mono text-xs">{log.template_fingerprint}</code>
+      ) : (
+        'Not recorded'
+      ),
+    ],
     ['Mode', log.streamed ? 'Streamed' : 'Single response'],
     ['Total', `${log.latency_total_ms} ms`],
     [
@@ -527,10 +529,7 @@ function Facts({
         : `${log.prompt_tokens ?? 0} in / ${log.completion_tokens ?? 0} out`,
     ],
     ['Key', log.api_key_id ? <code className="text-xs">{log.api_key_id}</code> : '—'],
-    [
-      'Request id',
-      log.request_id ? <code className="text-xs">{log.request_id}</code> : '—',
-    ],
+    ['Request id', log.request_id ? <code className="text-xs">{log.request_id}</code> : '—'],
   ]
 
   return (
@@ -612,17 +611,16 @@ function NotCaptured({ reason, field }: { reason: string | null; field: string }
   if (reason === 'queue_pressure') {
     return (
       <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-        Not stored — the log queue was saturated when this request finished, so its bodies
-        were dropped to keep the metadata. The <code>logs_dropped_total</code> metric
-        counts these.
+        Not stored — the log queue was saturated when this request finished, so its bodies were
+        dropped to keep the metadata. The <code>logs_dropped_total</code> metric counts these.
       </p>
     )
   }
   if (reason === 'redaction_budget') {
     return (
       <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-        Not stored — redaction did not finish within its budget, so the bodies were dropped
-        rather than saved half-redacted. Check this gateway’s redaction patterns.
+        Not stored — redaction did not finish within its budget, so the bodies were dropped rather
+        than saved half-redacted. Check this gateway’s redaction patterns.
       </p>
     )
   }

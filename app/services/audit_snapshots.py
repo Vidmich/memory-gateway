@@ -50,7 +50,7 @@ from app.db.models import (
     User,
 )
 from app.schemas.connector_config import ChunkingConfig
-from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig
+from app.schemas.gateway_config import LimitsConfig, LoggingConfig, MemoryConfig, TemplateConfig
 from app.schemas.summarization import SummarizationConfig
 from app.services.audit import Sensitive, Snapshot, Subject, Target
 
@@ -222,6 +222,7 @@ def gateway_subject(gateway: Gateway) -> Subject:
             "memory_config": _blob(MemoryConfig, gateway.memory_config),
             "logging_config": _blob(LoggingConfig, gateway.logging_config),
             "limits": _blob(LimitsConfig, gateway.limits),
+            "template_config": _blob(TemplateConfig, gateway.template_config),
         },
     )
 

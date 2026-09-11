@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.schemas.openai import ChatMessage
+from app.services.templates import DEFAULT_TEMPLATES, Templates, render, section_of
 from app.services.tokenizer import Tokenizer, WordTokenizer, count
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle: retrieval imports `as_text` from here
@@ -49,16 +50,13 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle: retrieval imports `as_text
 
 SYSTEM_ROLE = "system"
 
-#: SPEC §7, verbatim. The instruction is the product surface, not a detail: telling the
-#: model to say when the material does not answer the question is the difference between
-#: a grounded assistant and a confident liar, and it is one sentence.
-REFERENCE_HEADING = "## Reference material"
-REFERENCE_INSTRUCTION = (
-    "The following excerpts are retrieved from the organization's knowledge base. Cite "
-    "them when relevant. If they do not answer the question, say so rather than "
-    "inventing an answer."
-)
-MEMORY_HEADING = "## What you know about this user"
+#: SPEC §7, verbatim — and, since task 105, the *defaults* of a per-gateway template set
+#: (:mod:`app.services.templates`). Kept under their old names for the tests and the
+#: modules that quote them; a gateway that never edited its templates renders exactly
+#: these.
+REFERENCE_HEADING = DEFAULT_TEMPLATES.reference_heading
+REFERENCE_INSTRUCTION = DEFAULT_TEMPLATES.reference_instruction
+MEMORY_HEADING = DEFAULT_TEMPLATES.memory_heading
 
 #: Room left for the model's answer when checking the context window. A prompt that fills
 #: the window exactly is one the provider accepts and then has nowhere to write into, so
@@ -160,22 +158,34 @@ class Assembled:
 # ---------------------------------------------------------------------------
 
 
-def render_entry(index: int, chunk: Chunk) -> str:
-    """One numbered excerpt, in the shape SPEC §7 prints.
+def render_entry(index: int, chunk: Chunk, *, templates: Templates = DEFAULT_TEMPLATES) -> str:
+    """One numbered excerpt, in the shape SPEC §7 prints — or the gateway's own (task 105).
 
     The number is a citation handle — "as [2] says" is only meaningful if the model can
-    see a ``[2]`` — so it is positional within the block and starts at 1.
+    see a ``[2]`` — so it is positional within the block and starts at 1. The template is
+    guaranteed to print it: the schema refuses an excerpt template without ``[{handle}]``.
     """
     if chunk.is_summary:
         # Never `source:`. A summary is rewritten text the document does not contain, and
         # a heading that called it a source would invite a citation to words that were
-        # never written — the one way task 102 could damage the product.
+        # never written — the one way task 102 could damage the product. So a summary
+        # keeps its fixed shape whatever the excerpt template says: the template is a
+        # sentence about a quote, and this is not one.
         return f"[{index}] summary of: {chunk.source_name}\n{chunk.text.strip()}"
-    where = f" ({chunk.page_or_section})" if chunk.page_or_section else ""
-    return f"[{index}] source: {chunk.source_name}{where}\n{chunk.text.strip()}"
+    return render(
+        templates.excerpt,
+        {
+            "handle": index,
+            "source_name": chunk.source_name,
+            "section": section_of(chunk.page_or_section),
+            "section_raw": chunk.page_or_section or "",
+            "text": chunk.text.strip(),
+            "score": f"{chunk.score:.2f}",
+        },
+    )
 
 
-def render_documents(chunks: Sequence[Chunk]) -> str:
+def render_documents(chunks: Sequence[Chunk], *, templates: Templates = DEFAULT_TEMPLATES) -> str:
     """The whole reference block, or the empty string.
 
     Empty in, empty out — never a heading with nothing under it. An orphan heading is
@@ -184,15 +194,21 @@ def render_documents(chunks: Sequence[Chunk]) -> str:
     """
     if not chunks:
         return ""
-    entries = [render_entry(index, chunk) for index, chunk in enumerate(chunks, start=1)]
+    entries = [
+        render_entry(index, chunk, templates=templates)
+        for index, chunk in enumerate(chunks, start=1)
+    ]
     # Heading and instruction on consecutive lines, then a blank line before the first
     # excerpt — the exact shape SPEC §7 prints. The instruction is part of the heading,
-    # not the first excerpt, and a blank line between them would read as one.
-    header = f"{REFERENCE_HEADING}\n{REFERENCE_INSTRUCTION}"
-    return "\n\n".join([header, *entries])
+    # not the first excerpt, and a blank line between them would read as one. A template
+    # set may leave either empty; an empty line is dropped rather than printed blank.
+    header = "\n".join(
+        part for part in (templates.reference_heading, templates.reference_instruction) if part
+    )
+    return "\n\n".join([header, *entries] if header else entries)
 
 
-def render_facts(facts: Sequence[Fact]) -> str:
+def render_facts(facts: Sequence[Fact], *, templates: Templates = DEFAULT_TEMPLATES) -> str:
     """Layer 4, in the shape SPEC §7 prints: a heading and one bullet per fact.
 
     Empty in, empty out — never a heading with nothing under it, for the same reason the
@@ -210,10 +226,13 @@ def render_facts(facts: Sequence[Fact]) -> str:
     which is the cheapest injection there is against a bulleted block and one line of code
     to remove.
     """
-    lines = [f"- {flat}" for fact in facts if (flat := _one_line(fact.text))]
+    lines = [
+        render(templates.fact, {"text": flat}) for fact in facts if (flat := _one_line(fact.text))
+    ]
     if not lines:
         return ""
-    return "\n".join([MEMORY_HEADING, *lines])
+    heading = templates.memory_heading
+    return "\n".join([heading, *lines] if heading else lines)
 
 
 def _one_line(text: str) -> str:
@@ -241,7 +260,13 @@ class BudgetedFacts:
     tokens: int
 
 
-def fit_documents(chunks: Sequence[Chunk], *, budget: int, tokenizer: Tokenizer) -> Budgeted:
+def fit_documents(
+    chunks: Sequence[Chunk],
+    *,
+    budget: int,
+    tokenizer: Tokenizer,
+    templates: Templates = DEFAULT_TEMPLATES,
+) -> Budgeted:
     """The longest prefix of ``chunks`` whose rendered block fits in ``budget`` tokens.
 
     A prefix rather than a subset: dropping chunk 2 and keeping chunk 3 because 3 is
@@ -261,7 +286,7 @@ def fit_documents(chunks: Sequence[Chunk], *, budget: int, tokenizer: Tokenizer)
     best_text = ""
     best_tokens = 0
     for size in range(1, len(chunks) + 1):
-        text = render_documents(chunks[:size])
+        text = render_documents(chunks[:size], templates=templates)
         tokens = count(tokenizer, text)
         if tokens > budget:
             break
@@ -275,7 +300,13 @@ def fit_documents(chunks: Sequence[Chunk], *, budget: int, tokenizer: Tokenizer)
     )
 
 
-def fit_facts(facts: Sequence[Fact], *, budget: int, tokenizer: Tokenizer) -> BudgetedFacts:
+def fit_facts(
+    facts: Sequence[Fact],
+    *,
+    budget: int,
+    tokenizer: Tokenizer,
+    templates: Templates = DEFAULT_TEMPLATES,
+) -> BudgetedFacts:
     """The longest prefix of ``facts`` whose rendered block fits in ``budget`` tokens.
 
     A prefix, exactly as :func:`fit_documents` is, and for a sharper reason. The order it
@@ -296,7 +327,7 @@ def fit_facts(facts: Sequence[Fact], *, budget: int, tokenizer: Tokenizer) -> Bu
     best_text = ""
     best_tokens = 0
     for size in range(1, len(facts) + 1):
-        text = render_facts(facts[:size])
+        text = render_facts(facts[:size], templates=templates)
         tokens = count(tokenizer, text)
         if tokens > budget:
             break
@@ -326,8 +357,14 @@ def assemble(
     memory_max_tokens: int = 0,
     context_window: int | None = None,
     tokenizer: Tokenizer | None = None,
+    templates: Templates = DEFAULT_TEMPLATES,
 ) -> Assembled:
     """SPEC §7, end to end. Pure: same inputs, same output, no I/O.
+
+    ``templates`` (task 105) is the gateway's wording for the two blocks; the default is
+    the SPEC's, so every caller that does not pass one renders what it always did. The
+    budget measures the *rendered* block, template included — a long heading spends
+    ``doc_max_tokens``, as it should.
 
     The order of operations matters and is the order SPEC §7 states. The client's own
     messages are measured *first*, because the overflow guard is a question about them —
@@ -364,7 +401,7 @@ def assemble(
     # from one reading "dropped: doc_max_tokens", so the two are not merged.
     reason = DROPPED_CONTEXT if room < doc_max_tokens else DROPPED_BUDGET
 
-    documents = fit_documents(chunks, budget=budget, tokenizer=tokenizer)
+    documents = fit_documents(chunks, budget=budget, tokenizer=tokenizer, templates=templates)
 
     # SPEC §7: the document block is truncated first, then the memory block, so what is
     # left of the window after documents is what memory may use. The order is the SPEC's
@@ -373,7 +410,7 @@ def assemble(
     # true for every turn, so the block worth keeping when the window is tight is the
     # second one. Documents going first means memory is what survives.
     memory_room = max(0, min(memory_max_tokens, room - documents.tokens))
-    memory = fit_facts(facts, budget=memory_room, tokenizer=tokenizer)
+    memory = fit_facts(facts, budget=memory_room, tokenizer=tokenizer, templates=templates)
     # Which constraint bound, per fact, exactly as the document block records it: an
     # operator reading "dropped: context_window" goes and looks at the client's own
     # messages, and one reading "dropped: memory_max_tokens" goes and raises a number.

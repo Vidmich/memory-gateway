@@ -309,9 +309,7 @@ export function GatewayFormPage() {
             </Field>
 
             {isNew && state.slug ? (
-              <p className="-mt-2 mb-4 font-mono text-xs text-slate-500">
-                …/g/{state.slug}/v1
-              </p>
+              <p className="-mt-2 mb-4 font-mono text-xs text-slate-500">…/g/{state.slug}/v1</p>
             ) : null}
 
             <Field name="description" label="Description">
@@ -439,9 +437,9 @@ export function GatewayFormPage() {
               )}
             </Field>
             <p className="-mt-2 mb-4 text-xs text-slate-500">
-              Whatever the mode, the request log records which injected chunks each answer
-              cited. To see what a client would receive under each mode for a real question,
-              use <span className="font-medium">Show the whole prompt</span> under Memory → Try
+              Whatever the mode, the request log records which injected chunks each answer cited. To
+              see what a client would receive under each mode for a real question, use{' '}
+              <span className="font-medium">Show the whole prompt</span> under Memory → Try
               retrieval.
             </p>
 
@@ -452,11 +450,25 @@ export function GatewayFormPage() {
                 //  of two. A preview cannot show both without claiming a request goes to
                 //  both, so it shows the one a request is most likely to reach and the
                 //  Test panel below reports what actually happened.
-                (models?.items ?? []).find(
-                  (model) => model.id === state.targets[0]?.modelId,
-                )?.system_context ?? ''
+                (models?.items ?? []).find((model) => model.id === state.targets[0]?.modelId)
+                  ?.system_context ?? ''
               }
             />
+
+            {/* Task 105. The text the gateway itself writes — headings, excerpt lines,
+                the footer, text around the answer — is its own page rather than a
+                seventh section here. Guarded like the Back link: it leaves this editor. */}
+            {isNew ? null : (
+              <p className="mt-4 text-sm">
+                <button
+                  type="button"
+                  onClick={() => leave(`/gateways/${gatewayId}/advanced`)}
+                  className="font-medium text-slate-700 underline hover:text-slate-900"
+                >
+                  Advanced: the text the gateway writes around documents, memory and answers →
+                </button>
+              </p>
+            )}
           </Section>
 
           {/* 5. Logging -------------------------------------------------- */}
@@ -484,9 +496,7 @@ export function GatewayFormPage() {
               {isNew ? 'Create gateway' : 'Save changes'}
             </SubmitButton>
           ) : null}
-          {dirty && writes ? (
-            <span className="text-sm text-amber-700">Unsaved changes</span>
-          ) : null}
+          {dirty && writes ? <span className="text-sm text-amber-700">Unsaved changes</span> : null}
         </div>
       </Form>
 
@@ -538,8 +548,8 @@ export function GatewayFormPage() {
             description={
               <>
                 Every application using <code className="text-xs">{gateway.endpoint_url}</code>{' '}
-                stops working on its next request, and its keys are deleted with it. This
-                cannot be undone.
+                stops working on its next request, and its keys are deleted with it. This cannot be
+                undone.
               </>
             }
             resourceName={gateway.slug}
@@ -605,16 +615,16 @@ function LoggingSection({
       >
         {anyBody ? (
           <>
-            <strong className="font-semibold">This stores end-user content.</strong> Prompts
-            and responses through this gateway are written to your request log and kept for{' '}
+            <strong className="font-semibold">This stores end-user content.</strong> Prompts and
+            responses through this gateway are written to your request log and kept for{' '}
             {state.retentionDays} day{state.retentionDays === '1' ? '' : 's'}. Use redaction
             patterns below for anything that must never be stored, or switch the bodies off.
           </>
         ) : (
           <>
-            Bodies are not stored. The request log still records timing, tokens, status and
-            errors — kept for {state.metadataRetentionDays} days — but the request detail
-            view will have nothing to show, and conversation memory cannot be built.
+            Bodies are not stored. The request log still records timing, tokens, status and errors —
+            kept for {state.metadataRetentionDays} days — but the request detail view will have
+            nothing to show, and conversation memory cannot be built.
           </>
         )}
       </div>
@@ -768,7 +778,6 @@ function Section({
   )
 }
 
-
 function EndpointBanner({ gateway }: { gateway: GatewayResponse }) {
   return (
     <div className="mb-6 rounded-lg border border-slate-200 bg-slate-50 p-4">
@@ -780,8 +789,8 @@ function EndpointBanner({ gateway }: { gateway: GatewayResponse }) {
         <CopyButton value={gateway.endpoint_url} label="Copy URL" />
       </div>
       <p className="mt-2 text-xs text-slate-500">
-        Use it as <code>base_url</code> in any OpenAI client, with a key from below as the
-        API key, and <code>{gateway.slug}</code> as the model.
+        Use it as <code>base_url</code> in any OpenAI client, with a key from below as the API key,
+        and <code>{gateway.slug}</code> as the model.
       </p>
     </div>
   )
@@ -848,8 +857,8 @@ function TestPanel({ gateway }: { gateway: GatewayResponse }) {
     <section className="mb-8 rounded-lg border border-slate-200 bg-white p-5">
       <h2 className="text-sm font-semibold text-slate-900">Test gateway</h2>
       <p className="mb-4 mt-1 text-sm text-slate-500">
-        Sends a real completion through this gateway — same prompt assembly, same model,
-        same credentials — and shows you everything it did.
+        Sends a real completion through this gateway — same prompt assembly, same model, same
+        credentials — and shows you everything it did.
       </p>
 
       <label htmlFor="probe-message" className="block text-sm font-medium text-slate-700">
@@ -906,9 +915,7 @@ function TestResult({ result }: { result: GatewayTestResponse }) {
       ) : null}
 
       {result.locked_overrides?.length ? (
-        <p className="mt-1 text-xs">
-          Locked by this gateway: {result.locked_overrides.join(', ')}
-        </p>
+        <p className="mt-1 text-xs">Locked by this gateway: {result.locked_overrides.join(', ')}</p>
       ) : null}
 
       {result.attempts?.length ? (
@@ -918,10 +925,7 @@ function TestResult({ result }: { result: GatewayTestResponse }) {
           <p className="text-xs font-medium">Attempts</p>
           <ul className="mt-1 space-y-1">
             {result.attempts.map((attempt, index) => (
-              <li
-                key={`${attempt.target_id}-${index}`}
-                className="flex items-center gap-2 text-xs"
-              >
+              <li key={`${attempt.target_id}-${index}`} className="flex items-center gap-2 text-xs">
                 <span className="w-4 text-slate-500">{index + 1}</span>
                 <span className="flex-1 truncate font-medium">{attempt.model_name}</span>
                 <span className="tabular-nums">{attempt.status}</span>
@@ -937,9 +941,7 @@ function TestResult({ result }: { result: GatewayTestResponse }) {
         <div className="mt-3">
           <p className="text-xs font-medium">Assembled prompt</p>
           <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-black/10 bg-white/60 p-2 font-mono text-xs">
-            {result.assembled_prompt
-              .map((entry) => `${entry.role}: ${entry.content}`)
-              .join('\n\n')}
+            {result.assembled_prompt.map((entry) => `${entry.role}: ${entry.content}`).join('\n\n')}
           </pre>
         </div>
       ) : null}
@@ -985,8 +987,8 @@ function DriftWarning({
           <span className="font-medium">{named(row.model_id)}</span> ({formatDrift(row.ratio ?? 1)})
         </span>
       ))}{' '}
-      are off the provider&rsquo;s by more than 15%, so this gateway&rsquo;s budgets and rate
-      limits are measured in the wrong unit. Fix the tokenizer under Models.
+      are off the provider&rsquo;s by more than 15%, so this gateway&rsquo;s budgets and rate limits
+      are measured in the wrong unit. Fix the tokenizer under Models.
     </p>
   )
 }

@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from app.core.ids import uuid7
+from app.services.templates import DEFAULT_TEMPLATES
 from tests.conftest import DirectoryHarness
 
 NEW_GATEWAY: dict[str, Any] = {"name": "Support Bot", "slug": "acme-support"}
@@ -572,6 +573,86 @@ async def test_a_config_section_is_merged_not_replaced(directory: DirectoryHarne
 
     assert logging_config["retention_days"] == 7
     assert logging_config["log_response_body"] is False
+
+
+async def test_the_response_carries_the_templates_their_warnings_and_a_fingerprint(
+    directory: DirectoryHarness,
+) -> None:
+    """Task 105. Nine strings with the SPEC's defaults, no warnings, and the fingerprint
+    a request through this gateway will write to its log row."""
+    world = directory.world
+    response = await directory.as_user(
+        world.acme_admin, "GET", f"/api/v1/gateways/{world.acme_gateway.id}"
+    )
+    body = response.json()
+
+    assert body["template_config"]["reference_heading"] == "## Reference material"
+    assert body["template_config"]["excerpt"] == "[{handle}] source: {source_name}{section}\n{text}"
+    assert body["template_config"]["answer_suffix"] == ""
+    assert body["template_warnings"] == []
+    assert body["template_fingerprint"] == DEFAULT_TEMPLATES.fingerprint
+
+
+async def test_the_template_defaults_and_placeholders_are_served(
+    directory: DirectoryHarness,
+) -> None:
+    """Task 105. Any reader; static; the page's chips and its greyed default line."""
+    response = await directory.as_user(
+        directory.world.acme_viewer, "GET", "/api/v1/templates/defaults"
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["defaults"]["excerpt"] == "[{handle}] source: {source_name}{section}\n{text}"
+    assert body["placeholders"]["fact"] == ["text"]
+    assert body["placeholders"]["excerpt"][0] == "handle"
+    assert "reference_heading" not in body["placeholders"]
+    assert body["order"][0] == "reference_heading" and body["order"][-1] == "answer_suffix"
+
+
+async def test_a_template_section_is_merged_validated_and_warned_about(
+    directory: DirectoryHarness,
+) -> None:
+    world = directory.world
+    path = f"/api/v1/gateways/{world.acme_gateway.id}"
+
+    saved = await directory.as_user(
+        world.acme_admin,
+        "PATCH",
+        path,
+        json_body={"template_config": {"reference_heading": "## Referenzmaterial"}},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["template_fingerprint"] != DEFAULT_TEMPLATES.fingerprint
+
+    warned = await directory.as_user(
+        world.acme_admin,
+        "PATCH",
+        path,
+        json_body={"template_config": {"reference_instruction": ""}},
+    )
+    assert warned.json()["template_config"]["reference_heading"] == "## Referenzmaterial"
+    assert len(warned.json()["template_warnings"]) == 1
+    assert "grounded assistant" in warned.json()["template_warnings"][0]
+
+    refused = await directory.as_user(
+        world.acme_admin,
+        "PATCH",
+        path,
+        json_body={"template_config": {"excerpt": "{source_name}: {text}"}},
+    )
+    assert refused.status_code == 422
+    assert refused.json()["error"]["param"] == "template_config.excerpt"
+    assert "[{handle}]" in refused.json()["error"]["message"]
+
+    unknown = await directory.as_user(
+        world.acme_admin,
+        "PATCH",
+        path,
+        json_body={"template_config": {"excerpt": "[{handle}] {handle.__class__} {text}"}},
+    )
+    assert unknown.status_code == 422
+    assert "'{handle.__class__}' is not a placeholder" in unknown.json()["error"]["message"]
 
 
 async def test_an_unknown_config_key_names_itself(directory: DirectoryHarness) -> None:

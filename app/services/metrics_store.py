@@ -94,6 +94,22 @@ class LogFilters:
     #: them — the query an operator runs when a corpus is suspected of being irrelevant.
     #: ``False`` is the complement over the same denominator: injected *and* cited.
     uncited: bool | None = None
+    #: Task 105. Only requests worded by this set of templates — how "did the German
+    #: instruction change anything" becomes a query.
+    template_fingerprint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TemplateUse:
+    """One template fingerprint seen in a window: when it first appeared and how often.
+
+    What the Monitoring filter lists once more than one appears — an A/B of wording is
+    then two filters and a comparison by eye, which is the cheap half of task 103.
+    """
+
+    fingerprint: str
+    first_seen: datetime
+    requests: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +338,9 @@ class MetricsTransaction(Protocol):
         newest first, with the last user turn as the question. What an evaluation set
         imports from (task 103). ``limit`` bounds the rows read, not the distinct
         questions returned; deduplication is the caller's."""
+
+    async def template_fingerprints(self, filters: LogFilters) -> Sequence[TemplateUse]:
+        """Every template fingerprint on a row in the window, oldest first (task 105)."""
 
     async def calibration(self, start: datetime, end: datetime) -> Sequence[CalibrationRow]:
         """Estimated versus reported prompt tokens per (model, tokenizer) in the window.
@@ -584,6 +603,29 @@ class PostgresMetricsTransaction:
             for row in rows
         ]
 
+    async def template_fingerprints(self, filters: LogFilters) -> Sequence[TemplateUse]:
+        rows = (
+            await self._session.execute(
+                select(
+                    RequestLog.template_fingerprint,
+                    func.min(RequestLog.created_at),
+                    func.count(),
+                )
+                .where(
+                    self._scope.clause(RequestLog),
+                    *_conditions(filters),
+                    RequestLog.template_fingerprint.is_not(None),
+                )
+                .group_by(RequestLog.template_fingerprint)
+                .order_by(func.min(RequestLog.created_at))
+                .execution_options(**scoped())
+            )
+        ).all()
+        return [
+            TemplateUse(fingerprint=row[0], first_seen=_aware(row[1]), requests=row[2])
+            for row in rows
+        ]
+
     async def calibration(self, start: datetime, end: datetime) -> Sequence[CalibrationRow]:
         rows = (
             await self._session.execute(
@@ -697,6 +739,11 @@ class MemoryMetricsTransaction:
         if filters.streamed is not None and bool(row.streamed) != filters.streamed:
             return False
         if filters.min_latency_ms is not None and row.latency_total_ms < filters.min_latency_ms:
+            return False
+        if (
+            filters.template_fingerprint is not None
+            and row.template_fingerprint != filters.template_fingerprint
+        ):
             return False
         if filters.search:
             needle = filters.search.lower()
@@ -820,6 +867,18 @@ class MemoryMetricsTransaction:
                 rejections=rejections,
             )
             for end_user_id, rejections in ordered[:limit]
+        ]
+
+    async def template_fingerprints(self, filters: LogFilters) -> Sequence[TemplateUse]:
+        seen: dict[str, list[Any]] = {}
+        for row in sorted(self._rows(filters), key=lambda row: (_aware(row.created_at), row.id)):
+            if not row.template_fingerprint:
+                continue
+            entry = seen.setdefault(row.template_fingerprint, [_aware(row.created_at), 0])
+            entry[1] += 1
+        return [
+            TemplateUse(fingerprint=fingerprint, first_seen=first, requests=requests)
+            for fingerprint, (first, requests) in sorted(seen.items(), key=lambda item: item[1][0])
         ]
 
     async def calibration(self, start: datetime, end: datetime) -> Sequence[CalibrationRow]:
@@ -997,6 +1056,8 @@ def _conditions(filters: LogFilters) -> list[ColumnElement[bool]]:
     if filters.uncited is not None:
         conditions.append(_injected())
         conditions.append(_uncited() if filters.uncited else not_(_uncited()))
+    if filters.template_fingerprint is not None:
+        conditions.append(RequestLog.template_fingerprint == filters.template_fingerprint)
     return conditions
 
 

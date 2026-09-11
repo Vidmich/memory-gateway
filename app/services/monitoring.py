@@ -53,6 +53,7 @@ from app.services.metrics_store import (
     ModelTraffic,
     Percentiles,
     Summary,
+    TemplateUse,
     ThrottledEndUser,
 )
 from app.services.pagination import Page, clamp_limit, decode_cursor, page_of
@@ -229,6 +230,18 @@ class MonitoringService:
         async with self._repository.begin(actor.scope) as transaction:
             return await transaction.throttled_end_users(filters)
 
+    async def template_fingerprints(
+        self, actor: Actor, filters: LogFilters
+    ) -> Sequence[TemplateUse]:
+        """Which sets of templates worded the requests in the window (task 105).
+
+        Not cached, for the same reason the throttled list is not: it is asked when the
+        filter row renders, and the screen decides from the answer whether to show a
+        **Template** filter at all — one fingerprint is not a choice.
+        """
+        async with self._repository.begin(actor.scope) as transaction:
+            return await transaction.template_fingerprints(filters)
+
     async def list_logs(
         self,
         actor: Actor,
@@ -275,6 +288,7 @@ def build_filters(
     min_latency_ms: int | None = None,
     search: str | None = None,
     uncited: bool | None = None,
+    template_fingerprint: str | None = None,
 ) -> LogFilters:
     """Turn query parameters into a checked window.
 
@@ -312,6 +326,7 @@ def build_filters(
         # rather than a filter for the empty string.
         search=(search or "").strip() or None,
         uncited=uncited,
+        template_fingerprint=(template_fingerprint or "").strip() or None,
     )
 
 

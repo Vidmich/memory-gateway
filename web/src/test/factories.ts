@@ -7,58 +7,61 @@
  */
 
 import type {
+  ApiKeyResponse,
   AuditChange,
   AuditEvent,
-  CalibrationResponse,
-  EffectiveTokenizerResponse,
-  TokenizersResponse,
-  PromptPreviewResponse,
-  RetrievalPreviewResponse,
-  RetrievedChunkResponse,
-  ApiKeyResponse,
-  BucketResponse,
-  ChunkingConfig,
-  ChunkingPreviewResponse,
-  ConnectorResponse,
-  CurrentUser,
-  DocumentChunk,
-  DocumentResponse,
-  EndUserResponse,
-  GatewayLimits,
-  GatewayResponse,
-  GatewayTestResponse,
-  LimitQuota,
-  LimitUsage,
-  InvitationResponse,
-  IssuedApiKeyResponse,
-  MemberResponse,
-  MemoryFactResponse,
-  MemorySearchHit,
-  DistillationSettings,
-  MemoryHealth,
-  ModelResponse,
-  OrganizationResponse,
-  ProbeResponse,
-  RequestDetailResponse,
-  RequestLogResponse,
-  SearchHit,
-  SummarizationConfig,
-  SummarizationHealth,
-  SummarizationSettings,
   AuditResponse,
   AuditStatusResponse,
-  ReprocessingRunResponse,
-  StaleAlertResponse,
+  BucketResponse,
+  CalibrationResponse,
+  ChunkingConfig,
+  ChunkingPreviewResponse,
   ChunkingReportResponse,
+  ConnectorResponse,
+  CurrentUser,
+  DistillationSettings,
+  DocumentChunk,
+  DocumentResponse,
+  EffectiveTokenizerResponse,
   EmbeddingReportResponse,
+  EndUserResponse,
   EvaluationItemResponse,
   EvaluationRunResponse,
   EvaluationRunSummaryResponse,
   EvaluationSetResponse,
   FindingResponse,
+  GatewayLimits,
+  GatewayResponse,
+  GatewayTestResponse,
+  InvitationResponse,
+  IssuedApiKeyResponse,
+  LimitQuota,
+  LimitUsage,
+  MemberResponse,
+  MemoryFactResponse,
+  MemoryHealth,
+  MemorySearchHit,
+  ModelResponse,
+  OrganizationResponse,
+  ProbeResponse,
+  PromptPreviewResponse,
+  ReprocessingRunResponse,
+  RequestDetailResponse,
+  RequestLogResponse,
+  RetrievalPreviewResponse,
+  RetrievedChunkResponse,
+  SearchHit,
   SeriesResponse,
+  StaleAlertResponse,
+  SummarizationConfig,
+  SummarizationHealth,
+  SummarizationSettings,
   SummaryResponse,
+  TemplateConfig,
+  TemplateDefaultsResponse,
+  TemplateUseResponse,
   ThrottledEndUser,
+  TokenizersResponse,
 } from '@/api/types'
 
 const NOW = '2026-09-06T12:00:00Z'
@@ -307,9 +310,71 @@ export function makeGateway(overrides: Partial<GatewayResponse> = {}): GatewayRe
         requests_per_day: null,
       },
     },
+    // Task 105: the nine templates, defaults filled in, no warnings, and the fingerprint
+    // a request through this gateway writes to its log row.
+    template_config: makeTemplateConfig(),
+    template_warnings: [],
+    template_fingerprint: DEFAULT_TEMPLATE_FINGERPRINT,
     key_count: 1,
     created_at: NOW,
     updated_at: NOW,
+    ...overrides,
+  }
+}
+
+/** The fingerprint the server computes for the default templates, as a fixture value. */
+export const DEFAULT_TEMPLATE_FINGERPRINT = 'd0d0d0d0d0d0d0d0'
+
+/** The SPEC §7 defaults, exactly as `GET /templates/defaults` serves them. */
+export function makeTemplateConfig(overrides: Partial<TemplateConfig> = {}): TemplateConfig {
+  return {
+    version: 1,
+    reference_heading: '## Reference material',
+    reference_instruction:
+      "The following excerpts are retrieved from the organization's knowledge base. Cite them when relevant. If they do not answer the question, say so rather than inventing an answer.",
+    excerpt: '[{handle}] source: {source_name}{section}\n{text}',
+    memory_heading: '## What you know about this user',
+    fact: '- {text}',
+    sources_heading: 'Sources:',
+    source_line: '[{handle}] {label}',
+    answer_prefix: '',
+    answer_suffix: '',
+    ...overrides,
+  }
+}
+
+export function makeTemplateDefaults(
+  overrides: Partial<TemplateDefaultsResponse> = {},
+): TemplateDefaultsResponse {
+  return {
+    defaults: makeTemplateConfig(),
+    placeholders: {
+      excerpt: ['handle', 'source_name', 'section', 'section_raw', 'text', 'score'],
+      fact: ['text'],
+      source_line: ['handle', 'label', 'source_name', 'section', 'url'],
+      answer_prefix: ['cited_count', 'injected_count', 'gateway', 'model'],
+      answer_suffix: ['cited_count', 'injected_count', 'gateway', 'model'],
+    },
+    order: [
+      'reference_heading',
+      'reference_instruction',
+      'excerpt',
+      'memory_heading',
+      'fact',
+      'sources_heading',
+      'source_line',
+      'answer_prefix',
+      'answer_suffix',
+    ],
+    ...overrides,
+  }
+}
+
+export function makeTemplateUse(overrides: Partial<TemplateUseResponse> = {}): TemplateUseResponse {
+  return {
+    fingerprint: DEFAULT_TEMPLATE_FINGERPRINT,
+    first_seen: NOW,
+    requests: 12,
     ...overrides,
   }
 }
@@ -432,6 +497,7 @@ export function makeRequestLog(overrides: Partial<RequestLogResponse> = {}): Req
     failed_after_stream_start: false,
     bodies_omitted: null,
     dropped_params: [],
+    template_fingerprint: DEFAULT_TEMPLATE_FINGERPRINT,
     cited_chunks: 0,
     citations_unresolved: 0,
     ...overrides,
@@ -747,6 +813,9 @@ export function makePromptPreview(
         '\n\nSources:\n[1] [handbook.md (p. 12)](http://localhost:5173/connectors/cn1?document=d1&chunk=ch1)',
     },
     tokenizer: 'o200k_base',
+    template_fingerprint: DEFAULT_TEMPLATE_FINGERPRINT,
+    answer_prefix: '',
+    answer_suffix: '',
     ...overrides,
   }
 }

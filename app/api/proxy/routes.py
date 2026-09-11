@@ -473,6 +473,8 @@ def _record_prompt(recorder: RequestRecorder) -> Callable[[Prepared], None]:
             estimated_tokens=(
                 prepared.assembly.prompt_tokens if prepared.assembly is not None else None
             ),
+            # Task 105: which wording this attempt was rendered with.
+            template_fingerprint=prepared.template_fingerprint,
         )
         if prepared.assembly is not None:
             recorder.injected(

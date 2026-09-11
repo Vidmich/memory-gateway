@@ -55,7 +55,12 @@ from app.services.evaluation import (
 )
 from app.services.evaluation_store import FAILED, QUEUED, RUNNING, SUCCEEDED, EvaluationStore
 from app.services.gateway_store import GatewayStore
-from app.services.memory_preview import primary_model, resolve_memory_config, tokenizer_for
+from app.services.memory_preview import (
+    primary_model,
+    resolve_memory_config,
+    resolve_templates,
+    tokenizer_for,
+)
 from app.services.prompt import fit_documents
 from app.services.retrieval import MemoryService, Retrieval
 from app.services.tokenizer import Tokenizer, WordTokenizer
@@ -151,6 +156,9 @@ class EvaluationRunner:
             if gateway is None:
                 raise LookupError("The gateway this set belongs to no longer exists.")
             config = await resolve_memory_config(transaction, gateway, patch)
+            # Task 105: the wording the budget is measured under, and the fingerprint a
+            # comparison between two runs can name.
+            templates = resolve_templates(gateway, None)
         tokenizer = tokenizer_for(primary_model(gateway), self._tokenizer)
 
         connectors: dict[str, Any] = {}
@@ -169,6 +177,7 @@ class EvaluationRunner:
             "embedding_model": self._embedder.model,
             "embedding_dimension": self._embedder.dimension,
             "tokenizer": tokenizer.name,
+            "template_fingerprint": templates.fingerprint,
             "connectors": connectors,
         }
         return config, tokenizer, snapshot

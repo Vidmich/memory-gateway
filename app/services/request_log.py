@@ -176,6 +176,8 @@ class RequestRecord:
     #: Task 101. What the prompt was measured with and what it measured, beside the
     #: provider's own ``prompt_tokens``: the calibration is the ratio of the two.
     tokenizer: str | None = None
+    #: Task 105: which set of templates worded this request's blocks and answer.
+    template_fingerprint: str | None = None
     estimated_prompt_tokens: int | None = None
     failover_attempts: list[Any] = field(default_factory=list)
     #: Generation parameters the target's dialect could not carry, so they never reached
@@ -276,6 +278,7 @@ class RequestRecorder:
         *,
         tokenizer: str | None = None,
         estimated_tokens: int | None = None,
+        template_fingerprint: str | None = None,
     ) -> None:
         """What is about to go upstream, after assembly and the parameter merge.
 
@@ -295,6 +298,7 @@ class RequestRecorder:
         self._record.dropped_params = _dropped(target, self._asked_for)
         self._record.tokenizer = tokenizer
         self._record.estimated_prompt_tokens = estimated_tokens
+        self._record.template_fingerprint = template_fingerprint
 
     def end_user(self, *, end_user_id: uuid.UUID | None, session_id: str | None) -> None:
         """Who this request belongs to, and which conversation (SPEC §6.2).

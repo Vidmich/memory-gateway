@@ -27,6 +27,7 @@ import {
   makeSeries,
   makeSummarizationHealth,
   makeSummary,
+  makeTemplateUse,
   makeUser,
 } from '@/test/factories'
 import { jsonResponse as json, pathOf } from '@/test/http'
@@ -39,6 +40,8 @@ type ServerOptions = {
   nextCursor?: string | null
   /** Task 102: what `GET /summarization/health` answers. */
   summarization?: ReturnType<typeof makeSummarizationHealth>
+  /** Task 105: what `GET /logs/templates` answers. */
+  templates?: ReturnType<typeof makeTemplateUse>[]
 }
 
 /**
@@ -70,6 +73,9 @@ function fakeServer(options: ServerOptions = {}) {
     }
     if (path.startsWith('/api/v1/metrics/timeseries')) {
       return Promise.resolve(json(makeSeries()))
+    }
+    if (path.startsWith('/api/v1/logs/templates')) {
+      return Promise.resolve(json({ items: options.templates ?? [] }))
     }
     if (path.startsWith('/api/v1/logs/')) {
       return Promise.resolve(json(options.detail ?? makeRequestDetail()))
@@ -188,8 +194,9 @@ describe('the monitoring screen', () => {
     await person.selectOptions(screen.getByLabelText('Status'), '5xx')
 
     await waitFor(() => {
-      expect(queries(requests, '/api/v1/logs').some((path) => path.includes('status_class=5xx')))
-        .toBe(true)
+      expect(
+        queries(requests, '/api/v1/logs').some((path) => path.includes('status_class=5xx')),
+      ).toBe(true)
     })
   })
 
@@ -205,6 +212,42 @@ describe('the monitoring screen', () => {
       expect(queries(requests, '/api/v1/logs').some((path) => path.includes('uncited=true'))).toBe(
         true,
       )
+    })
+  })
+
+  it('offers a Template filter only once two wordings have been seen (task 105)', async () => {
+    const { client } = fakeServer({ templates: [makeTemplateUse()] })
+    renderAt(client)
+
+    await screen.findByText('120')
+    expect(screen.queryByTestId('template-filter')).not.toBeInTheDocument()
+  })
+
+  it('sends the chosen template fingerprint, listed with first-seen dates (task 105)', async () => {
+    const person = userEvent.setup()
+    const { client, requests } = fakeServer({
+      templates: [
+        makeTemplateUse({ fingerprint: 'aaaaaaaaaaaaaaaa', first_seen: '2026-09-02T09:30:00Z' }),
+        makeTemplateUse({ fingerprint: 'bbbbbbbbbbbbbbbb', requests: 3 }),
+      ],
+    })
+    renderAt(client)
+
+    const filter = await screen.findByTestId('template-filter')
+    const options = within(filter).getAllByRole('option')
+    expect(options.map((option) => option.textContent)).toEqual([
+      'Any wording',
+      expect.stringMatching(/^aaaaaaaa · first seen .* · 12 requests$/),
+      expect.stringMatching(/^bbbbbbbb · first seen .* · 3 requests$/),
+    ])
+    await person.selectOptions(filter, 'bbbbbbbbbbbbbbbb')
+
+    await waitFor(() => {
+      expect(
+        queries(requests, '/api/v1/logs?').some((path) =>
+          path.includes('template_fingerprint=bbbbbbbbbbbbbbbb'),
+        ),
+      ).toBe(true)
     })
   })
 
@@ -320,6 +363,14 @@ describe('the request drawer', () => {
 
     expect(within(dialog).getByText('the answer')).toBeInTheDocument()
     expect(within(dialog).getAllByText('what is the answer').length).toBeGreaterThan(0)
+  })
+
+  it('shows the template fingerprint beside the model name (task 105)', async () => {
+    const { dialog } = await openDrawer()
+
+    expect(within(dialog).getByTestId('drawer-template-fingerprint')).toHaveTextContent('d0d0d0d0')
+    expect(within(dialog).getByText('Templates')).toBeInTheDocument()
+    expect(within(dialog).getByText('d0d0d0d0d0d0d0d0')).toBeInTheDocument()
   })
 
   it('marks what the gateway added to the prompt', async () => {
@@ -589,7 +640,9 @@ describe('the routing timeline', () => {
 
       expect(within(dialog).getByText(/GDPR-compliant answers/)).toBeInTheDocument()
       expect(within(dialog).getByText('0.62')).toBeInTheDocument()
-      expect(within(dialog).getByText(/1 of 1 fact about this end user injected/)).toBeInTheDocument()
+      expect(
+        within(dialog).getByText(/1 of 1 fact about this end user injected/),
+      ).toBeInTheDocument()
     })
 
     it('marks a fact that was included regardless of the question', async () => {
@@ -645,8 +698,24 @@ describe('the A/B overlay', () => {
     const gateway = makeGateway({
       routing_mode: 'ab_split',
       targets: [
-        { id: 'mo1', name: 'a', dialect: 'openai', enabled: true, organization_id: 'o1', priority: 0, weight: 70 },
-        { id: 'mo2', name: 'b', dialect: 'openai', enabled: true, organization_id: 'o1', priority: 1, weight: 30 },
+        {
+          id: 'mo1',
+          name: 'a',
+          dialect: 'openai',
+          enabled: true,
+          organization_id: 'o1',
+          priority: 0,
+          weight: 70,
+        },
+        {
+          id: 'mo2',
+          name: 'b',
+          dialect: 'openai',
+          enabled: true,
+          organization_id: 'o1',
+          priority: 1,
+          weight: 30,
+        },
       ],
     })
     const summary = makeSummary({
@@ -668,28 +737,29 @@ describe('the A/B overlay', () => {
     const gateway = makeGateway({
       routing_mode: 'failover',
       targets: [
-        { id: 'mo1', name: 'a', dialect: 'openai', enabled: true, organization_id: 'o1', priority: 0, weight: 100 },
+        {
+          id: 'mo1',
+          name: 'a',
+          dialect: 'openai',
+          enabled: true,
+          organization_id: 'o1',
+          priority: 0,
+          weight: 100,
+        },
       ],
     })
 
-    expect(modelSlices(makeSummary(), gateway)).toEqual([
-      { label: 'acme-gpt', value: 120 },
-    ])
+    expect(modelSlices(makeSummary(), gateway)).toEqual([{ label: 'acme-gpt', value: 120 }])
   })
 
   it('leaves the all-gateways view unmarked', () => {
-    expect(modelSlices(makeSummary(), undefined)).toEqual([
-      { label: 'acme-gpt', value: 120 },
-    ])
+    expect(modelSlices(makeSummary(), undefined)).toEqual([{ label: 'acme-gpt', value: 120 }])
   })
 })
 
 describe('the assembled-prompt diff', () => {
   it('counts the messages the gateway prepended', () => {
-    const injected = countInjected(
-      [{ role: 'system' }, { role: 'user' }],
-      [{ role: 'user' }],
-    )
+    const injected = countInjected([{ role: 'system' }, { role: 'user' }], [{ role: 'user' }])
 
     expect(injected).toBe(1)
   })

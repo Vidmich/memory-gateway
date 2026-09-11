@@ -270,6 +270,67 @@ is enabled without body capture.
 - Control API supports `DELETE /api/v1/end-users/{id}/memory` (right-to-erasure), which purges
   facts, vectors, and — optionally — transcripts for that end user.
 
+### 6.6 Retrieval evaluation (task 103)
+
+Whether a gateway's retrieval finds the right chunks is a question with a numeric answer, and it
+needs labelled questions. Organizations do not have those; they have a request log full of
+questions, the record of which chunks each answer cited (§7.1), and a **Try retrieval** box
+they already tune by hand. An **evaluation set** is those things given a table.
+
+**Sets and items.** A set belongs to a gateway, because its labels only mean something against
+the connectors that gateway reads. An item is a question with the chunks and/or documents that
+answer it; a chunk label carries the chunk's **text at labelling time**, so a recut — which
+gives every point a new id — does not kill the label: the run re-anchors it to the chunk that
+now holds that text (or to both halves, when the recut split it) and reports how many labels
+it could not place. An item with no label at all is a **negative**: a question the corpus
+should answer with nothing, so precision has something to be wrong about and `doc_min_score`
+something to defend. Every item records its **source** — `manual`, `citation` (imported from
+the log with the chunks the answer cited), `log` (imported, uncited, unlabelled) or
+`generated` (a model wrote the question from the chunk) — and whether a person has
+**verified** it. Labels from citations are free and biased; labels from people are expensive
+and few; labels from a model are cheap and circular. The set keeps the three apart and every
+run reports the verified population beside the whole; a single blended number would be more
+comfortable and would mean nothing.
+
+**Runs.** A run sends every item's question through the **same** retrieval a request goes
+through — `MemoryService`, with the gateway's saved configuration or the editor's unsaved
+patch merged exactly as Try retrieval merges it — and scores what came back. Per item: the
+chunks retrieved with scores, which were relevant, and the rank of the first relevant one. Per
+run: **recall@k**, **precision@k** and **MRR** at chunk level, the **hit rate** at document
+level, and the same numbers **after the budget** — over the chunks that survived `doc_min_score`
+and `doc_max_tokens`, which is what the model would actually have seen; a relevant chunk
+retrieved at rank five and dropped by the budget is not a recall. `k` is the gateway's
+`doc_top_k`. Precision is over what was retrieved rather than over `k`, because the floor
+returning three chunks when six were allowed is the setting doing its job. A run is a
+**measurement of a known state**: it stores the effective configuration, the embedding model,
+the tokenizer, and per connector the chunk fingerprints its documents were cut with, so two runs
+can be diffed and the diff names what changed between them — a setting, a reindex, a model —
+rather than only that the number moved. A run costs one embedding call per question, runs on the
+worker with progress, and takes at most 500 items.
+
+**What the numbers cannot mean.** They measure retrieval, not answers: whether the model used
+the right chunk well is a different measurement with a different cost and is out of scope. A run
+that includes generated items says so on its headline, because a question written *from* a
+chunk finds that chunk more easily than a question a person asked. Nothing here writes to the
+index; an audit or a run leaves the collection byte-identical.
+
+**Index audits** are the same idea one layer down: whether a connector was chunked well and
+whether its embeddings are sane, over the *whole* index rather than one document. A **chunking
+audit** scrolls the live collection once and reports the chunk-size histogram, the five numbers
+Compare shows (§9.3) over every point, and **findings** — chunks under a floor, single-chunk
+documents, chunks at or far over the ceiling, mid-sentence starts on prose formats, exact
+duplicates across documents, documents cut unlike their neighbours, a mix of chunk
+fingerprints — each with a count, the documents behind it, and a link to the page that fixes it;
+per format as well as overall, because a repository's Markdown and its lockfiles have different
+healthy shapes. An **embedding audit** checks the stored vectors: their width against the
+platform setting, zero and identical vectors (padding returned as embeddings), the norm
+distribution, **intra-document agreement** (for a sample of chunks, is the nearest neighbour
+from the same document — asked of the index itself, so the answer is the ranking a request would
+get), and — the one check that spends, priced before it runs — **drift**: a sample re-embedded
+with the current model and compared with what is stored, where a bimodal result means two models
+are in the collection and a uniform offset means the provider changed something underneath the
+same model id. Findings carry a severity; red ones are the dashboard's degraded state.
+
 ---
 
 ## 7. Prompt assembly
@@ -630,6 +691,12 @@ status:
   `summarization_runs_total{outcome}`, `summarization_tokens_total{direction, model}` and
   `summarization_duration_seconds` fire alerts; the rows draw the charts. The dashboard's
   degraded-state list includes "N documents waiting on the summarization cap".
+- Validation (task 103, §6.6): a connector's latest chunking and embedding audit, its age and
+  its worst finding, on the connector; a gateway's evaluation runs with recall@k, precision@k
+  and MRR, in the gateway editor. Not time series — an audit is a report over the index as it
+  is, and a run is a measurement of a known state — but a health signal all the same: the
+  dashboard's degraded-state list includes every connector whose last audit raised a red
+  finding, because an index that ranks wrong looks healthy on every traffic chart.
 
 ### 10.2 Request logging (configurable per gateway)
 
@@ -800,6 +867,15 @@ DELETE /end-users/{id}/memory
 GET    /audit-events
 GET    /platform/settings     PATCH /platform/settings      # superadmin
 POST   /platform/reindex                                    # superadmin
+
+GET    /connectors/{id}/audits            POST /connectors/{id}/audits/{kind}   # task 103
+GET    /validation/alerts
+GET    /gateways/{id}/evaluation-sets     POST /gateways/{id}/evaluation-sets
+GET    /evaluation-sets/{id}  PATCH /evaluation-sets/{id}  DELETE /evaluation-sets/{id}
+POST   /evaluation-sets/{id}/items        PATCH /evaluation-items/{id}  DELETE /evaluation-items/{id}
+POST   /evaluation-sets/{id}/import       POST /evaluation-sets/{id}/generate
+POST   /evaluation-sets/{id}/runs         GET /evaluation-sets/{id}/runs
+GET    /evaluation-runs/{id}              GET /evaluation-runs/{id}/diff/{against}
 ```
 
 All list endpoints are cursor-paginated and return `{items, next_cursor}`.
@@ -830,7 +906,11 @@ summary status) with retry and delete, a chunking-configuration panel, a **Summa
 panel (mode, model with the inherited fallback shown greyed, caps, and a cost line before
 saving that includes the re-embedding under `contextual`), and a **Resync** action. Failed
 documents show the extraction error inline; the document's summary is shown with **Edit** and
-**Regenerate**, and the chunk inspector shows an embedded prefix above the returned text.
+**Regenerate**, and the chunk inspector shows an embedded prefix above the returned text. A
+**Validation** section (task 103) has two tabs, *Chunking* and *Embeddings*: the last report,
+its age, a **Run** button (the embedding tab's drift check says what it will spend first), the
+chunk-size histogram, the whole-index numbers per format, and the findings as a list where each
+document opens Compare with that document preselected.
 
 **Gateways** — the most substantial screen. A gateway editor with sections:
 
@@ -847,6 +927,13 @@ documents show the extraction error inline; the document's summary is shown with
 5. *Logging* — the §10.2 toggles, retention, redaction patterns, and distillation switch.
 6. *Limits* — rate limits and quotas.
 7. *Keys* — create/revoke, last-used timestamps; the secret is revealed exactly once.
+8. *Validation* (task 103) — evaluation sets: create, **import** last week's questions from
+   the log (pre-labelled with what the answer cited, unverified), **generate** questions with
+   a model (marked as such), edit items inline with a chunk picker that is Try retrieval, and
+   verify them; runs, with the headline numbers per run, a diff between any two runs that names
+   what changed, and a per-item drill-down with the retrieved chunks and the relevant ones
+   marked. **Run** sends the Memory form above unsaved, the way Try retrieval does. Try
+   retrieval itself gains **Add to evaluation set**.
 
 **Monitoring** — time-range picker, filters, the §10.1 charts, and a request table that can be
 live-tailed. Row click opens the §10.3 detail drawer.
@@ -893,9 +980,18 @@ documents           (id, connector_id, organization_id, source_uri, source_name,
                      summary, summary_status, summary_error, summary_model, summary_model_id,
                      summary_prompt_version, summary_tokens_in, summary_tokens_out,
                      summarized_at, indexed_at, created_at)
-summarization_runs  (id, organization_id, connector_id, document_id, outcome, reason,
+summarization_runs  (id, organization_id, connector_id, document_id, outcome, purpose, reason,
                      model_id, model_name, tokens_in, tokens_out, estimated, duration_ms,
                      created_at)
+index_audits        (id, organization_id, connector_id, kind, status, created_by, drift_sample,
+                     points, report_jsonb, severity, error, created_at, finished_at)
+evaluation_sets     (id, organization_id, gateway_id, name, description, created_by, created_at,
+                     updated_at)
+evaluation_items    (id, organization_id, set_id, question, relevant_jsonb, relevant_document_ids,
+                     source, verified, notes, created_at, updated_at)
+evaluation_runs     (id, organization_id, set_id, gateway_id, status, created_by, patch_jsonb,
+                     config_jsonb, snapshot_jsonb, metrics_jsonb, results_jsonb, total_items,
+                     completed_items, error, created_at, started_at, finished_at)
 
 gateways            (id, organization_id, slug UNIQUE, name, description, enabled,
                      routing_mode, system_context, param_overrides_jsonb, locked_params_jsonb,

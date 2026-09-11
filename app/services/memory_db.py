@@ -25,8 +25,12 @@ from app.db.models import (
     DistillationRun,
     Document,
     EndUser,
+    EvaluationItem,
+    EvaluationRun,
+    EvaluationSet,
     Gateway,
     GatewayTarget,
+    IndexAudit,
     Invitation,
     MaintenanceRun,
     MemoryFact,
@@ -64,6 +68,11 @@ class MemoryDatabase:
     distillation_runs: dict[uuid.UUID, DistillationRun] = field(default_factory=dict)
     #: Task 102's ledger, beside the one it is modelled on.
     summarization_runs: dict[uuid.UUID, SummarizationRun] = field(default_factory=dict)
+    #: Task 103. The audit reports and the evaluation sets, items and runs.
+    index_audits: dict[uuid.UUID, IndexAudit] = field(default_factory=dict)
+    evaluation_sets: dict[uuid.UUID, EvaluationSet] = field(default_factory=dict)
+    evaluation_items: dict[uuid.UUID, EvaluationItem] = field(default_factory=dict)
+    evaluation_runs: dict[uuid.UUID, EvaluationRun] = field(default_factory=dict)
     #: Task 15. Append-only here too: nothing in this class removes one, which is the
     #: in-memory half of the trigger the migration installs.
     audit_events: dict[uuid.UUID, AuditEvent] = field(default_factory=dict)

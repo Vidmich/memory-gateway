@@ -56,6 +56,19 @@ AUDITED: dict[tuple[str, str], str] = {
     ("PATCH", f"{API}/connectors/{{connector_id}}"): "connector.update",
     ("DELETE", f"{API}/connectors/{{connector_id}}"): "connector.delete",
     ("POST", f"{API}/connectors/{{connector_id}}/reindex"): "connector.reindex",
+    # Task 103. An audit is a decision about the connector, and the embedding audit can
+    # spend at the provider; the evaluation tables are configuration a person curates,
+    # and a run or a generation is a spend.
+    ("POST", f"{API}/connectors/{{connector_id}}/audits/{{kind}}"): "connector.audit",
+    ("POST", f"{API}/gateways/{{gateway_id}}/evaluation-sets"): "evaluation_set.create",
+    ("PATCH", f"{API}/evaluation-sets/{{set_id}}"): "evaluation_set.update",
+    ("DELETE", f"{API}/evaluation-sets/{{set_id}}"): "evaluation_set.delete",
+    ("POST", f"{API}/evaluation-sets/{{set_id}}/items"): "evaluation_item.create",
+    ("PATCH", f"{API}/evaluation-items/{{item_id}}"): "evaluation_item.update",
+    ("DELETE", f"{API}/evaluation-items/{{item_id}}"): "evaluation_item.delete",
+    ("POST", f"{API}/evaluation-sets/{{set_id}}/import"): "evaluation_set.import",
+    ("POST", f"{API}/evaluation-sets/{{set_id}}/generate"): "evaluation_set.generate",
+    ("POST", f"{API}/evaluation-sets/{{set_id}}/runs"): "evaluation_run.start",
     ("POST", f"{API}/connectors/{{connector_id}}/resync"): "connector.resync",
     ("POST", f"{API}/connectors/{{connector_id}}/upload"): "connector.upload",
     ("PATCH", f"{API}/distillation"): "organization.distillation.update",
@@ -419,9 +432,80 @@ async def tour(directory: DirectoryHarness) -> list[str]:
             f"{API}/gateways/{gateway['id']}",
             json_body={
                 "system_context": "Answer from the handbook.",
-                "memory_config": {"doc_top_k": 10},
+                "memory_config": {
+                    "doc_top_k": 10,
+                    "connector_ids": [str(world.acme_connector.id)],
+                },
             },
         )
+    )
+
+    # -- retrieval evaluation (task 103) ---------------------------------------
+    # Generation needs chunks to write questions from and a model to write them with;
+    # both are planted here rather than produced by the pipeline, which has no worker in
+    # this harness. Nothing else on the tour reads either.
+    await _seed_index(directory)
+    evaluation_set = ok(
+        await directory.as_user(
+            admin,
+            "POST",
+            f"{API}/gateways/{gateway['id']}/evaluation-sets",
+            json_body={"name": "Regression questions"},
+        )
+    )
+    ok(
+        await directory.as_user(
+            admin,
+            "PATCH",
+            f"{API}/evaluation-sets/{evaluation_set['id']}",
+            json_body={"description": "Questions from last week's tickets."},
+        )
+    )
+    item = ok(
+        await directory.as_user(
+            admin,
+            "POST",
+            f"{API}/evaluation-sets/{evaluation_set['id']}/items",
+            json_body={"question": "What is the parental leave policy?", "relevant": []},
+        )
+    )
+    ok(
+        await directory.as_user(
+            admin,
+            "PATCH",
+            f"{API}/evaluation-items/{item['id']}",
+            json_body={"verified": True},
+        )
+    )
+    ok(
+        await directory.as_user(
+            admin,
+            "POST",
+            f"{API}/evaluation-sets/{evaluation_set['id']}/import",
+            json_body={"from": "2026-01-01T00:00:00Z", "to": "2026-01-08T00:00:00Z"},
+        )
+    )
+    ok(
+        await directory.as_user(
+            admin,
+            "POST",
+            f"{API}/evaluation-sets/{evaluation_set['id']}/generate",
+            json_body={"count": 1},
+        )
+    )
+    ok(
+        await directory.as_user(
+            admin, "POST", f"{API}/evaluation-sets/{evaluation_set['id']}/runs"
+        ),
+        expect=(202,),
+    )
+    ok(
+        await directory.as_user(admin, "DELETE", f"{API}/evaluation-items/{item['id']}"),
+        expect=(204,),
+    )
+    ok(
+        await directory.as_user(admin, "DELETE", f"{API}/evaluation-sets/{evaluation_set['id']}"),
+        expect=(204,),
     )
     key = ok(
         await directory.as_user(
@@ -464,6 +548,12 @@ async def tour(directory: DirectoryHarness) -> list[str]:
     )
     ok(await directory.as_user(admin, "POST", f"{API}/connectors/{connector['id']}/reindex"))
     ok(await directory.as_user(admin, "POST", f"{API}/connectors/{connector['id']}/resync"))
+    ok(
+        await directory.as_user(
+            admin, "POST", f"{API}/connectors/{connector['id']}/audits/chunking"
+        ),
+        expect=(202,),
+    )
     ok(await directory.as_user(admin, "POST", f"{API}/documents/{world.acme_document.id}/reindex"))
     # Task 102: the summary routes want summarization on for the document's format.
     ok(
@@ -544,6 +634,56 @@ async def tour(directory: DirectoryHarness) -> list[str]:
     )
     secrets.extend([PASSWORD, "a-different-correct-horse"])
     return secrets
+
+
+async def _seed_index(directory: DirectoryHarness) -> None:
+    """Two chunks of Acme's document in the fixture's index, and a model to generate with.
+
+    Written straight into the vector store the evaluation service reads, the way
+    ``tests/test_memory_preview.py`` seeds: the harness runs no worker, and what the tour
+    checks is that the generate route records an event, not that ingestion works.
+    """
+    from app.services.vector_store import ChunkPoint
+
+    connectors = directory.world.auth.connectors
+    validation = directory.world.auth.validation
+    assert connectors is not None and validation is not None
+    directory.world.database.add_model(connectors.summary_row)
+    validation.question_model.queue("What does the handbook say about leave?")
+    document = directory.world.acme_document
+    document.status = "indexed"
+    organization_id = connectors.organization_id
+    texts = [
+        "Everyone gets twenty-five days of annual leave, plus public holidays, and can carry "
+        "five days into the next year with their manager's agreement.",
+        "Expenses are claimed through the portal within thirty days, with receipts attached "
+        "for anything over ten euros.",
+    ]
+    await connectors.vectors.ensure_collection(
+        organization_id, dimension=connectors.embedder.dimension
+    )
+    vectors = await connectors.embedder.embed(texts)
+    await connectors.vectors.upsert(
+        organization_id,
+        [
+            ChunkPoint(
+                id=f"{document.id}:{index}",
+                vector=vector,
+                payload={
+                    "org_id": str(organization_id),
+                    "connector_id": str(document.connector_id),
+                    "document_id": str(document.id),
+                    "source_name": document.source_name,
+                    "page_or_section": None,
+                    "chunk_index": index,
+                    "token_count": 60,
+                    "text": text,
+                    "kind": "source",
+                },
+            )
+            for index, (text, vector) in enumerate(zip(texts, vectors, strict=True))
+        ],
+    )
 
 
 @contextmanager

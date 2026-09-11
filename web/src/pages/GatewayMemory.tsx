@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { ApiError } from '@/api/client'
 import { useConnectors } from '@/api/connectors'
 import { usePromptPreview, useTryRetrieval } from '@/api/gateways'
+import { AddToEvaluationSet } from '@/pages/GatewayEvaluation'
 import type {
   PromptPreviewResponse,
   RetrievalPreviewResponse,
@@ -500,13 +501,23 @@ function TryRetrieval({
         </p>
       ) : null}
 
-      {retrieval ? <RetrievalResult preview={retrieval} /> : null}
+      {retrieval ? (
+        <RetrievalResult preview={retrieval} gatewayId={gatewayId} query={query.trim()} />
+      ) : null}
       {prompt ? <PromptResult preview={prompt} /> : null}
     </div>
   )
 }
 
-function RetrievalResult({ preview }: { preview: RetrievalPreviewResponse }) {
+function RetrievalResult({
+  preview,
+  gatewayId,
+  query,
+}: {
+  preview: RetrievalPreviewResponse
+  gatewayId?: string | undefined
+  query?: string | undefined
+}) {
   const summary = retrievalSummary(preview)
 
   return (
@@ -527,6 +538,11 @@ function RetrievalResult({ preview }: { preview: RetrievalPreviewResponse }) {
             <ChunkRow key={chunk.id} chunk={chunk} />
           ))}
         </ol>
+      ) : null}
+
+      {/* Task 103: the label is cheapest the moment the right chunk comes back. */}
+      {gatewayId && query && preview.outcome !== 'skipped' ? (
+        <AddToEvaluationSet gatewayId={gatewayId} query={query} chunks={preview.chunks} />
       ) : null}
     </div>
   )

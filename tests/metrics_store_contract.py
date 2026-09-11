@@ -573,6 +573,31 @@ async def filtering_by_uncited_is_over_the_injected_denominator(fixture: Fixture
     assert uncited == []
 
 
+async def retrieval_questions_pair_the_stored_question_with_what_was_cited(
+    fixture: Fixture,
+) -> None:
+    """Task 103. The one request that injected a document and kept its body comes back
+    with the last user turn as the question and the citation beside it; the request that
+    kept a body but injected nothing, and the ones that injected nothing at all, do not."""
+    async with fixture.repository.begin(fixture.acme_scope) as transaction:
+        found = await transaction.retrieval_questions(fixture.window(), limit=50)
+        narrowed = await transaction.retrieval_questions(
+            fixture.window(gateway_id=fixture.other_gateway_id), limit=50
+        )
+        elsewhere = await transaction.retrieval_questions(
+            fixture.window(gateway_id=fixture.acme_gateway_id), limit=50
+        )
+    async with fixture.repository.begin(fixture.globex_scope) as transaction:
+        globex = await transaction.retrieval_questions(fixture.window(), limit=50)
+
+    assert [row.question for row in found] == ["What does the travel policy cover?"]
+    assert found[0].cited_chunk_ids == ("chunk-1",)
+    assert [entry["id"] for entry in found[0].retrieved] == ["chunk-1"]
+    assert [row.log_id for row in narrowed] == [found[0].log_id]
+    assert elsewhere == []
+    assert globex == []
+
+
 async def the_calibration_sums_both_counts_per_model_and_tokenizer(fixture: Fixture) -> None:
     """Task 101. Ten of the twenty ``acme-gpt`` rows carry an estimate (12 against a
     reported 15); the other ten, and all three ``acme-mini`` rows, have an estimate and
@@ -698,6 +723,7 @@ CHECKS: tuple[Check, ...] = (
     memory_tokens_are_summed_separately_from_the_rest,
     the_uncited_rate_counts_only_requests_that_were_given_documents,
     filtering_by_uncited_is_over_the_injected_denominator,
+    retrieval_questions_pair_the_stored_question_with_what_was_cited,
     the_calibration_sums_both_counts_per_model_and_tokenizer,
     the_calibration_is_scoped_to_one_organization,
     throttled_callers_are_ranked_by_how_often_they_were_refused,

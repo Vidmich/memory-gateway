@@ -1,6 +1,56 @@
 {
   "components": {
     "schemas": {
+      "AgreementResponse": {
+        "properties": {
+          "agreed": {
+            "title": "Agreed",
+            "type": "integer"
+          },
+          "cross_document_similarity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cross Document Similarity"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate"
+          },
+          "sampled": {
+            "title": "Sampled",
+            "type": "integer"
+          },
+          "worst": {
+            "items": {
+              "$ref": "#/components/schemas/FindingDocumentResponse"
+            },
+            "title": "Worst",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sampled",
+          "agreed",
+          "rate",
+          "cross_document_similarity",
+          "worst"
+        ],
+        "title": "AgreementResponse",
+        "type": "object"
+      },
       "ApiKeyCreateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -149,6 +199,74 @@
           "retryable"
         ],
         "title": "AttemptResponse",
+        "type": "object"
+      },
+      "AuditAlertList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditAlertResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "AuditAlertList",
+        "type": "object"
+      },
+      "AuditAlertResponse": {
+        "properties": {
+          "audit_id": {
+            "format": "uuid",
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "connector_id": {
+            "format": "uuid",
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "connector_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connector Name"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "finding": {
+            "title": "Finding",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "chunking",
+              "embedding"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector_id",
+          "connector_name",
+          "kind",
+          "audit_id",
+          "finding",
+          "created_at"
+        ],
+        "title": "AuditAlertResponse",
         "type": "object"
       },
       "AuditChangeResponse": {
@@ -332,6 +450,181 @@
           "changes"
         ],
         "title": "AuditEventResponse",
+        "type": "object"
+      },
+      "AuditRequest": {
+        "additionalProperties": false,
+        "description": "``drift_sample`` is the embedding audit's one spending option: how many chunks to\nre-embed with the current model. Omit it and the audit reads only.",
+        "properties": {
+          "drift_sample": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drift Sample"
+          }
+        },
+        "title": "AuditRequest",
+        "type": "object"
+      },
+      "AuditResponse": {
+        "properties": {
+          "connector_id": {
+            "format": "uuid",
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "drift_sample": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drift Sample"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "chunking",
+              "embedding"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "points": {
+            "title": "Points",
+            "type": "integer"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChunkingReportResponse"
+              },
+              {
+                "$ref": "#/components/schemas/EmbeddingReportResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "green",
+                  "amber",
+                  "red"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity"
+          },
+          "status": {
+            "enum": [
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "connector_id",
+          "kind",
+          "status",
+          "created_at",
+          "finished_at",
+          "points",
+          "drift_sample",
+          "severity",
+          "error",
+          "report"
+        ],
+        "title": "AuditResponse",
+        "type": "object"
+      },
+      "AuditStatusResponse": {
+        "description": "The connector's Validation section: the latest of each kind, and the price of the\none check that spends.",
+        "properties": {
+          "chunking": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuditResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "drift_estimate": {
+            "$ref": "#/components/schemas/DriftEstimateResponse"
+          },
+          "embedding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuditResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "chunking",
+          "embedding",
+          "drift_estimate"
+        ],
+        "title": "AuditStatusResponse",
         "type": "object"
       },
       "Body_upload_api_v1_connectors__connector_id__upload_post": {
@@ -814,6 +1107,86 @@
           "candidates"
         ],
         "title": "ChunkingPreviewResponse",
+        "type": "object"
+      },
+      "ChunkingReportResponse": {
+        "properties": {
+          "chunk_size": {
+            "title": "Chunk Size",
+            "type": "integer"
+          },
+          "distribution": {
+            "$ref": "#/components/schemas/DistributionResponse"
+          },
+          "documents": {
+            "title": "Documents",
+            "type": "integer"
+          },
+          "documents_without_points": {
+            "default": 0,
+            "title": "Documents Without Points",
+            "type": "integer"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/FindingResponse"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "fingerprints": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Fingerprints",
+            "type": "object"
+          },
+          "formats": {
+            "items": {
+              "$ref": "#/components/schemas/FormatReportResponse"
+            },
+            "title": "Formats",
+            "type": "array"
+          },
+          "histogram": {
+            "$ref": "#/components/schemas/HistogramResponse"
+          },
+          "kind": {
+            "const": "chunking",
+            "default": "chunking",
+            "title": "Kind",
+            "type": "string"
+          },
+          "points": {
+            "title": "Points",
+            "type": "integer"
+          },
+          "severity": {
+            "default": "green",
+            "enum": [
+              "green",
+              "amber",
+              "red"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "summary_points": {
+            "default": 0,
+            "title": "Summary Points",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "points",
+          "documents",
+          "chunk_size",
+          "distribution",
+          "histogram",
+          "formats",
+          "findings"
+        ],
+        "title": "ChunkingReportResponse",
         "type": "object"
       },
       "CitationsPreviewResponse": {
@@ -1434,6 +1807,49 @@
         "title": "DistillationUsage",
         "type": "object"
       },
+      "DistributionResponse": {
+        "properties": {
+          "at_ceiling": {
+            "title": "At Ceiling",
+            "type": "integer"
+          },
+          "chunks": {
+            "title": "Chunks",
+            "type": "integer"
+          },
+          "max_tokens": {
+            "title": "Max Tokens",
+            "type": "integer"
+          },
+          "median_tokens": {
+            "title": "Median Tokens",
+            "type": "integer"
+          },
+          "mid_sentence": {
+            "title": "Mid Sentence",
+            "type": "integer"
+          },
+          "min_tokens": {
+            "title": "Min Tokens",
+            "type": "integer"
+          },
+          "p95_tokens": {
+            "title": "P95 Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chunks",
+          "min_tokens",
+          "median_tokens",
+          "p95_tokens",
+          "max_tokens",
+          "at_ceiling",
+          "mid_sentence"
+        ],
+        "title": "DistributionResponse",
+        "type": "object"
+      },
       "DocumentChunk": {
         "description": "One indexed chunk, as the inspector shows it. No score: nothing was searched for.",
         "properties": {
@@ -1808,6 +2224,78 @@
         "title": "DocumentResponse",
         "type": "object"
       },
+      "DriftEstimateResponse": {
+        "properties": {
+          "points": {
+            "title": "Points",
+            "type": "integer"
+          },
+          "sample": {
+            "title": "Sample",
+            "type": "integer"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "points",
+          "sample",
+          "tokens"
+        ],
+        "title": "DriftEstimateResponse",
+        "type": "object"
+      },
+      "DriftResponse": {
+        "properties": {
+          "below": {
+            "title": "Below",
+            "type": "number"
+          },
+          "mean": {
+            "title": "Mean",
+            "type": "number"
+          },
+          "min": {
+            "title": "Min",
+            "type": "number"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "p5": {
+            "title": "P5",
+            "type": "number"
+          },
+          "sampled": {
+            "title": "Sampled",
+            "type": "integer"
+          },
+          "shape": {
+            "enum": [
+              "healthy",
+              "bimodal",
+              "offset",
+              "low"
+            ],
+            "title": "Shape",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sampled",
+          "mean",
+          "min",
+          "p5",
+          "below",
+          "shape",
+          "model"
+        ],
+        "title": "DriftResponse",
+        "type": "object"
+      },
       "EffectiveTokenizerResponse": {
         "description": "A resolved tokenizer and where it came from (task 101). Shared by the model page\nand the platform embedding section, so the two read identically.",
         "properties": {
@@ -1884,6 +2372,117 @@
           }
         },
         "title": "EmbeddingChoice",
+        "type": "object"
+      },
+      "EmbeddingReportResponse": {
+        "properties": {
+          "agreement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgreementResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dimensions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Dimensions",
+            "type": "object"
+          },
+          "document_models": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Document Models",
+            "type": "object"
+          },
+          "drift": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DriftResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_dimension": {
+            "title": "Expected Dimension",
+            "type": "integer"
+          },
+          "expected_model": {
+            "title": "Expected Model",
+            "type": "string"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/FindingResponse"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "identical_vectors": {
+            "title": "Identical Vectors",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "embedding",
+            "default": "embedding",
+            "title": "Kind",
+            "type": "string"
+          },
+          "norms": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NormsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "points": {
+            "title": "Points",
+            "type": "integer"
+          },
+          "scanned": {
+            "title": "Scanned",
+            "type": "integer"
+          },
+          "severity": {
+            "default": "green",
+            "enum": [
+              "green",
+              "amber",
+              "red"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "zero_vectors": {
+            "title": "Zero Vectors",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "points",
+          "scanned",
+          "expected_dimension",
+          "dimensions",
+          "expected_model",
+          "document_models",
+          "norms",
+          "zero_vectors",
+          "identical_vectors",
+          "agreement",
+          "drift",
+          "findings"
+        ],
+        "title": "EmbeddingReportResponse",
         "type": "object"
       },
       "EndUserResponse": {
@@ -2030,6 +2629,804 @@
           "requests"
         ],
         "title": "ErrorGroupResponse",
+        "type": "object"
+      },
+      "EvaluationItemPatch": {
+        "additionalProperties": false,
+        "description": "Every field optional; ``relevant: []`` with ``relevant_document_ids: []`` makes the\nitem a negative.",
+        "properties": {
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
+          },
+          "relevant": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/LabelRequest"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relevant"
+          },
+          "relevant_document_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relevant Document Ids"
+          },
+          "verified": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified"
+          }
+        },
+        "title": "EvaluationItemPatch",
+        "type": "object"
+      },
+      "EvaluationItemRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "question": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "relevant": {
+            "items": {
+              "$ref": "#/components/schemas/LabelRequest"
+            },
+            "maxItems": 50,
+            "title": "Relevant",
+            "type": "array"
+          },
+          "relevant_document_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Relevant Document Ids",
+            "type": "array"
+          },
+          "verified": {
+            "default": true,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "EvaluationItemRequest",
+        "type": "object"
+      },
+      "EvaluationItemResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "negative": {
+            "title": "Negative",
+            "type": "boolean"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "relevant": {
+            "items": {
+              "$ref": "#/components/schemas/LabelResponse"
+            },
+            "title": "Relevant",
+            "type": "array"
+          },
+          "relevant_document_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Relevant Document Ids",
+            "type": "array"
+          },
+          "set_id": {
+            "format": "uuid",
+            "title": "Set Id",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "log",
+              "citation",
+              "manual",
+              "generated"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "set_id",
+          "question",
+          "relevant",
+          "relevant_document_ids",
+          "source",
+          "verified",
+          "negative",
+          "notes",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "EvaluationItemResponse",
+        "type": "object"
+      },
+      "EvaluationRunList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationRunSummaryResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "EvaluationRunList",
+        "type": "object"
+      },
+      "EvaluationRunResponse": {
+        "description": "The whole run: the summary plus every item's result.",
+        "properties": {
+          "completed_items": {
+            "title": "Completed Items",
+            "type": "integer"
+          },
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "metrics": {
+            "additionalProperties": true,
+            "title": "Metrics",
+            "type": "object"
+          },
+          "patch": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patch"
+          },
+          "results": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "set_id": {
+            "format": "uuid",
+            "title": "Set Id",
+            "type": "string"
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "title": "Snapshot",
+            "type": "object"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total_items": {
+            "title": "Total Items",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "set_id",
+          "status",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "total_items",
+          "completed_items",
+          "patch",
+          "metrics",
+          "snapshot",
+          "config",
+          "error",
+          "results"
+        ],
+        "title": "EvaluationRunResponse",
+        "type": "object"
+      },
+      "EvaluationRunSummaryResponse": {
+        "description": "A run as the history table shows it: status, progress, the headline numbers.",
+        "properties": {
+          "completed_items": {
+            "title": "Completed Items",
+            "type": "integer"
+          },
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "metrics": {
+            "additionalProperties": true,
+            "title": "Metrics",
+            "type": "object"
+          },
+          "patch": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patch"
+          },
+          "set_id": {
+            "format": "uuid",
+            "title": "Set Id",
+            "type": "string"
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "title": "Snapshot",
+            "type": "object"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total_items": {
+            "title": "Total Items",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "set_id",
+          "status",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "total_items",
+          "completed_items",
+          "patch",
+          "metrics",
+          "snapshot",
+          "config",
+          "error"
+        ],
+        "title": "EvaluationRunSummaryResponse",
+        "type": "object"
+      },
+      "EvaluationSetDetailResponse": {
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/ItemCountsResponse"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "gateway_id": {
+            "format": "uuid",
+            "title": "Gateway Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "gateway_id",
+          "name",
+          "description",
+          "created_at",
+          "updated_at",
+          "counts",
+          "items"
+        ],
+        "title": "EvaluationSetDetailResponse",
+        "type": "object"
+      },
+      "EvaluationSetList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationSetResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "EvaluationSetList",
+        "type": "object"
+      },
+      "EvaluationSetPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "EvaluationSetPatch",
+        "type": "object"
+      },
+      "EvaluationSetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "EvaluationSetRequest",
+        "type": "object"
+      },
+      "EvaluationSetResponse": {
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/ItemCountsResponse"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "gateway_id": {
+            "format": "uuid",
+            "title": "Gateway Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationRunSummaryResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "gateway_id",
+          "name",
+          "description",
+          "created_at",
+          "updated_at",
+          "counts"
+        ],
+        "title": "EvaluationSetResponse",
+        "type": "object"
+      },
+      "FindingDocumentResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "source_name": {
+            "title": "Source Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_name",
+          "count"
+        ],
+        "title": "FindingDocumentResponse",
+        "type": "object"
+      },
+      "FindingResponse": {
+        "properties": {
+          "action": {
+            "default": "none",
+            "enum": [
+              "compare",
+              "reindex",
+              "platform",
+              "none"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "document_count": {
+            "default": 0,
+            "title": "Document Count",
+            "type": "integer"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/FindingDocumentResponse"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "severity": {
+            "enum": [
+              "green",
+              "amber",
+              "red"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "severity",
+          "title",
+          "count",
+          "detail"
+        ],
+        "title": "FindingResponse",
+        "type": "object"
+      },
+      "FormatReportResponse": {
+        "properties": {
+          "chunk_size": {
+            "title": "Chunk Size",
+            "type": "integer"
+          },
+          "distribution": {
+            "$ref": "#/components/schemas/DistributionResponse"
+          },
+          "documents": {
+            "title": "Documents",
+            "type": "integer"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/FindingResponse"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "histogram": {
+            "$ref": "#/components/schemas/HistogramResponse"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "points": {
+            "title": "Points",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "points",
+          "documents",
+          "chunk_size",
+          "distribution",
+          "histogram",
+          "findings"
+        ],
+        "title": "FormatReportResponse",
         "type": "object"
       },
       "GatewayCreateRequest": {
@@ -2609,6 +4006,60 @@
         "title": "GatewayUpdateRequest",
         "type": "object"
       },
+      "GenerateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "default": 10,
+            "maximum": 25.0,
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "title": "GenerateRequest",
+        "type": "object"
+      },
+      "GenerateResponse": {
+        "properties": {
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "generated": {
+            "title": "Generated",
+            "type": "integer"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "tokens_in": {
+            "title": "Tokens In",
+            "type": "integer"
+          },
+          "tokens_out": {
+            "title": "Tokens Out",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "generated",
+          "failed",
+          "tokens_in",
+          "tokens_out",
+          "model_name"
+        ],
+        "title": "GenerateResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2620,6 +4071,118 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HistogramBucketResponse": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "lower": {
+            "title": "Lower",
+            "type": "integer"
+          },
+          "upper": {
+            "title": "Upper",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lower",
+          "upper",
+          "count"
+        ],
+        "title": "HistogramBucketResponse",
+        "type": "object"
+      },
+      "HistogramResponse": {
+        "properties": {
+          "bucket_tokens": {
+            "title": "Bucket Tokens",
+            "type": "integer"
+          },
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/HistogramBucketResponse"
+            },
+            "title": "Buckets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bucket_tokens",
+          "buckets"
+        ],
+        "title": "HistogramResponse",
+        "type": "object"
+      },
+      "ImportRequest": {
+        "additionalProperties": false,
+        "description": "A window of the gateway's own log. ``uncited`` narrows it the way the monitoring\nfilter does: ``true`` for requests whose answer cited nothing, ``false`` for the ones\nthat did, omitted for both.",
+        "properties": {
+          "from": {
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "limit": {
+            "default": 200,
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "to": {
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          },
+          "uncited": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncited"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "ImportRequest",
+        "type": "object"
+      },
+      "ImportResponse": {
+        "properties": {
+          "duplicates": {
+            "title": "Duplicates",
+            "type": "integer"
+          },
+          "imported": {
+            "title": "Imported",
+            "type": "integer"
+          },
+          "labelled": {
+            "title": "Labelled",
+            "type": "integer"
+          },
+          "skipped": {
+            "title": "Skipped",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "imported",
+          "duplicates",
+          "skipped",
+          "labelled"
+        ],
+        "title": "ImportResponse",
         "type": "object"
       },
       "InvitationAcceptRequest": {
@@ -2788,6 +4351,104 @@
           "accept_url"
         ],
         "title": "IssuedInvitationResponse",
+        "type": "object"
+      },
+      "ItemCountsResponse": {
+        "properties": {
+          "generated": {
+            "default": 0,
+            "title": "Generated",
+            "type": "integer"
+          },
+          "negatives": {
+            "default": 0,
+            "title": "Negatives",
+            "type": "integer"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "verified": {
+            "default": 0,
+            "title": "Verified",
+            "type": "integer"
+          }
+        },
+        "title": "ItemCountsResponse",
+        "type": "object"
+      },
+      "LabelRequest": {
+        "additionalProperties": false,
+        "description": "A chunk somebody says answers the question. The text is filled in from the index.",
+        "properties": {
+          "chunk_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "document_id"
+        ],
+        "title": "LabelRequest",
+        "type": "object"
+      },
+      "LabelResponse": {
+        "properties": {
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "source_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Name"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "document_id",
+          "source_name",
+          "text"
+        ],
+        "title": "LabelResponse",
         "type": "object"
       },
       "LimitPolicy": {
@@ -3790,6 +5451,55 @@
         "title": "MemorySearchResponse",
         "type": "object"
       },
+      "MetricDeltaResponse": {
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "before",
+          "after",
+          "change"
+        ],
+        "title": "MetricDeltaResponse",
+        "type": "object"
+      },
       "ModelCard": {
         "properties": {
           "created": {
@@ -4489,6 +6199,34 @@
           }
         },
         "title": "ModelUpdateRequest",
+        "type": "object"
+      },
+      "NormsResponse": {
+        "properties": {
+          "max": {
+            "title": "Max",
+            "type": "number"
+          },
+          "median": {
+            "title": "Median",
+            "type": "number"
+          },
+          "min": {
+            "title": "Min",
+            "type": "number"
+          },
+          "p95": {
+            "title": "P95",
+            "type": "number"
+          }
+        },
+        "required": [
+          "min",
+          "median",
+          "p95",
+          "max"
+        ],
+        "title": "NormsResponse",
         "type": "object"
       },
       "OrganizationCreateRequest": {
@@ -6495,6 +8233,85 @@
           "handle"
         ],
         "title": "RetrievedChunkResponse",
+        "type": "object"
+      },
+      "RunDiffResponse": {
+        "properties": {
+          "after": {
+            "$ref": "#/components/schemas/EvaluationRunSummaryResponse"
+          },
+          "before": {
+            "$ref": "#/components/schemas/EvaluationRunSummaryResponse"
+          },
+          "config_changes": {
+            "additionalProperties": {
+              "items": {},
+              "type": "array"
+            },
+            "title": "Config Changes",
+            "type": "object"
+          },
+          "index_changes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Index Changes",
+            "type": "array"
+          },
+          "lost": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Lost",
+            "type": "array"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/MetricDeltaResponse"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "won": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Won",
+            "type": "array"
+          }
+        },
+        "required": [
+          "before",
+          "after",
+          "metrics",
+          "config_changes",
+          "index_changes",
+          "won",
+          "lost"
+        ],
+        "title": "RunDiffResponse",
+        "type": "object"
+      },
+      "RunRequest": {
+        "additionalProperties": false,
+        "description": "``memory_config`` is the editor's unsaved form, merged the way Try retrieval merges\nit; omit it to run the saved gateway.",
+        "properties": {
+          "memory_config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Config"
+          }
+        },
+        "title": "RunRequest",
         "type": "object"
       },
       "SearchHit": {
@@ -8728,6 +10545,120 @@
         ]
       }
     },
+    "/api/v1/connectors/{connector_id}/audits": {
+      "get": {
+        "description": "The latest chunking and embedding reports for a connector, their age, and what a\ndrift check would cost before it is run.",
+        "operationId": "get_audits_api_v1_connectors__connector_id__audits_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Audits",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
+    "/api/v1/connectors/{connector_id}/audits/{kind}": {
+      "post": {
+        "description": "Queue an audit. ``kind`` is ``chunking`` or ``embedding``; the body's\n``drift_sample`` asks the embedding audit to re-embed that many chunks \u2014 the one part of\nvalidation that spends, and the estimate is on the GET. A second request while one is\nrunning returns the running row.",
+        "operationId": "start_audit_api_v1_connectors__connector_id__audits__kind__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connector Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "title": "Kind",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AuditRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Audit",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
     "/api/v1/connectors/{connector_id}/chunking/preview": {
       "post": {
         "description": "**Compare**: run candidate chunking configurations over one document.\n\nA read, and behind the read capability, because it changes nothing \u2014 but it is the one\nread in this router that *spends money*, at the embedding provider, on every call. Hence\nthe document-size ceiling in the service and the cap on candidates in the schema. The\nconnector in the path is checked rather than decorative: the baseline every candidate is\ncompared against is that connector's effective configuration for this document's format.",
@@ -9942,6 +11873,590 @@
         ]
       }
     },
+    "/api/v1/evaluation-items/{item_id}": {
+      "delete": {
+        "operationId": "delete_evaluation_item_api_v1_evaluation_items__item_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Evaluation Item",
+        "tags": [
+          "validation"
+        ]
+      },
+      "patch": {
+        "description": "Edit the question or the labels, or verify the item \u2014 which is what moves it between\nthe two columns a run reports.",
+        "operationId": "update_evaluation_item_api_v1_evaluation_items__item_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluationItemPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationItemResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Evaluation Item",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
+    "/api/v1/evaluation-runs/{run_id}": {
+      "get": {
+        "operationId": "get_evaluation_run_api_v1_evaluation_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Evaluation Run",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
+    "/api/v1/evaluation-runs/{run_id}/diff/{against}": {
+      "get": {
+        "description": "Two runs of one set, oldest first: how the numbers moved, which settings differed,\nwhat the index looked like each time, and which questions flipped.",
+        "operationId": "diff_evaluation_runs_api_v1_evaluation_runs__run_id__diff__against__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "against",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Against",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDiffResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Diff Evaluation Runs",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
+    "/api/v1/evaluation-sets/{set_id}": {
+      "delete": {
+        "operationId": "delete_evaluation_set_api_v1_evaluation_sets__set_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Evaluation Set",
+        "tags": [
+          "validation"
+        ]
+      },
+      "get": {
+        "operationId": "get_evaluation_set_api_v1_evaluation_sets__set_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationSetDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Evaluation Set",
+        "tags": [
+          "validation"
+        ]
+      },
+      "patch": {
+        "operationId": "update_evaluation_set_api_v1_evaluation_sets__set_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluationSetPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationSetDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Evaluation Set",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
+    "/api/v1/evaluation-sets/{set_id}/generate": {
+      "post": {
+        "description": "Ask a model to write the question each of ``count`` chunks answers. Spends, through\nthe summarization model chain, and the items are marked as a model's.",
+        "operationId": "generate_evaluation_items_api_v1_evaluation_sets__set_id__generate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/GenerateRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Evaluation Items",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
+    "/api/v1/evaluation-sets/{set_id}/import": {
+      "post": {
+        "description": "One item per distinct question the gateway answered in the window, pre-labelled\nwith what the answer cited where it cited anything. Everything arrives unverified.",
+        "operationId": "import_evaluation_items_api_v1_evaluation_sets__set_id__import_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Evaluation Items",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
+    "/api/v1/evaluation-sets/{set_id}/items": {
+      "post": {
+        "description": "A labelled question. Labels are checked against this organization's index; a chunk\nthat is not there \u2014 or is another tenant's \u2014 is a 404.",
+        "operationId": "add_evaluation_item_api_v1_evaluation_sets__set_id__items_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluationItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationItemResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Evaluation Item",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
+    "/api/v1/evaluation-sets/{set_id}/runs": {
+      "get": {
+        "operationId": "list_evaluation_runs_api_v1_evaluation_sets__set_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationRunList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Evaluation Runs",
+        "tags": [
+          "validation"
+        ]
+      },
+      "post": {
+        "description": "Queue a run through the real retrieval path \u2014 one embedding call per question \u2014\nwith the saved gateway or the editor's unsaved ``memory_config``.",
+        "operationId": "start_evaluation_run_api_v1_evaluation_sets__set_id__runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RunRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationRunSummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Evaluation Run",
+        "tags": [
+          "validation"
+        ]
+      }
+    },
     "/api/v1/gateways": {
       "get": {
         "operationId": "list_gateways_api_v1_gateways_get",
@@ -10176,6 +12691,100 @@
         "summary": "Update Gateway",
         "tags": [
           "gateways"
+        ]
+      }
+    },
+    "/api/v1/gateways/{gateway_id}/evaluation-sets": {
+      "get": {
+        "operationId": "list_evaluation_sets_api_v1_gateways__gateway_id__evaluation_sets_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationSetList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Evaluation Sets",
+        "tags": [
+          "validation"
+        ]
+      },
+      "post": {
+        "operationId": "create_evaluation_set_api_v1_gateways__gateway_id__evaluation_sets_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "gateway_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Gateway Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluationSetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationSetResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Evaluation Set",
+        "tags": [
+          "validation"
         ]
       }
     },
@@ -13123,6 +15732,28 @@
         "summary": "List Tokenizers",
         "tags": [
           "models"
+        ]
+      }
+    },
+    "/api/v1/validation/alerts": {
+      "get": {
+        "description": "Connectors whose latest audit raised a red finding: the dashboard's degraded state.",
+        "operationId": "list_audit_alerts_api_v1_validation_alerts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditAlertList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Audit Alerts",
+        "tags": [
+          "validation"
         ]
       }
     },

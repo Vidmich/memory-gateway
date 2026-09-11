@@ -85,6 +85,7 @@ from app.workers.runtime import (
     build_platform,
     build_platform_settings,
     build_queue,
+    build_validation,
     build_vector_backends,
     embedding_tokenizer,
 )
@@ -313,6 +314,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             directory=directory_store,
             models=ingestion.summary_models,
         )
+        # Task 103. The auditor starts audits and reads reports; the evaluation service
+        # keeps sets and queues runs. Both jobs run on the worker, over the same stores.
+        # `memory` is the service Try retrieval calls, so a run's retrieval and the
+        # preview's are the same object's answer.
+        validation = build_validation(
+            clients,
+            settings,
+            ingestion=ingestion,
+            backends=vector_backends,
+            queue=ingestion.queue,
+            memory=app.state.memory_service,
+        )
+        app.state.index_auditor = validation.auditor
+        app.state.evaluation_service = validation.service
 
         # SPEC §10.4. The read half only: an event is written into whichever transaction
         # is making the change, through the recorder mixins the stores carry, so there is

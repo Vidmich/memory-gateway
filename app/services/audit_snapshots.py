@@ -39,6 +39,9 @@ from app.db.models import (
     Connector,
     Document,
     EndUser,
+    EvaluationItem,
+    EvaluationRun,
+    EvaluationSet,
     Gateway,
     Invitation,
     MemoryFact,
@@ -272,6 +275,48 @@ def fact_subject(fact: MemoryFact) -> Subject:
     )
 
 
+def evaluation_set_subject(row: EvaluationSet) -> Subject:
+    """An evaluation set (task 103): a name and a description, nothing that is content."""
+    return Subject(
+        target=Target("evaluation_set", row.id, row.name),
+        state={"name": row.name, "description": row.description, "gateway_id": str(row.gateway_id)},
+    )
+
+
+def evaluation_item_subject(row: EvaluationItem) -> Subject:
+    """An evaluation item, without the question.
+
+    The question is usually an end user's message, imported from the log, and the same
+    rule as a memory fact applies: content that a person may ask to have erased does not
+    go into an append-only table. What is recorded is the shape of the label — how many
+    chunks and documents, which source, whether verified — which is what a diff of a
+    labelling decision needs.
+    """
+    return Subject(
+        target=Target("evaluation_item", row.id, None),
+        state={
+            "question": Sensitive.of(row.question),
+            "set_id": str(row.set_id),
+            "relevant_chunks": sorted(
+                str(entry.get("chunk_id"))
+                for entry in (row.relevant or [])
+                if isinstance(entry, dict)
+            ),
+            "relevant_document_ids": sorted(str(v) for v in (row.relevant_document_ids or [])),
+            "source": row.source,
+            "verified": row.verified,
+            "notes": row.notes,
+        },
+    )
+
+
+def evaluation_run_subject(row: EvaluationRun) -> Subject:
+    return Subject(
+        target=Target("evaluation_run", row.id, None),
+        state={"set_id": str(row.set_id), "status": row.status, "patch": dict(row.patch or {})},
+    )
+
+
 # ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
@@ -281,6 +326,9 @@ _BUILDERS: dict[type[Any], Any] = {
     Connector: connector_subject,
     Document: document_subject,
     EndUser: end_user_subject,
+    EvaluationItem: evaluation_item_subject,
+    EvaluationRun: evaluation_run_subject,
+    EvaluationSet: evaluation_set_subject,
     Gateway: gateway_subject,
     Invitation: invitation_subject,
     MemoryFact: fact_subject,
@@ -318,6 +366,9 @@ __all__ = [
     "connector_subject",
     "document_subject",
     "end_user_subject",
+    "evaluation_item_subject",
+    "evaluation_run_subject",
+    "evaluation_set_subject",
     "fact_subject",
     "gateway_subject",
     "invitation_subject",

@@ -132,6 +132,18 @@ of re-embedding it. The screen says so at the moment of choosing. If a corpus do
 measurably improve under it, move back to `recursive`, which costs nothing per sentence and
 whose failure mode is a boundary in a slightly wrong place rather than a bill.
 
+## Measure it rather than arguing about it
+
+Task 103 turned "retrieval got worse" into two numbers. Before changing anything, open the
+connector's **Validation** section: the chunking audit says how the *whole* index is cut —
+how many chunks are fragments, how many documents are one chunk, how many fingerprints are in
+the collection — and the embedding audit says whether the vectors are the vectors of that text
+(width, padding, own-document agreement, and a drift check that re-embeds a sample). Then open
+the gateway's **Validation** section: an evaluation set built from last week's log, run before
+and after the change, gives recall@k, precision@k and MRR, and the diff between the two runs
+names what moved between them — the setting, the reindex, or the model. A chunking change that
+does not move the numbers on a verified set is a change nobody needed to make.
+
 ## Related
 
 * [A vector-backend migration is stuck](vector-backend-migration.md) — a different

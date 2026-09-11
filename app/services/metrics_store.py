@@ -251,6 +251,22 @@ class Bucket:
 
 
 @dataclass(frozen=True, slots=True)
+class LoggedQuestion:
+    """One request that injected documents, as an evaluation import sees it (task 103):
+    the question the end user asked, what was retrieved for it, and what the answer cited.
+
+    The question comes from the stored request body, so a gateway whose logging keeps no
+    bodies has nothing to import — the row is skipped rather than imported blank.
+    """
+
+    log_id: uuid.UUID
+    created_at: datetime
+    question: str
+    retrieved: tuple[dict[str, Any], ...]
+    cited_chunk_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class LogDetail:
     """A metadata row and its transcript, if one was stored and still exists."""
 
@@ -298,6 +314,14 @@ class MetricsTransaction(Protocol):
         gateway that identifies nobody would otherwise produce one enormous bar that is
         not a caller and cannot be acted on.
         """
+
+    async def retrieval_questions(
+        self, filters: LogFilters, *, limit: int
+    ) -> Sequence[LoggedQuestion]:
+        """Requests in the window that injected documents and kept their request body,
+        newest first, with the last user turn as the question. What an evaluation set
+        imports from (task 103). ``limit`` bounds the rows read, not the distinct
+        questions returned; deduplication is the caller's."""
 
     async def calibration(self, start: datetime, end: datetime) -> Sequence[CalibrationRow]:
         """Estimated versus reported prompt tokens per (model, tokenizer) in the window.
@@ -503,6 +527,39 @@ class PostgresMetricsTransaction:
             .first()
         )
         return LogDetail(log=row, transcript=transcript)
+
+    async def retrieval_questions(
+        self, filters: LogFilters, *, limit: int
+    ) -> Sequence[LoggedQuestion]:
+        statement = (
+            select(RequestLog, Transcript.request_body)
+            .join(
+                Transcript,
+                (Transcript.request_log_id == RequestLog.id)
+                & (Transcript.created_at == RequestLog.created_at),
+            )
+            .where(
+                self._scope.clause(RequestLog),
+                RequestLog.created_at >= filters.start,
+                RequestLog.created_at < filters.end,
+                RequestLog.retrieved_chunk_ids != [],
+                Transcript.request_body.isnot(None),
+            )
+            .order_by(RequestLog.id.desc())
+            .limit(limit)
+            .execution_options(**scoped())
+        )
+        if filters.gateway_id is not None:
+            statement = statement.where(RequestLog.gateway_id == filters.gateway_id)
+        if filters.end_user_id is not None:
+            statement = statement.where(RequestLog.end_user_id == filters.end_user_id)
+        if filters.uncited is not None:
+            cited = RequestLog.cited_chunk_ids != []
+            statement = statement.where(~cited if filters.uncited else cited)
+        rows = (await self._session.execute(statement)).all()
+        return [
+            question for row in rows if (question := _logged_question(row[0], row[1])) is not None
+        ]
 
     async def throttled_end_users(
         self, filters: LogFilters, *, limit: int = MAX_THROTTLED_END_USERS
@@ -727,6 +784,24 @@ class MemoryMetricsTransaction:
         if row is None or not self._matches(row, filters):
             return None
         return LogDetail(log=row, transcript=self._db.transcripts.get(log_id))
+
+    async def retrieval_questions(
+        self, filters: LogFilters, *, limit: int
+    ) -> Sequence[LoggedQuestion]:
+        rows = sorted(self._rows(filters), key=lambda row: row.id, reverse=True)
+        found = []
+        for row in rows:
+            if not row.retrieved_chunk_ids:
+                continue
+            transcript = self._db.transcripts.get(row.id)
+            if transcript is None or transcript.request_body is None:
+                continue
+            question = _logged_question(row, transcript.request_body)
+            if question is not None:
+                found.append(question)
+            if len(found) >= limit:
+                break
+        return found
 
     async def throttled_end_users(
         self, filters: LogFilters, *, limit: int = MAX_THROTTLED_END_USERS
@@ -1090,6 +1165,39 @@ def _named(metric: Metric, values: Sequence[Any]) -> dict[str, float]:
     }
 
 
+def _logged_question(row: RequestLog, body: Any) -> LoggedQuestion | None:
+    """The last user turn of a stored request body, or ``None`` when there is none to
+    import — a body of one system message, or content that is not text."""
+    if not isinstance(body, list):
+        return None
+    text = ""
+    for message in reversed(body):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content.strip()
+        elif isinstance(content, list):
+            text = " ".join(
+                str(part.get("text", "")).strip()
+                for part in content
+                if isinstance(part, dict) and part.get("type", "text") == "text"
+            ).strip()
+        if text:
+            break
+    if not text:
+        return None
+    return LoggedQuestion(
+        log_id=row.id,
+        created_at=row.created_at,
+        question=text,
+        retrieved=tuple(
+            dict(entry) for entry in (row.retrieved_chunk_ids or []) if isinstance(entry, dict)
+        ),
+        cited_chunk_ids=tuple(str(value) for value in (row.cited_chunk_ids or [])),
+    )
+
+
 __all__ = [
     "EPOCH",
     "PERCENTILES",
@@ -1098,6 +1206,7 @@ __all__ = [
     "GroupBy",
     "LogDetail",
     "LogFilters",
+    "LoggedQuestion",
     "MemoryMetricsRepository",
     "Metric",
     "MetricsRepository",

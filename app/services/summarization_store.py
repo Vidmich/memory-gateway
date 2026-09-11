@@ -51,6 +51,12 @@ NO_MODEL = "no_summarization_model"
 #: How many connectors the panel names as the biggest spenders.
 TOP_CONNECTORS = 5
 
+#: What a row's model call was for. The panel and the cap read ``summary`` rows only;
+#: ``evaluation`` rows (task 103's generated questions) are the same bill through the same
+#: chain and are counted on the evaluation set that spent them.
+PURPOSE_SUMMARY = "summary"
+PURPOSE_EVALUATION = "evaluation"
+
 
 @dataclass(frozen=True, slots=True)
 class RunRecord:
@@ -67,6 +73,7 @@ class RunRecord:
     tokens_out: int = 0
     estimated: bool = False
     duration_ms: int = 0
+    purpose: str = PURPOSE_SUMMARY
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +204,7 @@ class PostgresSummarizationTransaction:
                 SummarizationRun.connector_id == connector_id,
                 SummarizationRun.created_at >= since,
                 SummarizationRun.outcome.in_((SUCCEEDED, FAILED)),
+                SummarizationRun.purpose == PURPOSE_SUMMARY,
             )
             .execution_options(**scoped())
         )
@@ -209,6 +217,7 @@ class PostgresSummarizationTransaction:
             self._scope.clause(SummarizationRun),
             SummarizationRun.created_at >= start,
             SummarizationRun.created_at < end,
+            SummarizationRun.purpose == PURPOSE_SUMMARY,
         ]
         if connector_id is not None:
             window.append(SummarizationRun.connector_id == connector_id)
@@ -313,6 +322,7 @@ def _row_of(run: RunRecord) -> SummarizationRun:
         tokens_out=max(0, run.tokens_out),
         estimated=run.estimated,
         duration_ms=run.duration_ms,
+        purpose=run.purpose,
         created_at=datetime.now(UTC),
     )
 
@@ -395,6 +405,7 @@ class MemorySummarizationTransaction:
             and row.connector_id == connector_id
             and row.created_at >= since
             and row.outcome in (SUCCEEDED, FAILED)
+            and row.purpose == PURPOSE_SUMMARY
         )
 
     async def health(
@@ -405,6 +416,7 @@ class MemorySummarizationTransaction:
             for row in self._db.summarization_runs.values()
             if self._scope.permits(row.organization_id)
             and start <= row.created_at < end
+            and row.purpose == PURPOSE_SUMMARY
             and (connector_id is None or row.connector_id == connector_id)
         ]
         buckets: dict[datetime, list[int]] = {}
@@ -482,6 +494,8 @@ __all__ = [
     "DAILY_CAP",
     "FAILED",
     "NO_MODEL",
+    "PURPOSE_EVALUATION",
+    "PURPOSE_SUMMARY",
     "SKIPPED",
     "SUCCEEDED",
     "TOP_CONNECTORS",

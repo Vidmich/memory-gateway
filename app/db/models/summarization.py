@@ -49,6 +49,11 @@ SUMMARIZATION_OUTCOMES = ("succeeded", "failed", "skipped")
 
 MAX_REASON_LENGTH = 500
 
+#: What the model call was for. ``summary`` is the phase this table was built for;
+#: ``evaluation`` is task 103 writing a question from a chunk — the same chain, the same
+#: bill, a different purpose, and the panel's document counts must not include it.
+SUMMARIZATION_PURPOSES = ("summary", "evaluation")
+
 
 class SummarizationRun(Base, UUIDPrimaryKeyMixin):
     """One attempt to summarize one document."""
@@ -57,6 +62,7 @@ class SummarizationRun(Base, UUIDPrimaryKeyMixin):
     __table_args__ = (
         CheckConstraint("outcome IN ('succeeded', 'failed', 'skipped')", name="outcome_is_known"),
         CheckConstraint("tokens_in >= 0 AND tokens_out >= 0", name="tokens_are_not_negative"),
+        CheckConstraint("purpose IN ('summary', 'evaluation')", name="purpose_is_known"),
         Index("ix_summarization_runs_organization_id_created_at", "organization_id", "created_at"),
         # The daily cap: this connector, since midnight.
         Index("ix_summarization_runs_connector_id_created_at", "connector_id", "created_at"),
@@ -72,6 +78,9 @@ class SummarizationRun(Base, UUIDPrimaryKeyMixin):
     document_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
 
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    purpose: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="summary", server_default="summary"
+    )
     reason: Mapped[str | None] = mapped_column(String(MAX_REASON_LENGTH), nullable=True)
 
     model_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
@@ -89,4 +98,9 @@ class SummarizationRun(Base, UUIDPrimaryKeyMixin):
     )
 
 
-__all__ = ["MAX_REASON_LENGTH", "SUMMARIZATION_OUTCOMES", "SummarizationRun"]
+__all__ = [
+    "MAX_REASON_LENGTH",
+    "SUMMARIZATION_OUTCOMES",
+    "SUMMARIZATION_PURPOSES",
+    "SummarizationRun",
+]

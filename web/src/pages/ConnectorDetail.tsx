@@ -1,6 +1,9 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
+import { Histogram } from '@/components/Histogram'
+import { chunkHistogram } from '@/pages/validation'
+
 import {
   useDeleteDocument,
   useDocumentChunks,
@@ -656,7 +659,10 @@ function embeddedNote(because: string | null | undefined): string {
 export function ChunkingPanel({ connector }: { connector: ConnectorResponse }) {
   const reindex = useReindexConnector(connector.id)
   const [form, setForm] = useState<ChunkingForm>(() => chunkingForm(connector.chunking))
-  const [comparing, setComparing] = useState(false)
+  // A finding on the Validation section links here as `?compare=<document>` (task 103):
+  // the page that found a badly cut file opens the page that recuts it, on that file.
+  const [params] = useSearchParams()
+  const [comparing, setComparing] = useState(Boolean(params.get('compare')))
   const update = useUpdateConnector(connector.id)
   const { notify } = useToast()
 
@@ -897,7 +903,8 @@ export function ChunkingCompare({
 }) {
   const documents = useDocuments(connector.id, 'indexed')
   const preview = usePreviewChunking(connector.id)
-  const [documentId, setDocumentId] = useState('')
+  const [params] = useSearchParams()
+  const [documentId, setDocumentId] = useState(params.get('compare') ?? '')
   const [query, setQuery] = useState('')
 
   const rows = documents.data?.items ?? []
@@ -1026,6 +1033,18 @@ function ComparisonResult({ result }: { result: ChunkingPreviewResponse }) {
         {candidates.map((candidate: ChunkingCandidate) => (
           <div key={candidate.label}>
             <p className="mb-1 text-xs font-medium text-slate-600">{candidate.label}</p>
+            {/* Task 103's histogram, on the candidate's own chunks: the shape of a cutting
+                is something a list of twelve boxes does not show. */}
+            <div className="mb-2 rounded-md border border-slate-200 bg-white p-2">
+              <Histogram
+                histogram={chunkHistogram(
+                  candidate.chunks.map((chunk) => chunk.token_count),
+                  candidateChunkSize(candidate, result),
+                )}
+                chunkSize={candidateChunkSize(candidate, result)}
+                compact
+              />
+            </div>
             <ol className="space-y-1">
               {candidate.chunks.slice(0, 12).map((chunk) => (
                 <li
@@ -1226,4 +1245,15 @@ export function SearchPanel({ connectorId }: { connectorId: string }) {
       ) : null}
     </div>
   )
+}
+
+/**
+ * The ceiling a candidate was cut under, for the histogram's axis. The preview does not
+ * echo each candidate's configuration back, so the largest chunk is the honest upper
+ * bound: a candidate whose biggest chunk is 380 tokens was not cut at 1000.
+ */
+function candidateChunkSize(candidate: ChunkingCandidate, result: ChunkingPreviewResponse): number {
+  const largest = Math.max(1, ...candidate.chunks.map((chunk) => chunk.token_count))
+  const ceilings = [200, 400, 600, 800, 1000, 1500, 2000, 4000, 8000]
+  return ceilings.find((ceiling) => ceiling >= largest) ?? Math.max(largest, result.candidates.length)
 }

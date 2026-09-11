@@ -47,16 +47,24 @@ from app.services.distiller import Distiller
 from app.services.embeddings import Embedder, EmbeddingSettings, build_embedder
 from app.services.end_user_store import EndUserStore, PostgresEndUserStore
 from app.services.erasure import OrganizationEraser
+from app.services.evaluation_runner import EvaluationRunner
+from app.services.evaluation_service import EvaluationService, QuestionWriter
+from app.services.evaluation_store import EvaluationStore, PostgresEvaluationStore
 from app.services.extraction import ExtractorRegistry, build_registry
 from app.services.extraction_pool import ExtractionPool
 from app.services.fact_vectors import FactVectorStore
+from app.services.gateway_store import PostgresGatewayStore
+from app.services.index_audit_store import IndexAuditStore, PostgresIndexAuditStore
+from app.services.index_auditor import IndexAuditor
 from app.services.ingestion import IngestionPipeline, IngestionSettings, TokenizerSource
 from app.services.job_queue import ArqJobQueue
 from app.services.job_store import PostgresDeadLetters
 from app.services.jobs import (
+    AUDIT_INDEX,
     DELETE_CONNECTOR,
     DISTIL_MEMORY,
     DROP_MIGRATION_SOURCE,
+    EVALUATE_SET,
     INGEST_DOCUMENT,
     MIGRATE_VECTORS,
     REINDEX,
@@ -69,6 +77,7 @@ from app.services.jobs import (
 from app.services.locks import Lock, RedisLock
 from app.services.maintenance import OrphanSweeper, PartitionManager, RetentionJob
 from app.services.maintenance_store import MaintenanceStore, PostgresMaintenanceStore
+from app.services.metrics_store import PostgresMetricsRepository
 from app.services.object_store import ObjectStore, S3ObjectStore
 from app.services.platform_service import PlatformService
 from app.services.platform_settings import PlatformSettingsService
@@ -77,6 +86,7 @@ from app.services.proxy import ProxyService
 from app.services.reconciliation import Reconciler
 from app.services.reindex import Reindexer
 from app.services.reindex_store import PostgresReindexStore
+from app.services.retrieval import MemoryService, Retriever
 from app.services.summarization_store import PostgresSummarizationStore, SummarizationStore
 from app.services.summarizer import SummarizationModelResolver, Summarizer
 from app.services.tokenizer import Tokenizer
@@ -471,6 +481,73 @@ def build_platform(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Validation:
+    """Task 103, wired: the auditor and the evaluation runner the worker runs, and the
+    evaluation service the API serves — over the same stores, so a run the API queues is a
+    run the worker finds."""
+
+    audits: IndexAuditStore
+    evaluations: EvaluationStore
+    auditor: IndexAuditor
+    runner: EvaluationRunner
+    service: EvaluationService
+
+
+def build_validation(
+    clients: Clients,
+    settings: Settings,
+    *,
+    ingestion: Ingestion,
+    backends: VectorBackends,
+    queue: JobQueue,
+    memory: MemoryService | None = None,
+) -> Validation:
+    """The validation bundle.
+
+    ``memory`` is the API's own :class:`MemoryService` when the API builds this — the one
+    Try retrieval calls — so a run and the preview are literally the same object's answer.
+    The worker has none and builds one over the same embedder and the same routing store,
+    which is the same retrieval by construction.
+    """
+    audits = PostgresIndexAuditStore(clients.session_factory)
+    evaluations = PostgresEvaluationStore(clients.session_factory)
+    gateways = PostgresGatewayStore(clients.session_factory)
+    retrieval = memory or MemoryService(Retriever(ingestion.embedder, ingestion.vectors))
+    auditor = IndexAuditor(
+        audits,
+        connectors=ingestion.store,
+        backends=backends,
+        embedder=ingestion.embedder,
+        queue=queue,
+    )
+    runner = EvaluationRunner(
+        evaluations,
+        gateways=gateways,
+        connectors=ingestion.store,
+        memory=retrieval,
+        vectors=ingestion.vectors,
+        embedder=ingestion.embedder,
+    )
+    service = EvaluationService(
+        evaluations,
+        gateways=gateways,
+        connectors=ingestion.store,
+        vectors=ingestion.vectors,
+        logs=PostgresMetricsRepository(clients.session_factory),
+        queue=queue,
+        # The same chain and the same ledger summarization uses; see `QuestionWriter`.
+        writer=QuestionWriter(
+            models=ingestion.summary_models,
+            proxy=ProxyService(clients.http),
+            ledger=ingestion.summaries,
+        ),
+    )
+    return Validation(
+        audits=audits, evaluations=evaluations, auditor=auditor, runner=runner, service=service
+    )
+
+
 def retry_policy(settings: Settings) -> RetryPolicy:
     return RetryPolicy(
         max_attempts=settings.job_max_attempts,
@@ -483,6 +560,7 @@ def build_handlers(
     ingestion: Ingestion,
     distillation: Distillation | None = None,
     platform: Platform | None = None,
+    validation: Validation | None = None,
 ) -> Mapping[str, Any]:
     """Job name to coroutine.
 
@@ -539,6 +617,21 @@ def build_handlers(
         handlers[MIGRATE_VECTORS] = migrate_vectors
         handlers[DROP_MIGRATION_SOURCE] = drop_migration_source
 
+    if validation is not None:
+
+        async def audit_index(payload: Mapping[str, Any]) -> None:
+            await validation.auditor.run(
+                uuid.UUID(str(payload["organization_id"])), uuid.UUID(str(payload["audit_id"]))
+            )
+
+        async def evaluate_set(payload: Mapping[str, Any]) -> None:
+            await validation.runner.run(
+                uuid.UUID(str(payload["organization_id"])), uuid.UUID(str(payload["run_id"]))
+            )
+
+        handlers[AUDIT_INDEX] = audit_index
+        handlers[EVALUATE_SET] = evaluate_set
+
     if distillation is None:
         return handlers
 
@@ -565,9 +658,10 @@ def build_runner(
     metrics: JobMetrics | None = None,
     distillation: Distillation | None = None,
     platform: Platform | None = None,
+    validation: Validation | None = None,
 ) -> JobRunner:
     return JobRunner(
-        build_handlers(ingestion, distillation, platform),
+        build_handlers(ingestion, distillation, platform, validation),
         queue=ingestion.queue,
         dead_letters=dead_letters,
         policy=retry_policy(settings),
@@ -587,6 +681,7 @@ __all__ = [
     "Distillation",
     "Ingestion",
     "Platform",
+    "Validation",
     "build_dead_letters",
     "build_distillation",
     "build_handlers",
@@ -595,6 +690,7 @@ __all__ = [
     "build_platform_settings",
     "build_queue",
     "build_runner",
+    "build_validation",
     "embedding_settings",
     "embedding_tokenizer",
     "ingestion_settings",

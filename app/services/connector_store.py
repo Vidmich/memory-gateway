@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -41,6 +42,21 @@ from app.services.audit import (
     PostgresAuditRecorder,
 )
 from app.services.memory_db import MemoryDatabase
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentAuditRow:
+    """What an index audit (task 103) needs from a document row: a name, a format, a size,
+    and what it was cut and embedded with. Six columns rather than rows, for the reason
+    :meth:`ConnectorTransaction.index` gives."""
+
+    id: uuid.UUID
+    source_name: str
+    mime_type: str | None
+    size_bytes: int
+    status: str
+    chunk_fingerprint: str | None
+    embedding_model: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +129,10 @@ class ConnectorTransaction(AuditingTransaction, Protocol):
 
     async def index(self, connector_id: uuid.UUID) -> Sequence[DocumentIndexRow]:
         """``(id, source_uri, etag, status)`` for every document. The resync input."""
+        ...
+
+    async def audit_rows(self, connector_id: uuid.UUID) -> Sequence[DocumentAuditRow]:
+        """Every document of a connector, as an audit sees it (task 103)."""
         ...
 
     async def commit(self) -> None: ...
@@ -234,6 +254,24 @@ class PostgresConnectorTransaction(PostgresAuditRecorder):
 
     async def index(self, connector_id: uuid.UUID) -> Sequence[DocumentIndexRow]:
         return await self._documents.index(connector_id)
+
+    async def audit_rows(self, connector_id: uuid.UUID) -> Sequence[DocumentAuditRow]:
+        statement = (
+            select(
+                Document.id,
+                Document.source_name,
+                Document.mime_type,
+                Document.size_bytes,
+                Document.status,
+                Document.chunk_fingerprint,
+                Document.embedding_model,
+            )
+            .where(self._scope.clause(Document), Document.connector_id == connector_id)
+            .order_by(Document.id)
+            .execution_options(**scoped())
+        )
+        rows = (await self._session.execute(statement)).all()
+        return [DocumentAuditRow(*row) for row in rows]
 
     async def commit(self) -> None:
         await self._session.commit()
@@ -406,6 +444,22 @@ class MemoryConnectorTransaction(MemoryAuditRecorder):
             and self._scope.permits(document.organization_id)
         ]
 
+    async def audit_rows(self, connector_id: uuid.UUID) -> Sequence[DocumentAuditRow]:
+        return [
+            DocumentAuditRow(
+                id=document.id,
+                source_name=document.source_name,
+                mime_type=document.mime_type,
+                size_bytes=document.size_bytes,
+                status=document.status,
+                chunk_fingerprint=document.chunk_fingerprint,
+                embedding_model=document.embedding_model,
+            )
+            for document in sorted(self._db.documents.values(), key=lambda row: row.id)
+            if document.connector_id == connector_id
+            and self._scope.permits(document.organization_id)
+        ]
+
     async def commit(self) -> None:
         return None
 
@@ -422,6 +476,7 @@ class MemoryConnectorStore:
 __all__ = [
     "ConnectorStore",
     "ConnectorTransaction",
+    "DocumentAuditRow",
     "DocumentDraft",
     "MemoryConnectorStore",
     "MemoryConnectorTransaction",

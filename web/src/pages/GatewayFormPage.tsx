@@ -18,6 +18,7 @@ import { CopyButton } from '@/components/CopyButton'
 import { Field, Form, Select, SubmitButton, TextArea, TextInput } from '@/components/Form'
 import { FullPageSpinner } from '@/components/FullPageSpinner'
 import { useToast } from '@/components/Toast'
+import { EvaluationSection } from '@/pages/GatewayEvaluation'
 import { GatewayKeys } from '@/pages/GatewayKeys'
 import { LimitsSection } from '@/pages/GatewayLimits'
 import { ObjectAudit } from '@/pages/ObjectAudit'
@@ -491,6 +492,14 @@ export function GatewayFormPage() {
 
       {/* 7. Keys ------------------------------------------------------- */}
       {gatewayId ? <GatewayKeys gatewayId={gatewayId} /> : null}
+
+      {/* 8. Validation (task 103) -------------------------------------- */}
+      <EvaluationSection
+        gatewayId={gateway?.id}
+        form={state.memory}
+        stored={saved.memory}
+        writes={writes}
+      />
 
       {/* Its own history, which is where the audit log is actually read: somebody
           looking at a misbehaving endpoint wants "what changed here", and they want it

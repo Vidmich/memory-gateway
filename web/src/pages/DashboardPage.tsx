@@ -6,6 +6,7 @@ import { useGateways } from '@/api/gateways'
 import { useLimitPressure } from '@/api/limits'
 import { resolveRange, useSummary } from '@/api/monitoring'
 import { useSummarizationHealth } from '@/api/summarization'
+import { useAuditAlerts } from '@/api/validation'
 import { useAuth } from '@/auth/AuthContext'
 import { pressureSummary } from '@/pages/limits'
 import { waitingSummary } from '@/pages/summarization'
@@ -45,6 +46,10 @@ export function DashboardPage() {
   // summarization cap is spent is exactly what this list is for.
   const summarization = useSummarizationHealth(window)
   const waiting = waitingSummary(summarization.data)
+  // Task 103's degraded state: a connector whose last audit raised a red finding is an
+  // index that ranks and ranks wrong, and nothing on the traffic charts says so.
+  const alerts = useAuditAlerts()
+  const redFindings = Array.isArray(alerts.data?.items) ? alerts.data.items : []
 
   const enabled = (gateways.data?.items ?? []).filter((gateway) => gateway.enabled).length
   const indexed = (connectors.data?.items ?? []).reduce(
@@ -157,6 +162,31 @@ export function DashboardPage() {
                   className="font-medium text-amber-900 underline"
                 >
                   {item.name ?? item.connector_id}: {item.documents.toLocaleString()} waiting
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {redFindings.length > 0 ? (
+        <section
+          className="mt-8 rounded-lg border border-red-200 bg-red-50 p-5"
+          data-testid="audit-alerts"
+        >
+          <h2 className="text-sm font-semibold text-red-900">An index audit found a problem</h2>
+          <p className="mt-1 text-sm text-red-900">
+            These connectors&apos; last chunking or embedding audit raised a red finding.
+            Retrieval keeps working; it is working on the wrong chunks.
+          </p>
+          <ul className="mt-3 space-y-1 text-sm">
+            {redFindings.map((alert) => (
+              <li key={`${alert.connector_id}-${alert.kind}`}>
+                <Link
+                  to={`/connectors/${alert.connector_id}`}
+                  className="font-medium text-red-900 underline"
+                >
+                  {alert.connector_name ?? alert.connector_id}: {alert.finding} ({alert.kind})
                 </Link>
               </li>
             ))}

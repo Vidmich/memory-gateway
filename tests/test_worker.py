@@ -16,9 +16,11 @@ import pytest
 from app.core.config import Settings, get_settings
 from app.services.job_queue import ARQ_FUNCTION
 from app.services.jobs import (
+    AUDIT_INDEX,
     DELETE_CONNECTOR,
     DISTIL_MEMORY,
     DROP_MIGRATION_SOURCE,
+    EVALUATE_SET,
     INGEST_DOCUMENT,
     JOB_NAMES,
     MIGRATE_VECTORS,
@@ -29,6 +31,7 @@ from app.workers.main import WorkerSettings, run_gateway_job
 from app.workers.runtime import (
     Distillation,
     Platform,
+    Validation,
     build_handlers,
     embedding_settings,
     ingestion_settings,
@@ -39,6 +42,7 @@ from tests.connector_support import build_connectors
 from tests.distillation_support import build_distillation
 from tests.platform_support import PlatformFixture
 from tests.platform_support import build_platform as build_platform_fixture
+from tests.validation_support import build_validation_fixture
 
 
 def test_the_queue_and_the_worker_agree_on_the_function_name() -> None:
@@ -73,7 +77,9 @@ def test_there_is_a_handler_for_every_job_this_build_can_enqueue() -> None:
     ingestion = _ingestion_of(fixture)
     platform = build_platform_fixture()
 
-    handlers = build_handlers(ingestion, _distillation_of()[0], _platform_of(platform))
+    handlers = build_handlers(
+        ingestion, _distillation_of()[0], _platform_of(platform), _validation_of(fixture)
+    )
     assert set(handlers) == set(JOB_NAMES)
     assert set(JOB_NAMES) == {
         INGEST_DOCUMENT,
@@ -83,6 +89,8 @@ def test_there_is_a_handler_for_every_job_this_build_can_enqueue() -> None:
         REINDEX,
         MIGRATE_VECTORS,
         DROP_MIGRATION_SOURCE,
+        AUDIT_INDEX,
+        EVALUATE_SET,
     }
 
 
@@ -246,6 +254,18 @@ def test_a_payload_carries_only_what_survives_a_deploy() -> None:
     }
 
     assert all(isinstance(value, str) for value in payload.values())
+
+
+def _validation_of(fixture: Any) -> Validation:
+    """Task 103's bundle over the connector fixture, as ``build_handlers`` expects it."""
+    validation = build_validation_fixture(fixture)
+    return Validation(
+        audits=validation.audits,
+        evaluations=validation.evaluations,
+        auditor=validation.auditor,
+        runner=validation.runner,
+        service=validation.service,
+    )
 
 
 def _platform_of(fixture: PlatformFixture) -> Platform:

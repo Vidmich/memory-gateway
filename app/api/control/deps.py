@@ -23,7 +23,9 @@ from app.services.connectors import ConnectorService
 from app.services.directory import DirectoryService
 from app.services.distillation_service import DistillationService
 from app.services.end_users import EndUserService
+from app.services.evaluation_service import EvaluationService
 from app.services.gateways import GatewayService
+from app.services.index_auditor import IndexAuditor
 from app.services.limits_service import LimitsService
 from app.services.memory_preview import MemoryPreview
 from app.services.monitoring import MonitoringService
@@ -77,6 +79,16 @@ def get_distillation_service(request: Request) -> DistillationService:
 
 def get_summarization_service(request: Request) -> SummarizationService:
     service: SummarizationService = request.app.state.summarization_service
+    return service
+
+
+def get_index_auditor(request: Request) -> IndexAuditor:
+    service: IndexAuditor = request.app.state.index_auditor
+    return service
+
+
+def get_evaluation_service(request: Request) -> EvaluationService:
+    service: EvaluationService = request.app.state.evaluation_service
     return service
 
 

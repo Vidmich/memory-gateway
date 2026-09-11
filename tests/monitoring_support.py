@@ -404,6 +404,19 @@ def metrics_seed(acme: Organization, globex: Organization) -> MetricsSeed:
                 ],
                 response_body="the answer",
             ),
+            # Task 103: the one request that injected a document also kept its body, so
+            # an evaluation import has a question to pair with the citation.
+            Transcript(
+                request_log_id=logs[20].id,
+                created_at=logs[20].created_at,
+                organization_id=acme.id,
+                request_body=[
+                    {"role": "system", "content": "Answer from the handbook."},
+                    {"role": "user", "content": "What does the travel policy cover?"},
+                ],
+                assembled_prompt=None,
+                response_body="Travel is covered [1].",
+            ),
         ),
         acme_gateway_id=acme_gateway_id,
         other_gateway_id=other_gateway_id,

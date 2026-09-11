@@ -235,6 +235,39 @@ async def the_index_carries_what_reconciliation_compares(fixture: Fixture) -> No
 
 
 @check
+async def audit_rows_carry_what_an_index_audit_classifies_by(fixture: Fixture) -> None:
+    """Task 103. Name, format, size, and what the row was cut and embedded with — and
+    only this organization's rows, which is the property the audit's per-document
+    findings rest on."""
+    async with fixture.store.begin(fixture.acme_scope) as transaction:
+        connector = await transaction.connector(fixture.acme_connector.id)
+        assert connector is not None
+        document = await transaction.claim_document(connector, draft(size=2048), reset=True)
+        document.status = "indexed"
+        document.chunk_fingerprint = "abc123"
+        document.embedding_model = "hash-bow"
+        await transaction.commit()
+
+        rows = await transaction.audit_rows(connector.id)
+
+    assert [
+        (
+            row.id,
+            row.source_name,
+            row.mime_type,
+            row.size_bytes,
+            row.status,
+            row.chunk_fingerprint,
+            row.embedding_model,
+        )
+        for row in rows
+    ] == [(document.id, "handbook.md", "text/markdown", 2048, "indexed", "abc123", "hash-bow")]
+
+    async with fixture.store.begin(fixture.globex_scope) as transaction:
+        assert await transaction.audit_rows(fixture.acme_connector.id) == []
+
+
+@check
 async def counts_are_grouped_by_status(fixture: Fixture) -> None:
     async with fixture.store.begin(fixture.acme_scope) as transaction:
         connector = await transaction.connector(fixture.acme_connector.id)

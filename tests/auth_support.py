@@ -46,6 +46,7 @@ from tests.distillation_support import build_distillation as build_distillation_
 from tests.end_user_support import EndUserFixture, build_end_users
 from tests.gateway_support import FakeGatewayProbe, RecordingCache
 from tests.monitoring_support import LogFixture, build_logs, build_monitoring
+from tests.validation_support import ValidationFixture, build_validation_fixture
 
 PASSWORD = "correct-horse-battery-staple"
 EMAIL = "ada@example.com"
@@ -111,6 +112,9 @@ class AuthFixture:
     #: Task 102's control-plane half, over the connector fixture's ledger and model chain.
     #: ``None`` without an organization, like the fixture it reads from.
     summarization: SummarizationService | None
+    #: Task 103's auditor, evaluation service and runner over the same index, rows and
+    #: queue as the connector fixture, and the same gateway rows as ``gateways``.
+    validation: ValidationFixture | None
     #: Task 15's read half, over the same rows every mutation above records into —
     #: which is the point: an audit test drives a real endpoint and then reads the log
     #: the same screen would, rather than inspecting whatever the service happened to
@@ -230,6 +234,11 @@ def build_auth(
         if connectors is not None
         else None
     )
+    validation = (
+        build_validation_fixture(connectors, gateways=gateway_store)
+        if connectors is not None
+        else None
+    )
     end_users = (
         build_end_users(organization, database=database) if organization is not None else None
     )
@@ -271,6 +280,7 @@ def build_auth(
         end_users=end_users,
         distillation=distillation,
         summarization=summarization,
+        validation=validation,
         audit=AuditService(audit_store),
         audit_store=audit_store,
         # The same throttle store the login backoff uses, so a test that makes two assumed

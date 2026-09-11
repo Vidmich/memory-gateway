@@ -40,7 +40,7 @@ from app.schemas.config import merge_config
 from app.schemas.gateway_config import MemoryConfig
 from app.schemas.openai import ChatMessage
 from app.services.citations import footer, resolve
-from app.services.gateway_store import GatewayStore
+from app.services.gateway_store import GatewayStore, GatewayTransaction
 from app.services.prompt import Layer, assemble, fit_documents, render_entry
 from app.services.retrieval import Chunk, MemoryService, Recall, Retrieval
 from app.services.tokenizer import Tokenizer, WordTokenizer, count
@@ -210,21 +210,8 @@ class MemoryPreview:
             gateway = await transaction.gateway(gateway_id)
             if gateway is None:
                 raise NotFound(NO_SUCH_GATEWAY)
-            model = _primary(gateway)
-            # Validated through the same merge the save path uses, so a value this screen
-            # accepts is a value the form can save — and one it refuses is refused with
-            # the same message and the same field path.
-            merged = merge_config(MemoryConfig, gateway.memory_config, patch, field="memory_config")
-            connectors = await transaction.own_connectors(
-                [uuid.UUID(value) for value in merged.get("connector_ids", [])]
-            )
-
-        config = MemoryConfig.load(merged)
-        # SPEC §5.3 again, and this is the "re-checked at request time" half wearing a
-        # different hat: a preview must not be a way to read a connector the gateway may
-        # not, and an unsaved patch is exactly where someone would try.
-        kept = [value for value in config.connector_ids if value in connectors]
-        return gateway, config.model_copy(update={"connector_ids": kept}), model
+            config = await resolve_memory_config(transaction, gateway, patch)
+        return gateway, config, primary_model(gateway)
 
     async def _recall(self, gateway: Gateway, config: MemoryConfig, text: str) -> Recall:
         return await self._memory.recall(
@@ -234,11 +221,7 @@ class MemoryPreview:
         )
 
     def _tokenizer_for(self, model: UpstreamModel | None) -> Tokenizer:
-        """The primary target's tokenizer, which is what a request through this gateway
-        budgets with — derived from the model or overridden on it (task 101)."""
-        if model is None:
-            return self._tokenizer
-        return effective(model.dialect, model.upstream_model_id, stored(model.tokenizer)).tokenizer
+        return tokenizer_for(model, self._tokenizer)
 
     def _preview(
         self, retrieval: Retrieval, config: MemoryConfig, tokenizer: Tokenizer
@@ -288,7 +271,41 @@ class MemoryPreview:
         )
 
 
-def _primary(gateway: Gateway) -> UpstreamModel | None:
+async def resolve_memory_config(
+    transaction: GatewayTransaction, gateway: Gateway, patch: Mapping[str, Any] | None
+) -> MemoryConfig:
+    """The memory configuration a retrieval for this gateway runs with: the saved one with
+    an unsaved patch merged, connectors the gateway may not read removed.
+
+    One function, shared by Try retrieval and by an evaluation run (task 103), because the
+    acceptance criterion of the second is that its retrieval is *identical* to the first's
+    for the same question and configuration — and two copies of this resolution would be
+    the first place they diverged.
+    """
+    # Validated through the same merge the save path uses, so a value this screen accepts
+    # is a value the form can save — and one it refuses is refused with the same message
+    # and the same field path.
+    merged = merge_config(MemoryConfig, gateway.memory_config, patch, field="memory_config")
+    connectors = await transaction.own_connectors(
+        [uuid.UUID(value) for value in merged.get("connector_ids", [])]
+    )
+    config = MemoryConfig.load(merged)
+    # SPEC §5.3 again, and this is the "re-checked at request time" half wearing a
+    # different hat: a preview must not be a way to read a connector the gateway may not,
+    # and an unsaved patch is exactly where someone would try.
+    kept = [value for value in config.connector_ids if value in connectors]
+    return config.model_copy(update={"connector_ids": kept})
+
+
+def tokenizer_for(model: UpstreamModel | None, fallback: Tokenizer) -> Tokenizer:
+    """The primary target's tokenizer, which is what a request through this gateway
+    budgets with — derived from the model or overridden on it (task 101)."""
+    if model is None:
+        return fallback
+    return effective(model.dialect, model.upstream_model_id, stored(model.tokenizer)).tokenizer
+
+
+def primary_model(gateway: Gateway) -> UpstreamModel | None:
     """The target a request is most likely to reach: the first enabled one by priority.
 
     A preview cannot show a chain without claiming a request goes to all of it, so it
@@ -316,4 +333,7 @@ __all__ = [
     "PreviewChunk",
     "PromptPreview",
     "RetrievalPreview",
+    "primary_model",
+    "resolve_memory_config",
+    "tokenizer_for",
 ]

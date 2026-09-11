@@ -25,6 +25,7 @@ from app.api.control import (
     monitoring,
     platform,
     summarization,
+    validation,
 )
 from app.api.control.deps import require_identity
 
@@ -50,6 +51,7 @@ authenticated_router.include_router(monitoring.router)
 authenticated_router.include_router(end_users.router)
 authenticated_router.include_router(distillation.router)
 authenticated_router.include_router(summarization.router)
+authenticated_router.include_router(validation.router)
 authenticated_router.include_router(platform.router)
 authenticated_router.include_router(platform.ceilings_router)
 

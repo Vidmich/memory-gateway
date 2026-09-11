@@ -361,6 +361,11 @@ REINDEX = "reindex"
 #: a worker holding a slot open for a quarter of an hour.
 MIGRATE_VECTORS = "migrate_vectors"
 DROP_MIGRATION_SOURCE = "drop_migration_source"
+#: Task 103. A connector-wide audit of the index — a scroll of the whole collection, a
+#: minute for a hundred thousand points — and an evaluation run, one embedding call per
+#: question. Both are things a person presses a button for and neither is a request.
+AUDIT_INDEX = "audit_index"
+EVALUATE_SET = "evaluate_set"
 
 #: Every job this build knows how to run: one file's extraction and embedding, a
 #: connector's whole teardown, one conversation's distillation, task 17's reindex, and
@@ -378,6 +383,8 @@ JOB_NAMES = (
     REINDEX,
     MIGRATE_VECTORS,
     DROP_MIGRATION_SOURCE,
+    AUDIT_INDEX,
+    EVALUATE_SET,
 )
 
 
@@ -389,6 +396,17 @@ def ingest_key(document_id: uuid.UUID, content_hash: str | None) -> str:
     the fix would silently never be indexed.
     """
     return f"ingest:{document_id}:{content_hash or 'unknown'}"
+
+
+def audit_key(audit_id: uuid.UUID) -> str:
+    """One job per audit row. The row is created first, so a second click while the first
+    is running finds the running row and never reaches the queue."""
+    return f"audit:{audit_id}"
+
+
+def evaluate_key(run_id: uuid.UUID) -> str:
+    """One job per run row, for the same reason as :func:`audit_key`."""
+    return f"evaluate:{run_id}"
 
 
 def summarize_key(document_id: uuid.UUID, content_hash: str | None) -> str:
@@ -455,9 +473,11 @@ def delete_key(connector_id: uuid.UUID) -> str:
 
 
 __all__ = [
+    "AUDIT_INDEX",
     "DELETE_CONNECTOR",
     "DISTIL_MEMORY",
     "DROP_MIGRATION_SOURCE",
+    "EVALUATE_SET",
     "HEAVY_EXTENSIONS",
     "HEAVY_QUEUE",
     "INGEST_DOCUMENT",
@@ -475,8 +495,10 @@ __all__ = [
     "PermanentJobError",
     "Retry",
     "RetryPolicy",
+    "audit_key",
     "delete_key",
     "distil_key",
+    "evaluate_key",
     "ingest_key",
     "queue_for",
     "reindex_key",

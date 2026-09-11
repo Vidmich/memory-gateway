@@ -45,6 +45,15 @@ import type {
   SummarizationConfig,
   SummarizationHealth,
   SummarizationSettings,
+  AuditResponse,
+  AuditStatusResponse,
+  ChunkingReportResponse,
+  EmbeddingReportResponse,
+  EvaluationItemResponse,
+  EvaluationRunResponse,
+  EvaluationRunSummaryResponse,
+  EvaluationSetResponse,
+  FindingResponse,
   SeriesResponse,
   SummaryResponse,
   ThrottledEndUser,
@@ -189,9 +198,7 @@ export function makeTokenizers(overrides: Partial<TokenizersResponse> = {}): Tok
   }
 }
 
-export function makeCalibration(
-  overrides: Partial<CalibrationResponse> = {},
-): CalibrationResponse {
+export function makeCalibration(overrides: Partial<CalibrationResponse> = {}): CalibrationResponse {
   return {
     model_id: 'mo1',
     tokenizer: makeEffectiveTokenizer(),
@@ -320,9 +327,7 @@ export function makeApiKey(overrides: Partial<ApiKeyResponse> = {}): ApiKeyRespo
 
 /** The one response with a live secret on it. Used to prove it is shown once and then
  * never appears again. */
-export function makeIssuedKey(
-  overrides: Partial<IssuedApiKeyResponse> = {},
-): IssuedApiKeyResponse {
+export function makeIssuedKey(overrides: Partial<IssuedApiKeyResponse> = {}): IssuedApiKeyResponse {
   return {
     key: makeApiKey(),
     token: 'mg_1a2b3c4d_shown-exactly-once',
@@ -349,7 +354,6 @@ export function makeGatewayProbe(
     ...overrides,
   }
 }
-
 
 // ---------------------------------------------------------------------------
 // monitoring
@@ -399,9 +403,7 @@ function defaultBuckets(): BucketResponse[] {
   ]
 }
 
-export function makeRequestLog(
-  overrides: Partial<RequestLogResponse> = {},
-): RequestLogResponse {
+export function makeRequestLog(overrides: Partial<RequestLogResponse> = {}): RequestLogResponse {
   return {
     id: 'l1',
     created_at: NOW,
@@ -490,9 +492,7 @@ export function makeSummarizationHealth(
   overrides: Partial<SummarizationHealth> = {},
 ): SummarizationHealth {
   return {
-    days: [
-      { day: NOW, documents: 12, failures: 1, capped: 0, tokens_in: 24000, tokens_out: 1800 },
-    ],
+    days: [{ day: NOW, documents: 12, failures: 1, capped: 0, tokens_in: 24000, tokens_out: 1800 }],
     runs: 13,
     documents: 12,
     failures: 1,
@@ -503,7 +503,13 @@ export function makeSummarizationHealth(
     failure_rate: 1 / 13,
     by_model: [{ model_name: 'cheap-summarizer', runs: 13, tokens_in: 24000, tokens_out: 1800 }],
     top_connectors: [
-      { connector_id: 'c1', name: 'Product docs', documents: 12, tokens_in: 24000, tokens_out: 1800 },
+      {
+        connector_id: 'c1',
+        name: 'Product docs',
+        documents: 12,
+        tokens_in: 24000,
+        tokens_out: 1800,
+      },
     ],
     waiting: [],
     waiting_documents: 0,
@@ -556,22 +562,34 @@ export function makeConnector(overrides: Partial<ConnectorResponse> = {}): Conne
     created_at: NOW,
     summarization,
     effective_summarization: Object.fromEntries(
-      ['pdf', 'docx', 'pptx', 'xlsx', 'markdown', 'html', 'csv', 'json', 'text', 'code', 'other'].map(
-        (kind) => {
-          const override = summarization.overrides?.[kind]
-          return [
-            kind,
-            {
-              ...summarization,
-              overrides: {},
-              ...(override?.mode ? { mode: override.mode } : {}),
-              ...(override?.max_summary_tokens ? { max_summary_tokens: override.max_summary_tokens } : {}),
-              ...(override?.max_input_tokens ? { max_input_tokens: override.max_input_tokens } : {}),
-              ...(override?.model_id ? { model_id: override.model_id } : {}),
-            },
-          ]
-        },
-      ),
+      [
+        'pdf',
+        'docx',
+        'pptx',
+        'xlsx',
+        'markdown',
+        'html',
+        'csv',
+        'json',
+        'text',
+        'code',
+        'other',
+      ].map((kind) => {
+        const override = summarization.overrides?.[kind]
+        return [
+          kind,
+          {
+            ...summarization,
+            overrides: {},
+            ...(override?.mode ? { mode: override.mode } : {}),
+            ...(override?.max_summary_tokens
+              ? { max_summary_tokens: override.max_summary_tokens }
+              : {}),
+            ...(override?.max_input_tokens ? { max_input_tokens: override.max_input_tokens } : {}),
+            ...(override?.model_id ? { model_id: override.model_id } : {}),
+          },
+        ]
+      }),
     ),
     summary_model: null,
     ...overrides,
@@ -635,7 +653,6 @@ export function makeSearchHit(overrides: Partial<SearchHit> = {}): SearchHit {
     ...overrides,
   }
 }
-
 
 // ---------------------------------------------------------------------------
 // memory previews (task 10)
@@ -714,7 +731,8 @@ export function makePromptPreview(
           url: 'http://localhost:5173/connectors/cn1?document=d1&chunk=ch1',
         },
       ],
-      footer: '\n\nSources:\n[1] [handbook.md (p. 12)](http://localhost:5173/connectors/cn1?document=d1&chunk=ch1)',
+      footer:
+        '\n\nSources:\n[1] [handbook.md (p. 12)](http://localhost:5173/connectors/cn1?document=d1&chunk=ch1)',
     },
     tokenizer: 'o200k_base',
     ...overrides,
@@ -807,7 +825,6 @@ export function makeMemoryHealth(overrides: Partial<MemoryHealth> = {}): MemoryH
   }
 }
 
-
 const NO_QUOTA: LimitQuota = {
   requests_per_minute: null,
   tokens_per_minute: null,
@@ -848,9 +865,7 @@ export function makeGatewayLimits(overrides: Partial<GatewayLimits> = {}): Gatew
   }
 }
 
-export function makeThrottledEndUser(
-  overrides: Partial<ThrottledEndUser> = {},
-): ThrottledEndUser {
+export function makeThrottledEndUser(overrides: Partial<ThrottledEndUser> = {}): ThrottledEndUser {
   return { end_user_id: 'eu1', external_id: 'noisy-bot', rejections: 12, ...overrides }
 }
 
@@ -886,7 +901,6 @@ export function makeAuditEvent(overrides: Partial<AuditEvent> = {}): AuditEvent 
     ...overrides,
   }
 }
-
 
 /**
  * One comparison result, with two columns that differ in the way the screen is for.
@@ -925,7 +939,10 @@ export function makeChunkingPreview(
           at_ceiling: 1,
           mid_sentence: 0,
         },
-        chunks: [chunk(0, 'Expenses are reimbursed within thirty days.'), chunk(1, 'Receipts go through the portal.')],
+        chunks: [
+          chunk(0, 'Expenses are reimbursed within thirty days.'),
+          chunk(1, 'Receipts go through the portal.'),
+        ],
         total_chunks: 2,
         embedded_texts: 2,
         best: 0,
@@ -946,6 +963,302 @@ export function makeChunkingPreview(
         total_chunks: 5,
         embedded_texts: 5,
         best: 1,
+      },
+    ],
+    ...overrides,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// validation (task 103)
+// ---------------------------------------------------------------------------
+
+export function makeFinding(overrides: Partial<FindingResponse> = {}): FindingResponse {
+  return {
+    code: 'short_chunks',
+    severity: 'red',
+    title: '312 chunks under 40 tokens',
+    count: 312,
+    detail: '26% of the markdown chunks are fragments.',
+    documents: [{ id: 'd2', source_name: 'CHANGELOG.md', count: 280 }],
+    document_count: 3,
+    action: 'compare',
+    ...overrides,
+  }
+}
+
+export function makeChunkingReport(
+  overrides: Partial<ChunkingReportResponse> = {},
+): ChunkingReportResponse {
+  const histogram = {
+    bucket_tokens: 125,
+    buckets: Array.from({ length: 12 }, (_, index) => ({
+      lower: index * 125,
+      upper: (index + 1) * 125,
+      count: [312, 40, 60, 200, 300, 250, 120, 80, 10, 0, 0, 3][index] ?? 0,
+    })),
+  }
+  const distribution = {
+    chunks: 1375,
+    min_tokens: 4,
+    median_tokens: 520,
+    p95_tokens: 880,
+    max_tokens: 2100,
+    at_ceiling: 75,
+    mid_sentence: 12,
+  }
+  return {
+    kind: 'chunking',
+    points: 1375,
+    summary_points: 0,
+    documents: 44,
+    documents_without_points: 0,
+    chunk_size: 1000,
+    distribution,
+    histogram,
+    formats: [
+      {
+        kind: 'markdown',
+        points: 1375,
+        documents: 44,
+        chunk_size: 1000,
+        distribution,
+        histogram,
+        findings: [makeFinding()],
+      },
+    ],
+    findings: [
+      makeFinding(),
+      makeFinding({
+        code: 'single_chunk_documents',
+        severity: 'amber',
+        title: '41 documents are a single chunk',
+        count: 41,
+        detail: '93% of the markdown documents fit in one chunk.',
+        documents: [{ id: 'd3', source_name: 'README.md', count: 1 }],
+        document_count: 41,
+      }),
+    ],
+    fingerprints: { abc123: 1375 },
+    severity: 'red',
+    ...overrides,
+  }
+}
+
+export function makeEmbeddingReport(
+  overrides: Partial<EmbeddingReportResponse> = {},
+): EmbeddingReportResponse {
+  return {
+    kind: 'embedding',
+    points: 1375,
+    scanned: 1375,
+    expected_dimension: 256,
+    dimensions: { '256': 1375 },
+    expected_model: 'text-embedding-3-small',
+    document_models: { 'text-embedding-3-small': 44 },
+    norms: { min: 1, median: 1, p95: 1, max: 1 },
+    zero_vectors: 0,
+    identical_vectors: 0,
+    agreement: {
+      sampled: 200,
+      agreed: 188,
+      rate: 0.94,
+      cross_document_similarity: 0.41,
+      worst: [{ id: 'd9', source_name: 'huge.txt', count: 6 }],
+    },
+    drift: {
+      sampled: 100,
+      mean: 0.99,
+      min: 0.97,
+      p5: 0.98,
+      below: 0,
+      shape: 'healthy',
+      model: 'text-embedding-3-small',
+    },
+    findings: [],
+    severity: 'green',
+    ...overrides,
+  }
+}
+
+export function makeAudit(overrides: Partial<AuditResponse> = {}): AuditResponse {
+  return {
+    id: 'a1',
+    connector_id: 'c1',
+    kind: 'chunking',
+    status: 'succeeded',
+    created_at: NOW,
+    finished_at: NOW,
+    points: 1375,
+    drift_sample: null,
+    severity: 'red',
+    error: null,
+    report: makeChunkingReport(),
+    ...overrides,
+  }
+}
+
+export function makeAuditStatus(overrides: Partial<AuditStatusResponse> = {}): AuditStatusResponse {
+  return {
+    chunking: makeAudit(),
+    embedding: makeAudit({
+      id: 'a2',
+      kind: 'embedding',
+      severity: 'green',
+      report: makeEmbeddingReport(),
+    }),
+    drift_estimate: { points: 1375, sample: 100, tokens: 52000 },
+    ...overrides,
+  }
+}
+
+export function makeEvaluationSet(
+  overrides: Partial<EvaluationSetResponse> = {},
+): EvaluationSetResponse {
+  return {
+    id: 'es1',
+    gateway_id: 'g1',
+    name: 'Support questions',
+    description: null,
+    created_at: NOW,
+    updated_at: NOW,
+    counts: { total: 52, verified: 3, generated: 0, negatives: 2 },
+    last_run: null,
+    ...overrides,
+  }
+}
+
+export function makeEvaluationItem(
+  overrides: Partial<EvaluationItemResponse> = {},
+): EvaluationItemResponse {
+  return {
+    id: 'ei1',
+    set_id: 'es1',
+    question: 'How do refunds work?',
+    relevant: [
+      { chunk_id: 'ch1', document_id: 'd1', source_name: 'handbook.md', text: 'Refunds…' },
+    ],
+    relevant_document_ids: [],
+    source: 'citation',
+    verified: false,
+    negative: false,
+    notes: null,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  }
+}
+
+const RUN_METRICS = {
+  k: 6,
+  all: {
+    items: 52,
+    negatives: 2,
+    negatives_clean: 1,
+    chunk: { items: 50, recall: 0.82, precision: 0.41, mrr: 0.77, hit_rate: 0.86 },
+    chunk_injected: { items: 50, recall: 0.78, precision: 0.44, mrr: 0.75, hit_rate: 0.82 },
+    document: { items: 50, recall: 0.9, precision: 0.5, mrr: 0.85, hit_rate: 0.92 },
+    document_injected: { items: 50, recall: 0.88, precision: 0.52, mrr: 0.84, hit_rate: 0.9 },
+  },
+  verified: {
+    items: 3,
+    negatives: 0,
+    negatives_clean: 0,
+    chunk: { items: 3, recall: 1, precision: 0.5, mrr: 1, hit_rate: 1 },
+    chunk_injected: { items: 3, recall: 1, precision: 0.5, mrr: 1, hit_rate: 1 },
+    document: { items: 3, recall: 1, precision: 0.5, mrr: 1, hit_rate: 1 },
+    document_injected: { items: 3, recall: 1, precision: 0.5, mrr: 1, hit_rate: 1 },
+  },
+  sources: { citation: 49, manual: 3 },
+  generated: 0,
+  unverified: 49,
+  unanchored: 0,
+  reanchored: 0,
+  failed: 0,
+  warnings: [
+    '49 items are unverified — imported from the log or generated, and not yet confirmed by a person. The verified column is over the rest.',
+  ],
+}
+
+export function makeEvaluationRun(
+  overrides: Partial<EvaluationRunSummaryResponse> = {},
+): EvaluationRunSummaryResponse {
+  return {
+    id: 'er1',
+    set_id: 'es1',
+    status: 'succeeded',
+    created_at: NOW,
+    started_at: NOW,
+    finished_at: NOW,
+    total_items: 52,
+    completed_items: 52,
+    patch: null,
+    metrics: RUN_METRICS,
+    snapshot: {
+      embedding_model: 'text-embedding-3-small',
+      tokenizer: 'o200k_base',
+      connectors: {},
+    },
+    config: { doc_top_k: 6, doc_min_score: 0.35 },
+    error: null,
+    ...overrides,
+  }
+}
+
+export function makeEvaluationRunDetail(
+  overrides: Partial<EvaluationRunResponse> = {},
+): EvaluationRunResponse {
+  return {
+    ...makeEvaluationRun(),
+    results: [
+      {
+        item_id: 'ei1',
+        question: 'How do refunds work?',
+        source: 'citation',
+        verified: false,
+        negative: false,
+        retrieved: [
+          {
+            chunk_id: 'ch9',
+            document_id: 'd4',
+            score: 0.8,
+            injected: true,
+            source_name: 'faq.md',
+            page_or_section: null,
+            chunk_index: 2,
+          },
+          {
+            chunk_id: 'ch1',
+            document_id: 'd1',
+            score: 0.7,
+            injected: true,
+            source_name: 'handbook.md',
+            page_or_section: 'p. 12',
+            chunk_index: 0,
+          },
+        ],
+        relevant_chunk_ids: ['ch1'],
+        relevant_document_ids: ['d1'],
+        chunk: { recall: 1, precision: 0.5, reciprocal_rank: 0.5, hit: true, first_rank: 2 },
+        chunk_injected: {
+          recall: 1,
+          precision: 0.5,
+          reciprocal_rank: 0.5,
+          hit: true,
+          first_rank: 2,
+        },
+        document: { recall: 1, precision: 0.5, reciprocal_rank: 0.5, hit: true, first_rank: 2 },
+        document_injected: {
+          recall: 1,
+          precision: 0.5,
+          reciprocal_rank: 0.5,
+          hit: true,
+          first_rank: 2,
+        },
+        unanchored: 0,
+        reanchored: 0,
+        outcome: 'hit',
+        error: null,
       },
     ],
     ...overrides,

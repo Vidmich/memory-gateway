@@ -22,6 +22,9 @@ from app.db.models import (
     Connector,
     Document,
     EndUser,
+    EvaluationItem,
+    EvaluationRun,
+    EvaluationSet,
     Gateway,
     MemoryFact,
     Organization,
@@ -52,6 +55,11 @@ from tests.gateway_support import (
 from tests.monitoring_support import make_log_row
 from tests.platform_support import PlatformFixture
 from tests.platform_support import build_platform as build_platform_fixture
+from tests.validation_support import (
+    make_evaluation_item,
+    make_evaluation_run,
+    make_evaluation_set,
+)
 
 
 @dataclass
@@ -111,6 +119,11 @@ class World:
     globex_end_user: EndUser
     acme_fact: MemoryFact
     globex_fact: MemoryFact
+    #: Task 103. One evaluation set, item and run of Globex's, so the cross-tenant net can
+    #: aim at labelled questions that genuinely exist.
+    globex_evaluation_set: EvaluationSet
+    globex_evaluation_item: EvaluationItem
+    globex_evaluation_run: EvaluationRun
 
     #: Every user, keyed by the short name the tests use.
     people: dict[str, User] = field(default_factory=dict)
@@ -218,6 +231,13 @@ def build_world(*, settings: Settings | None = None) -> World:
     for fact in (acme_fact, globex_fact):
         database.add_fact(fact)
 
+    globex_evaluation_set = make_evaluation_set(globex_gateway)
+    globex_evaluation_item = make_evaluation_item(globex_evaluation_set)
+    globex_evaluation_run = make_evaluation_run(globex_evaluation_set)
+    database.evaluation_sets[globex_evaluation_set.id] = globex_evaluation_set
+    database.evaluation_items[globex_evaluation_item.id] = globex_evaluation_item
+    database.evaluation_runs[globex_evaluation_run.id] = globex_evaluation_run
+
     acme_log = make_log_row(acme, gateway_id=acme_gateway.id, api_key_id=acme_key.id)
     globex_log = make_log_row(globex, gateway_id=globex_gateway.id, api_key_id=globex_key.id)
     for row in (acme_log, globex_log):
@@ -263,6 +283,9 @@ def build_world(*, settings: Settings | None = None) -> World:
         globex_end_user=globex_end_user,
         acme_fact=acme_fact,
         globex_fact=globex_fact,
+        globex_evaluation_set=globex_evaluation_set,
+        globex_evaluation_item=globex_evaluation_item,
+        globex_evaluation_run=globex_evaluation_run,
         people=people,
     )
 

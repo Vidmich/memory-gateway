@@ -27,6 +27,12 @@ from app.db.models.session import UserSession
 from app.db.models.summarization import SummarizationRun
 from app.db.models.upstream_model import UpstreamModel
 from app.db.models.user import User
+from app.db.models.validation import (
+    EvaluationItem,
+    EvaluationRun,
+    EvaluationSet,
+    IndexAudit,
+)
 from app.db.models.vectors import VectorBinding
 
 __all__ = [
@@ -36,8 +42,12 @@ __all__ = [
     "DistillationRun",
     "Document",
     "EndUser",
+    "EvaluationItem",
+    "EvaluationRun",
+    "EvaluationSet",
     "Gateway",
     "GatewayTarget",
+    "IndexAudit",
     "Invitation",
     "JobDeadLetter",
     "MaintenanceRun",

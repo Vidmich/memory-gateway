@@ -207,6 +207,50 @@ export interface paths {
         patch: operations["update_connector_api_v1_connectors__connector_id__patch"];
         trace?: never;
     };
+    "/api/v1/connectors/{connector_id}/audits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audits
+         * @description The latest chunking and embedding reports for a connector, their age, and what a
+         *     drift check would cost before it is run.
+         */
+        get: operations["get_audits_api_v1_connectors__connector_id__audits_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/connectors/{connector_id}/audits/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Audit
+         * @description Queue an audit. ``kind`` is ``chunking`` or ``embedding``; the body's
+         *     ``drift_sample`` asks the embedding audit to re-embed that many chunks — the one part of
+         *     validation that spends, and the estimate is on the GET. A second request while one is
+         *     running returns the running row.
+         */
+        post: operations["start_audit_api_v1_connectors__connector_id__audits__kind__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connectors/{connector_id}/chunking/preview": {
         parameters: {
             query?: never;
@@ -668,6 +712,170 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/evaluation-items/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Evaluation Item */
+        delete: operations["delete_evaluation_item_api_v1_evaluation_items__item_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Evaluation Item
+         * @description Edit the question or the labels, or verify the item — which is what moves it between
+         *     the two columns a run reports.
+         */
+        patch: operations["update_evaluation_item_api_v1_evaluation_items__item_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/evaluation-runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Evaluation Run */
+        get: operations["get_evaluation_run_api_v1_evaluation_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluation-runs/{run_id}/diff/{against}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Diff Evaluation Runs
+         * @description Two runs of one set, oldest first: how the numbers moved, which settings differed,
+         *     what the index looked like each time, and which questions flipped.
+         */
+        get: operations["diff_evaluation_runs_api_v1_evaluation_runs__run_id__diff__against__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluation-sets/{set_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Evaluation Set */
+        get: operations["get_evaluation_set_api_v1_evaluation_sets__set_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Evaluation Set */
+        delete: operations["delete_evaluation_set_api_v1_evaluation_sets__set_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Evaluation Set */
+        patch: operations["update_evaluation_set_api_v1_evaluation_sets__set_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/evaluation-sets/{set_id}/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Evaluation Items
+         * @description Ask a model to write the question each of ``count`` chunks answers. Spends, through
+         *     the summarization model chain, and the items are marked as a model's.
+         */
+        post: operations["generate_evaluation_items_api_v1_evaluation_sets__set_id__generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluation-sets/{set_id}/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Evaluation Items
+         * @description One item per distinct question the gateway answered in the window, pre-labelled
+         *     with what the answer cited where it cited anything. Everything arrives unverified.
+         */
+        post: operations["import_evaluation_items_api_v1_evaluation_sets__set_id__import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluation-sets/{set_id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Evaluation Item
+         * @description A labelled question. Labels are checked against this organization's index; a chunk
+         *     that is not there — or is another tenant's — is a 404.
+         */
+        post: operations["add_evaluation_item_api_v1_evaluation_sets__set_id__items_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/evaluation-sets/{set_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Evaluation Runs */
+        get: operations["list_evaluation_runs_api_v1_evaluation_sets__set_id__runs_get"];
+        put?: never;
+        /**
+         * Start Evaluation Run
+         * @description Queue a run through the real retrieval path — one embedding call per question —
+         *     with the saved gateway or the editor's unsaved ``memory_config``.
+         */
+        post: operations["start_evaluation_run_api_v1_evaluation_sets__set_id__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/gateways": {
         parameters: {
             query?: never;
@@ -713,6 +921,24 @@ export interface paths {
          *     ``slug`` is refused rather than ignored — it is part of a URL clients have deployed.
          */
         patch: operations["update_gateway_api_v1_gateways__gateway_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/gateways/{gateway_id}/evaluation-sets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Evaluation Sets */
+        get: operations["list_evaluation_sets_api_v1_gateways__gateway_id__evaluation_sets_get"];
+        put?: never;
+        /** Create Evaluation Set */
+        post: operations["create_evaluation_set_api_v1_gateways__gateway_id__evaluation_sets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/gateways/{gateway_id}/keys": {
@@ -1719,6 +1945,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/validation/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Audit Alerts
+         * @description Connectors whose latest audit raised a red finding: the dashboard's degraded state.
+         */
+        get: operations["list_audit_alerts_api_v1_validation_alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/g/{slug}/v1/chat/completions": {
         parameters: {
             query?: never;
@@ -1763,6 +2009,19 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AgreementResponse */
+        AgreementResponse: {
+            /** Agreed */
+            agreed: number;
+            /** Cross Document Similarity */
+            cross_document_similarity: number | null;
+            /** Rate */
+            rate: number | null;
+            /** Sampled */
+            sampled: number;
+            /** Worst */
+            worst: components["schemas"]["FindingDocumentResponse"][];
+        };
         /** ApiKeyCreateRequest */
         ApiKeyCreateRequest: {
             /** Expires At */
@@ -1825,6 +2084,38 @@ export interface components {
              * Format: uuid
              */
             target_id: string;
+        };
+        /** AuditAlertList */
+        AuditAlertList: {
+            /** Items */
+            items: components["schemas"]["AuditAlertResponse"][];
+        };
+        /** AuditAlertResponse */
+        AuditAlertResponse: {
+            /**
+             * Audit Id
+             * Format: uuid
+             */
+            audit_id: string;
+            /**
+             * Connector Id
+             * Format: uuid
+             */
+            connector_id: string;
+            /** Connector Name */
+            connector_name: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Finding */
+            finding: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "chunking" | "embedding";
         };
         /**
          * AuditChangeResponse
@@ -1892,6 +2183,65 @@ export interface components {
             target_type: string;
             /** User Agent */
             user_agent?: string | null;
+        };
+        /**
+         * AuditRequest
+         * @description ``drift_sample`` is the embedding audit's one spending option: how many chunks to
+         *     re-embed with the current model. Omit it and the audit reads only.
+         */
+        AuditRequest: {
+            /** Drift Sample */
+            drift_sample?: number | null;
+        };
+        /** AuditResponse */
+        AuditResponse: {
+            /**
+             * Connector Id
+             * Format: uuid
+             */
+            connector_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Drift Sample */
+            drift_sample: number | null;
+            /** Error */
+            error: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "chunking" | "embedding";
+            /** Points */
+            points: number;
+            /** Report */
+            report: components["schemas"]["ChunkingReportResponse"] | components["schemas"]["EmbeddingReportResponse"] | null;
+            /** Severity */
+            severity: ("green" | "amber" | "red") | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "succeeded" | "failed";
+        };
+        /**
+         * AuditStatusResponse
+         * @description The connector's Validation section: the latest of each kind, and the price of the
+         *     one check that spends.
+         */
+        AuditStatusResponse: {
+            chunking: components["schemas"]["AuditResponse"] | null;
+            drift_estimate: components["schemas"]["DriftEstimateResponse"];
+            embedding: components["schemas"]["AuditResponse"] | null;
         };
         /** Body_upload_api_v1_connectors__connector_id__upload_post */
         Body_upload_api_v1_connectors__connector_id__upload_post: {
@@ -2091,6 +2441,47 @@ export interface components {
             /** Source Name */
             source_name: string;
             summarization?: components["schemas"]["SummarizationCostResponse"] | null;
+        };
+        /** ChunkingReportResponse */
+        ChunkingReportResponse: {
+            /** Chunk Size */
+            chunk_size: number;
+            distribution: components["schemas"]["DistributionResponse"];
+            /** Documents */
+            documents: number;
+            /**
+             * Documents Without Points
+             * @default 0
+             */
+            documents_without_points: number;
+            /** Findings */
+            findings: components["schemas"]["FindingResponse"][];
+            /** Fingerprints */
+            fingerprints?: {
+                [key: string]: number;
+            };
+            /** Formats */
+            formats: components["schemas"]["FormatReportResponse"][];
+            histogram: components["schemas"]["HistogramResponse"];
+            /**
+             * Kind
+             * @default chunking
+             * @constant
+             */
+            kind: "chunking";
+            /** Points */
+            points: number;
+            /**
+             * Severity
+             * @default green
+             * @enum {string}
+             */
+            severity: "green" | "amber" | "red";
+            /**
+             * Summary Points
+             * @default 0
+             */
+            summary_points: number;
         };
         /**
          * CitationsPreviewResponse
@@ -2354,6 +2745,23 @@ export interface components {
              */
             day_started_at: string;
         };
+        /** DistributionResponse */
+        DistributionResponse: {
+            /** At Ceiling */
+            at_ceiling: number;
+            /** Chunks */
+            chunks: number;
+            /** Max Tokens */
+            max_tokens: number;
+            /** Median Tokens */
+            median_tokens: number;
+            /** Mid Sentence */
+            mid_sentence: number;
+            /** Min Tokens */
+            min_tokens: number;
+            /** P95 Tokens */
+            p95_tokens: number;
+        };
         /**
          * DocumentChunk
          * @description One indexed chunk, as the inspector shows it. No score: nothing was searched for.
@@ -2460,6 +2868,35 @@ export interface components {
              */
             updated_at: string;
         };
+        /** DriftEstimateResponse */
+        DriftEstimateResponse: {
+            /** Points */
+            points: number;
+            /** Sample */
+            sample: number;
+            /** Tokens */
+            tokens: number;
+        };
+        /** DriftResponse */
+        DriftResponse: {
+            /** Below */
+            below: number;
+            /** Mean */
+            mean: number;
+            /** Min */
+            min: number;
+            /** Model */
+            model: string;
+            /** P5 */
+            p5: number;
+            /** Sampled */
+            sampled: number;
+            /**
+             * Shape
+             * @enum {string}
+             */
+            shape: "healthy" | "bimodal" | "offset" | "low";
+        };
         /**
          * EffectiveTokenizerResponse
          * @description A resolved tokenizer and where it came from (task 101). Shared by the model page
@@ -2506,6 +2943,46 @@ export interface components {
              */
             provider: "openai" | "hash";
             tokenizer?: components["schemas"]["TokenizerSpec"] | null;
+        };
+        /** EmbeddingReportResponse */
+        EmbeddingReportResponse: {
+            agreement: components["schemas"]["AgreementResponse"] | null;
+            /** Dimensions */
+            dimensions: {
+                [key: string]: number;
+            };
+            /** Document Models */
+            document_models: {
+                [key: string]: number;
+            };
+            drift: components["schemas"]["DriftResponse"] | null;
+            /** Expected Dimension */
+            expected_dimension: number;
+            /** Expected Model */
+            expected_model: string;
+            /** Findings */
+            findings: components["schemas"]["FindingResponse"][];
+            /** Identical Vectors */
+            identical_vectors: number;
+            /**
+             * Kind
+             * @default embedding
+             * @constant
+             */
+            kind: "embedding";
+            norms: components["schemas"]["NormsResponse"] | null;
+            /** Points */
+            points: number;
+            /** Scanned */
+            scanned: number;
+            /**
+             * Severity
+             * @default green
+             * @enum {string}
+             */
+            severity: "green" | "amber" | "red";
+            /** Zero Vectors */
+            zero_vectors: number;
         };
         /**
          * EndUserResponse
@@ -2593,6 +3070,323 @@ export interface components {
             error_code: string;
             /** Requests */
             requests: number;
+        };
+        /**
+         * EvaluationItemPatch
+         * @description Every field optional; ``relevant: []`` with ``relevant_document_ids: []`` makes the
+         *     item a negative.
+         */
+        EvaluationItemPatch: {
+            /** Notes */
+            notes?: string | null;
+            /** Question */
+            question?: string | null;
+            /** Relevant */
+            relevant?: components["schemas"]["LabelRequest"][] | null;
+            /** Relevant Document Ids */
+            relevant_document_ids?: string[] | null;
+            /** Verified */
+            verified?: boolean | null;
+        };
+        /** EvaluationItemRequest */
+        EvaluationItemRequest: {
+            /** Notes */
+            notes?: string | null;
+            /** Question */
+            question: string;
+            /** Relevant */
+            relevant?: components["schemas"]["LabelRequest"][];
+            /** Relevant Document Ids */
+            relevant_document_ids?: string[];
+            /**
+             * Verified
+             * @default true
+             */
+            verified: boolean;
+        };
+        /** EvaluationItemResponse */
+        EvaluationItemResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Negative */
+            negative: boolean;
+            /** Notes */
+            notes: string | null;
+            /** Question */
+            question: string;
+            /** Relevant */
+            relevant: components["schemas"]["LabelResponse"][];
+            /** Relevant Document Ids */
+            relevant_document_ids: string[];
+            /**
+             * Set Id
+             * Format: uuid
+             */
+            set_id: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "log" | "citation" | "manual" | "generated";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Verified */
+            verified: boolean;
+        };
+        /** EvaluationRunList */
+        EvaluationRunList: {
+            /** Items */
+            items: components["schemas"]["EvaluationRunSummaryResponse"][];
+        };
+        /**
+         * EvaluationRunResponse
+         * @description The whole run: the summary plus every item's result.
+         */
+        EvaluationRunResponse: {
+            /** Completed Items */
+            completed_items: number;
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error */
+            error: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Metrics */
+            metrics: {
+                [key: string]: unknown;
+            };
+            /** Patch */
+            patch: {
+                [key: string]: unknown;
+            } | null;
+            /** Results */
+            results: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Set Id
+             * Format: uuid
+             */
+            set_id: string;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Started At */
+            started_at: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "succeeded" | "failed";
+            /** Total Items */
+            total_items: number;
+        };
+        /**
+         * EvaluationRunSummaryResponse
+         * @description A run as the history table shows it: status, progress, the headline numbers.
+         */
+        EvaluationRunSummaryResponse: {
+            /** Completed Items */
+            completed_items: number;
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error */
+            error: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Metrics */
+            metrics: {
+                [key: string]: unknown;
+            };
+            /** Patch */
+            patch: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Set Id
+             * Format: uuid
+             */
+            set_id: string;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Started At */
+            started_at: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "succeeded" | "failed";
+            /** Total Items */
+            total_items: number;
+        };
+        /** EvaluationSetDetailResponse */
+        EvaluationSetDetailResponse: {
+            counts: components["schemas"]["ItemCountsResponse"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Description */
+            description: string | null;
+            /**
+             * Gateway Id
+             * Format: uuid
+             */
+            gateway_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Items */
+            items: components["schemas"]["EvaluationItemResponse"][];
+            /** Name */
+            name: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** EvaluationSetList */
+        EvaluationSetList: {
+            /** Items */
+            items: components["schemas"]["EvaluationSetResponse"][];
+        };
+        /** EvaluationSetPatch */
+        EvaluationSetPatch: {
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name?: string | null;
+        };
+        /** EvaluationSetRequest */
+        EvaluationSetRequest: {
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name: string;
+        };
+        /** EvaluationSetResponse */
+        EvaluationSetResponse: {
+            counts: components["schemas"]["ItemCountsResponse"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Description */
+            description: string | null;
+            /**
+             * Gateway Id
+             * Format: uuid
+             */
+            gateway_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            last_run?: components["schemas"]["EvaluationRunSummaryResponse"] | null;
+            /** Name */
+            name: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** FindingDocumentResponse */
+        FindingDocumentResponse: {
+            /** Count */
+            count: number;
+            /** Id */
+            id: string;
+            /** Source Name */
+            source_name: string;
+        };
+        /** FindingResponse */
+        FindingResponse: {
+            /**
+             * Action
+             * @default none
+             * @enum {string}
+             */
+            action: "compare" | "reindex" | "platform" | "none";
+            /** Code */
+            code: string;
+            /** Count */
+            count: number;
+            /** Detail */
+            detail: string;
+            /**
+             * Document Count
+             * @default 0
+             */
+            document_count: number;
+            /** Documents */
+            documents?: components["schemas"]["FindingDocumentResponse"][];
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "green" | "amber" | "red";
+            /** Title */
+            title: string;
+        };
+        /** FormatReportResponse */
+        FormatReportResponse: {
+            /** Chunk Size */
+            chunk_size: number;
+            distribution: components["schemas"]["DistributionResponse"];
+            /** Documents */
+            documents: number;
+            /** Findings */
+            findings: components["schemas"]["FindingResponse"][];
+            histogram: components["schemas"]["HistogramResponse"];
+            /** Kind */
+            kind: string;
+            /** Points */
+            points: number;
         };
         /** GatewayCreateRequest */
         GatewayCreateRequest: {
@@ -2807,10 +3601,83 @@ export interface components {
             /** Targets */
             targets?: components["schemas"]["GatewayTargetRequest"][] | null;
         };
+        /** GenerateRequest */
+        GenerateRequest: {
+            /**
+             * Count
+             * @default 10
+             */
+            count: number;
+        };
+        /** GenerateResponse */
+        GenerateResponse: {
+            /** Failed */
+            failed: number;
+            /** Generated */
+            generated: number;
+            /** Model Name */
+            model_name: string | null;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HistogramBucketResponse */
+        HistogramBucketResponse: {
+            /** Count */
+            count: number;
+            /** Lower */
+            lower: number;
+            /** Upper */
+            upper: number;
+        };
+        /** HistogramResponse */
+        HistogramResponse: {
+            /** Bucket Tokens */
+            bucket_tokens: number;
+            /** Buckets */
+            buckets: components["schemas"]["HistogramBucketResponse"][];
+        };
+        /**
+         * ImportRequest
+         * @description A window of the gateway's own log. ``uncited`` narrows it the way the monitoring
+         *     filter does: ``true`` for requests whose answer cited nothing, ``false`` for the ones
+         *     that did, omitted for both.
+         */
+        ImportRequest: {
+            /**
+             * From
+             * Format: date-time
+             */
+            from: string;
+            /**
+             * Limit
+             * @default 200
+             */
+            limit: number;
+            /**
+             * To
+             * Format: date-time
+             */
+            to: string;
+            /** Uncited */
+            uncited?: boolean | null;
+        };
+        /** ImportResponse */
+        ImportResponse: {
+            /** Duplicates */
+            duplicates: number;
+            /** Imported */
+            imported: number;
+            /** Labelled */
+            labelled: number;
+            /** Skipped */
+            skipped: number;
         };
         /** InvitationAcceptRequest */
         InvitationAcceptRequest: {
@@ -2904,6 +3771,53 @@ export interface components {
             /** Accept Url */
             accept_url: string;
             invitation: components["schemas"]["InvitationResponse"];
+        };
+        /** ItemCountsResponse */
+        ItemCountsResponse: {
+            /**
+             * Generated
+             * @default 0
+             */
+            generated: number;
+            /**
+             * Negatives
+             * @default 0
+             */
+            negatives: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Verified
+             * @default 0
+             */
+            verified: number;
+        };
+        /**
+         * LabelRequest
+         * @description A chunk somebody says answers the question. The text is filled in from the index.
+         */
+        LabelRequest: {
+            /** Chunk Id */
+            chunk_id: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+        };
+        /** LabelResponse */
+        LabelResponse: {
+            /** Chunk Id */
+            chunk_id: string;
+            /** Document Id */
+            document_id: string | null;
+            /** Source Name */
+            source_name: string | null;
+            /** Text */
+            text: string | null;
         };
         /**
          * LimitPolicy
@@ -3476,6 +4390,17 @@ export interface components {
             /** Hits */
             hits: components["schemas"]["MemorySearchHit"][];
         };
+        /** MetricDeltaResponse */
+        MetricDeltaResponse: {
+            /** After */
+            after: number | null;
+            /** Before */
+            before: number | null;
+            /** Change */
+            change: number | null;
+            /** Name */
+            name: string;
+        };
         /** ModelCard */
         ModelCard: {
             /** Created */
@@ -3723,6 +4648,17 @@ export interface components {
             tokenizer?: components["schemas"]["TokenizerSpec"] | null;
             /** Upstream Model Id */
             upstream_model_id?: string | null;
+        };
+        /** NormsResponse */
+        NormsResponse: {
+            /** Max */
+            max: number;
+            /** Median */
+            median: number;
+            /** Min */
+            min: number;
+            /** P95 */
+            p95: number;
         };
         /** OrganizationCreateRequest */
         OrganizationCreateRequest: {
@@ -4433,6 +5369,38 @@ export interface components {
             text: string;
             /** Tokens */
             tokens: number;
+        };
+        /** RunDiffResponse */
+        RunDiffResponse: {
+            after: components["schemas"]["EvaluationRunSummaryResponse"];
+            before: components["schemas"]["EvaluationRunSummaryResponse"];
+            /** Config Changes */
+            config_changes: {
+                [key: string]: unknown[];
+            };
+            /** Index Changes */
+            index_changes: string[];
+            /** Lost */
+            lost: {
+                [key: string]: unknown;
+            }[];
+            /** Metrics */
+            metrics: components["schemas"]["MetricDeltaResponse"][];
+            /** Won */
+            won: {
+                [key: string]: unknown;
+            }[];
+        };
+        /**
+         * RunRequest
+         * @description ``memory_config`` is the editor's unsaved form, merged the way Try retrieval merges
+         *     it; omit it to run the saved gateway.
+         */
+        RunRequest: {
+            /** Memory Config */
+            memory_config?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * SearchHit
@@ -5490,6 +6458,73 @@ export interface operations {
             };
         };
     };
+    get_audits_api_v1_connectors__connector_id__audits_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_audit_api_v1_connectors__connector_id__audits__kind__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AuditRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     preview_chunking_api_v1_connectors__connector_id__chunking_preview_post: {
         parameters: {
             query?: never;
@@ -6209,6 +7244,399 @@ export interface operations {
             };
         };
     };
+    delete_evaluation_item_api_v1_evaluation_items__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_evaluation_item_api_v1_evaluation_items__item_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluationItemPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationItemResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_evaluation_run_api_v1_evaluation_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    diff_evaluation_runs_api_v1_evaluation_runs__run_id__diff__against__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                against: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunDiffResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_evaluation_set_api_v1_evaluation_sets__set_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                set_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationSetDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_evaluation_set_api_v1_evaluation_sets__set_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                set_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_evaluation_set_api_v1_evaluation_sets__set_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                set_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluationSetPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationSetDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_evaluation_items_api_v1_evaluation_sets__set_id__generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                set_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["GenerateRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_evaluation_items_api_v1_evaluation_sets__set_id__import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                set_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_evaluation_item_api_v1_evaluation_sets__set_id__items_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                set_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluationItemRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationItemResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_evaluation_runs_api_v1_evaluation_sets__set_id__runs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                set_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationRunList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_evaluation_run_api_v1_evaluation_sets__set_id__runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                set_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationRunSummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_gateways_api_v1_gateways_get: {
         parameters: {
             query?: {
@@ -6356,6 +7784,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GatewayResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_evaluation_sets_api_v1_gateways__gateway_id__evaluation_sets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationSetList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_evaluation_set_api_v1_gateways__gateway_id__evaluation_sets_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gateway_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluationSetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluationSetResponse"];
                 };
             };
             /** @description Validation Error */
@@ -8078,6 +9572,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TokenizersResponse"];
+                };
+            };
+        };
+    };
+    list_audit_alerts_api_v1_validation_alerts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditAlertList"];
                 };
             };
         };

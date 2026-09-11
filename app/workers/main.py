@@ -36,6 +36,7 @@ from app.workers.runtime import (
     build_platform,
     build_platform_settings,
     build_runner,
+    build_validation,
     build_vector_backends,
     embedding_tokenizer,
 )
@@ -110,8 +111,14 @@ async def startup(context: dict[str, Any]) -> None:
         metrics=metrics.maintenance,
     )
 
+    # Task 103: the audits and the evaluation runs the API queues.
+    validation = build_validation(
+        clients, settings, ingestion=ingestion, backends=backends, queue=queue
+    )
+
     context["clients"] = clients
     context["ingestion"] = ingestion
+    context["validation"] = validation
     context["distillation"] = distillation
     context["platform"] = platform
     context["platform_settings"] = platform_settings
@@ -122,6 +129,7 @@ async def startup(context: dict[str, Any]) -> None:
         metrics=metrics.jobs,
         distillation=distillation,
         platform=platform,
+        validation=validation,
     )
     logger.info("worker started", extra={"environment": settings.environment})
 

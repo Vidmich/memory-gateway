@@ -84,6 +84,10 @@ function fakeServer(options: ServerOptions = {}) {
     if (path === `/api/v1/gateways/${gateway.id}`) {
       return Promise.resolve(json(gateway))
     }
+    // Task 103's section, for the same reason: it lives under the gateway's path.
+    if (path.endsWith('/evaluation-sets')) {
+      return Promise.resolve(json({ items: [] }))
+    }
     if (path.startsWith('/api/v1/gateways')) {
       return Promise.resolve(json({ items: [gateway], next_cursor: null }))
     }

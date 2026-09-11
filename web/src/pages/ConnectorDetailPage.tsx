@@ -17,6 +17,7 @@ import {
   UploadZone,
 } from '@/pages/ConnectorDetail'
 import { DOCUMENT_STATUSES, formatBytes, resyncSummary, statusSummary } from '@/pages/connectors'
+import { ConnectorValidation } from '@/pages/ConnectorValidation'
 import { ObjectAudit } from '@/pages/ObjectAudit'
 import { SummarizationPanel } from '@/pages/SummarizationPanel'
 
@@ -154,6 +155,12 @@ export function ConnectorDetailPage() {
           </section>
         ) : null}
       </div>
+
+      {/* Task 103. Compare shows one document; this shows the whole index, with numbers. */}
+      <section className="rounded-lg border border-slate-200 bg-white p-4">
+        <h2 className="mb-3 text-sm font-semibold text-slate-900">Validation</h2>
+        <ConnectorValidation connector={connector} writes={writes} />
+      </section>
 
       {writes ? (
         <section className="rounded-lg border border-slate-200 bg-white p-4">

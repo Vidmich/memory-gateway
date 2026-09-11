@@ -35,6 +35,13 @@ FOREIGN_CONNECTOR = "{connector_id}"
 FOREIGN_DOCUMENT = "{document_id}"
 FOREIGN_END_USER = "{end_user_id}"
 FOREIGN_FACT = "{fact_id}"
+#: Task 103's rows, and the one path parameter that is not an id: an audit's ``kind``,
+#: which resolves to a real kind so the row fails on the connector and not on the word.
+FOREIGN_SET = "{set_id}"
+FOREIGN_ITEM = "{item_id}"
+FOREIGN_RUN = "{run_id}"
+FOREIGN_RUN_AGAINST = "{against}"
+AUDIT_KIND = "{kind}"
 
 #: A model owned by nobody. It is *visible* to every organization (SPEC §5.3, the
 #: global catalog), which is exactly why it needs rows of its own here: every write
@@ -112,6 +119,42 @@ SCOPED_ENDPOINTS: tuple[ScopedEndpoint, ...] = (
         note="a request log carries the end user's prompt, so this row is the one "
         "with the most to disclose",
     ),
+    ScopedEndpoint("GET", f"/api/v1/connectors/{FOREIGN_CONNECTOR}/audits"),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/connectors/{FOREIGN_CONNECTOR}/audits/{AUDIT_KIND}",
+        note="an audit scrolls the whole collection; starting one on another tenant's "
+        "connector would put their chunk texts in a report",
+    ),
+    ScopedEndpoint("GET", f"/api/v1/gateways/{FOREIGN_GATEWAY}/evaluation-sets"),
+    ScopedEndpoint(
+        "POST", f"/api/v1/gateways/{FOREIGN_GATEWAY}/evaluation-sets", {"name": "Owned"}
+    ),
+    ScopedEndpoint("GET", f"/api/v1/evaluation-sets/{FOREIGN_SET}"),
+    ScopedEndpoint("PATCH", f"/api/v1/evaluation-sets/{FOREIGN_SET}", {"name": "Owned"}),
+    ScopedEndpoint("DELETE", f"/api/v1/evaluation-sets/{FOREIGN_SET}"),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/evaluation-sets/{FOREIGN_SET}/items",
+        {"question": "what is the refund policy?", "relevant": []},
+    ),
+    ScopedEndpoint("PATCH", f"/api/v1/evaluation-items/{FOREIGN_ITEM}", {"verified": True}),
+    ScopedEndpoint("DELETE", f"/api/v1/evaluation-items/{FOREIGN_ITEM}"),
+    ScopedEndpoint(
+        "POST",
+        f"/api/v1/evaluation-sets/{FOREIGN_SET}/import",
+        {"from": "2026-01-01T00:00:00Z", "to": "2026-01-08T00:00:00Z"},
+        note="an import reads the gateway's request log — end users' questions",
+    ),
+    ScopedEndpoint("POST", f"/api/v1/evaluation-sets/{FOREIGN_SET}/generate", {"count": 1}),
+    ScopedEndpoint("POST", f"/api/v1/evaluation-sets/{FOREIGN_SET}/runs"),
+    ScopedEndpoint("GET", f"/api/v1/evaluation-sets/{FOREIGN_SET}/runs"),
+    ScopedEndpoint(
+        "GET",
+        f"/api/v1/evaluation-runs/{FOREIGN_RUN}",
+        note="a run carries every question and every retrieved chunk text",
+    ),
+    ScopedEndpoint("GET", f"/api/v1/evaluation-runs/{FOREIGN_RUN}/diff/{FOREIGN_RUN_AGAINST}"),
     ScopedEndpoint("GET", f"/api/v1/connectors/{FOREIGN_CONNECTOR}"),
     ScopedEndpoint("PATCH", f"/api/v1/connectors/{FOREIGN_CONNECTOR}", {"name": "Owned"}),
     ScopedEndpoint("DELETE", f"/api/v1/connectors/{FOREIGN_CONNECTOR}"),
@@ -217,6 +260,11 @@ PLACEHOLDERS = (
     FOREIGN_DOCUMENT,
     FOREIGN_END_USER,
     FOREIGN_FACT,
+    FOREIGN_SET,
+    FOREIGN_ITEM,
+    FOREIGN_RUN,
+    FOREIGN_RUN_AGAINST,
+    AUDIT_KIND,
 )
 
 
@@ -241,6 +289,11 @@ async def foreign_ids(harness: DirectoryHarness) -> dict[str, str]:
         FOREIGN_DOCUMENT: str(world.globex_document.id),
         FOREIGN_END_USER: str(world.globex_end_user.id),
         FOREIGN_FACT: str(world.globex_fact.id),
+        FOREIGN_SET: str(world.globex_evaluation_set.id),
+        FOREIGN_ITEM: str(world.globex_evaluation_item.id),
+        FOREIGN_RUN: str(world.globex_evaluation_run.id),
+        FOREIGN_RUN_AGAINST: str(world.globex_evaluation_run.id),
+        AUDIT_KIND: "chunking",
     }
 
 

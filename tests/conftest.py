@@ -41,7 +41,9 @@ from app.api.control.deps import (
     get_directory_service,
     get_distillation_service,
     get_end_user_service,
+    get_evaluation_service,
     get_gateway_service,
+    get_index_auditor,
     get_limits_service,
     get_memory_preview,
     get_monitoring_service,
@@ -590,6 +592,10 @@ def build_auth_app(auth: AuthFixture, settings: Settings | None = None) -> FastA
     summarization = auth.summarization
     if summarization is not None:
         application.dependency_overrides[get_summarization_service] = lambda: summarization
+    validation = auth.validation
+    if validation is not None:
+        application.dependency_overrides[get_index_auditor] = lambda: validation.auditor
+        application.dependency_overrides[get_evaluation_service] = lambda: validation.service
     application.dependency_overrides[get_gateway_service] = lambda: auth.gateways
     application.dependency_overrides[get_limits_service] = lambda: auth.limits
     preview = auth.preview
